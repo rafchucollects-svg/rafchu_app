@@ -43,3 +43,8 @@ src_backup/
 # Runtime config (contains secrets)
 .runtimeconfig.json
 functions/.runtimeconfig.json
+
+# Environment variables (contains secrets)
+.env
+.env.local
+.env.*.local

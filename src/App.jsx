@@ -45,23 +45,15 @@ import { Plus, LogIn, LogOut, Trash, ExternalLink, Upload, Menu } from "lucide-r
 
 const DEFAULT_CURRENCY = "EUR";
 
-// 1) RapidAPI – CardMarket API
-// ⚠️ Consider moving this to a server before shipping to production.
-const RAPIDAPI_KEY = "3f1d6d1f79mshd8247af36109787p17ad74jsn078c111f9c8e";
-const RAPIDAPI_HOST = "cardmarket-api-tcg.p.rapidapi.com";
-const API_BASE = `https://${RAPIDAPI_HOST}`;
-
-// 2) Firebase – project: rafchu-tcg-app
-// Paste your Firebase web config (at minimum apiKey, authDomain, projectId).
-// --- Firebase Configuration ---
+// Firebase Configuration - loaded from environment variables
 const firebaseConfig = {
-  apiKey: "AIzaSyD9sA1Vz3Cmw28kkvaEs1SaTucJY1SvNTQ",
-  authDomain: "rafchu-tcg-app.firebaseapp.com",
-  projectId: "rafchu-tcg-app",
-  storageBucket: "rafchu-tcg-app.firebasestorage.app",
-  messagingSenderId: "1045008710585",
-  appId: "1:1045008710585:web:bafe104ec40fdaf3e71468",
-  measurementId: "G-079QZV72HK",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 // Initialize Firebase singletons safely
