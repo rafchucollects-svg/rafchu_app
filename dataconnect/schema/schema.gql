@@ -1,0 +1,58 @@
+type User @table {
+  displayName: String!
+  createdAt: Timestamp!
+  email: String
+  photoUrl: String
+}
+
+type Card @table {
+  name: String!
+  pokedexNumber: Int!
+  set: String!
+  rarity: String!
+  imageUrl: String!
+  cardType: String
+  hp: Int
+  attack: String
+  resistance: String
+  retreatCost: String
+  abilities: String
+  artist: String
+}
+
+type Printing @table {
+  card: Card
+  printingName: String!
+  setCode: String!
+  releaseDate: Date!
+  variant: String!
+  cardImageUrl: String
+  specificRarity: String
+}
+
+type CollectionCard @table {
+  user: User
+  printing: Printing
+  createdAt: Timestamp!
+  condition: String!
+  quantity: Int!
+  isGraded: Boolean
+  grade: String
+  purchasePrice: Float
+  purchaseDate: Date
+}
+
+type PriceData @table {
+  printing: Printing
+  date: Date!
+  value: Float!
+  currency: String!
+  source: String
+}
+
+type WishlistItem @table {
+  user: User
+  printing: Printing
+  createdAt: Timestamp!
+  desiredPrice: Float
+}

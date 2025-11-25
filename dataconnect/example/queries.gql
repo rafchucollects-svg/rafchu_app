@@ -1,0 +1,53 @@
+mutation AddToWishlist($printingId: UUID!) @auth(level: USER) {
+  wishlistItem_insert(data: {
+    printingId: $printingId,
+    userId_expr: "auth.uid",
+    createdAt_expr: "request.time"
+  })
+}
+
+query GetCollectionCards @auth(level: USER) {
+  collectionCards(where: {userId: {eq_expr: "auth.uid"}}) {
+    id
+    printing {
+      id
+      printingName
+      card {
+        name
+        imageUrl
+      }
+    }
+    condition
+    grade
+    isGraded
+    purchaseDate
+    purchasePrice
+    quantity
+  }
+}
+
+mutation UpdateCollectionCard($id: UUID!, $condition: String, $grade: String, $isGraded: Boolean, $purchaseDate: Date, $purchasePrice: Float, $quantity: Int) @auth(level: USER) {
+  updatedCount: collectionCard_updateMany(
+    where: {
+      id: {eq: $id}
+      userId: {eq_expr: "auth.uid"}
+    }
+    data: {
+      condition: $condition
+      grade: $grade
+      isGraded: $isGraded
+      purchaseDate: $purchaseDate
+      purchasePrice: $purchasePrice
+      quantity: $quantity
+    }
+  )
+}
+
+query SearchCards($name: String!) @auth(level: USER, insecureReason: "Card catalog search returns only public card data and is safe for all authenticated users.") {
+  cards(where: {name: {contains: $name}}) {
+    id
+    name
+    imageUrl
+    set
+  }
+}

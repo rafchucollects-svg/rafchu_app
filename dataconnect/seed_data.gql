@@ -1,0 +1,42 @@
+mutation CreateDemoData @transaction @auth(level: NO_ACCESS) {
+  card_insertMany(
+    data: [
+      {
+        name: "Pikachu",
+        imageUrl: "https://example.com/pikachu.jpg",
+        rarity: "Common",
+        set: "Base Set",
+        pokedexNumber: 25,
+        cardType: "Electric"
+      },
+      {
+        name: "Charizard",
+        imageUrl: "https://example.com/charizard.jpg",
+        rarity: "Rare",
+        set: "Base Set",
+        pokedexNumber: 6,
+        cardType: "Fire"
+      }
+    ]
+  )
+  printing_insertMany(
+    data: [
+      {
+        printingName: "Base Set Charizard",
+        setCode: "BS",
+        releaseDate: "1999-01-01",
+        variant: "Holo",
+        cardId: "550e8400-e29b-41d4-a716-446655440000",
+        cardImageUrl: "https://example.com/base_charizard.jpg"
+      },
+      {
+        printingName: "Base Set Pikachu",
+        setCode: "BS",
+        releaseDate: "1999-01-01",
+        variant: "Normal",
+        cardId: "550e8400-e29b-41d4-a716-446655440001",
+        cardImageUrl: "https://example.com/base_pikachu.jpg"
+      }
+    ]
+  )
+}

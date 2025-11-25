@@ -1,0 +1,11 @@
+{
+  "projects": {
+    "default": "rafchu-tcg-app"
+  },
+  "targets": {},
+  "etags": {
+    "rafchu-tcg-app": {
+      "extensionInstances": {}
+    }
+  }
+}
