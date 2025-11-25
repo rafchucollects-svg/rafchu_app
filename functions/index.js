@@ -2476,3 +2476,250 @@ exports.getCardDetails = functions.runWith({
   }
 });
 
+/**
+ * Get update logs for monitoring the scheduled card database updates
+ * Query params:
+ *   - limit: number of logs to return (default: 20)
+ *   - status: filter by status ('success', 'error', or 'all')
+ */
+exports.getUpdateLogs = functions.https.onRequest(async (req, res) => {
+  // CORS headers
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  const limit = parseInt(req.query.limit) || 20;
+  const statusFilter = req.query.status || 'all';
+  
+  try {
+    const db = admin.firestore();
+    let query = db.collection('update_logs')
+      .orderBy('timestamp', 'desc')
+      .limit(limit);
+    
+    if (statusFilter !== 'all') {
+      query = db.collection('update_logs')
+        .where('status', '==', statusFilter)
+        .orderBy('timestamp', 'desc')
+        .limit(limit);
+    }
+    
+    const snapshot = await query.get();
+    
+    const logs = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      logs.push({
+        id: doc.id,
+        timestamp: data.timestamp?.toDate?.()?.toISOString() || data.timestamp,
+        type: data.type,
+        status: data.status,
+        duration: data.duration,
+        stats: data.stats || null,
+        error: data.error || null
+      });
+    });
+    
+    res.status(200).json({
+      success: true,
+      count: logs.length,
+      logs: logs
+    });
+  } catch (error) {
+    console.error('❌ Error fetching update logs:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Force update ALL cards in the card_database collection
+ * This updates every card regardless of whether it's in any user's collection
+ * 
+ * Query params:
+ *   - batchSize: number of cards to process per batch (default: 10)
+ *   - skipGraded: if 'true', skip graded price fetching (faster but no graded prices)
+ */
+exports.forceUpdateAllCards = functions.runWith({
+  timeoutSeconds: 540, // 9 minutes max
+  memory: '2GB'
+}).https.onRequest(async (req, res) => {
+  // CORS headers
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  // Security check via query parameter (to avoid Cloud Functions auth interception)
+  const secretToken = req.query.token;
+  const expectedToken = 'rafchu-force-update-2024';
+  
+  if (secretToken !== expectedToken) {
+    res.status(403).json({ 
+      success: false, 
+      error: 'Unauthorized. Include token query parameter: ?token=rafchu-force-update-2024' 
+    });
+    return;
+  }
+  
+  const batchSize = parseInt(req.query.batchSize) || 10;
+  const skipGraded = req.query.skipGraded === 'true';
+  
+  console.log('🚀 ========================================');
+  console.log('🚀 Starting FORCE UPDATE of ALL cards...');
+  console.log(`🚀 Batch size: ${batchSize}, Skip graded: ${skipGraded}`);
+  console.log('🚀 ========================================');
+  
+  const db = admin.firestore();
+  const startTime = Date.now();
+  
+  const stats = {
+    total: 0,
+    updated: 0,
+    failed: 0,
+    skipped: 0,
+    errors: []
+  };
+  
+  try {
+    // Get ALL cards from card_database
+    const allCardsSnapshot = await db.collection('card_database').get();
+    stats.total = allCardsSnapshot.size;
+    
+    console.log(`📋 Found ${stats.total} cards in database to update`);
+    
+    const cards = [];
+    allCardsSnapshot.forEach(doc => {
+      cards.push({ id: doc.id, ...doc.data() });
+    });
+    
+    // Process in batches
+    for (let i = 0; i < cards.length; i += batchSize) {
+      const batch = cards.slice(i, i + batchSize);
+      console.log(`\n📦 Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(cards.length/batchSize)} (cards ${i+1}-${Math.min(i+batchSize, cards.length)})`);
+      
+      // Process batch in parallel
+      const batchResults = await Promise.allSettled(
+        batch.map(async (card) => {
+          try {
+            const cardRef = db.collection('card_database').doc(card.cardKey || card.id);
+            
+            // Fetch fresh market prices
+            console.log(`   💰 Fetching prices for: ${card.name}...`);
+            const marketPricesRaw = await fetchMarketPricesInternal(card);
+            const marketPrices = transformPriceStructure(marketPricesRaw);
+            
+            // Fetch graded prices unless skipped
+            let gradedPrices = card.gradedPrices || {};
+            if (!skipGraded) {
+              console.log(`   🏆 Fetching graded prices for: ${card.name}...`);
+              try {
+                const freshGradedPrices = await fetchAllGradedPrices(card);
+                if (Object.keys(freshGradedPrices).length > 0) {
+                  gradedPrices = {
+                    ...freshGradedPrices,
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+                  };
+                }
+              } catch (gradedError) {
+                console.warn(`   ⚠️ Graded price fetch failed for ${card.name}: ${gradedError.message}`);
+              }
+            }
+            
+            // Update the card document
+            const updateData = {
+              prices: marketPrices || card.prices || null,
+              gradedPrices: gradedPrices,
+              lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+              updateCount: (card.updateCount || 0) + 1
+            };
+            
+            await cardRef.update(updateData);
+            console.log(`   ✅ Updated: ${card.name} #${card.number}`);
+            
+            return { success: true, name: card.name };
+          } catch (error) {
+            console.error(`   ❌ Failed: ${card.name} - ${error.message}`);
+            return { success: false, name: card.name, error: error.message };
+          }
+        })
+      );
+      
+      // Count results
+      batchResults.forEach(result => {
+        if (result.status === 'fulfilled' && result.value.success) {
+          stats.updated++;
+        } else {
+          stats.failed++;
+          const errorMsg = result.status === 'rejected' 
+            ? result.reason?.message 
+            : result.value?.error;
+          if (stats.errors.length < 10) {
+            stats.errors.push({ card: result.value?.name, error: errorMsg });
+          }
+        }
+      });
+      
+      // Small delay between batches to avoid rate limiting
+      if (i + batchSize < cards.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    const duration = (Date.now() - startTime) / 1000;
+    console.log(`\n✨ Force update complete in ${duration.toFixed(2)}s`);
+    console.log(`   Updated: ${stats.updated}, Failed: ${stats.failed}`);
+    
+    // Log to update_logs collection
+    await db.collection('update_logs').add({
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'force_update_all',
+      status: stats.failed === 0 ? 'success' : 'partial',
+      duration: duration,
+      stats: {
+        totalCards: stats.total,
+        cardsUpdated: stats.updated,
+        cardsFailed: stats.failed,
+        skipGraded: skipGraded
+      },
+      errors: stats.errors.length > 0 ? stats.errors : null
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: `Force update complete`,
+      duration: `${duration.toFixed(2)}s`,
+      stats: stats
+    });
+    
+  } catch (error) {
+    console.error('❌ Force update failed:', error);
+    
+    // Log failure
+    await db.collection('update_logs').add({
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'force_update_all',
+      status: 'error',
+      error: error.message,
+      stack: error.stack
+    });
+    
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stats: stats
+    });
+  }
+});
+
