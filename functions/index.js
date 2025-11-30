@@ -32,6 +32,10 @@ const POKEPRICE_API_KEY = functions.config().pokeprice?.key || 'pokeprice_pro_53
 const RAPIDAPI_KEY = functions.config().rapidapi?.key || "3f1d6d1f79mshd8247af36109787p17ad74jsn078c111f9c8e";
 const RAPIDAPI_HOST = "cardmarket-api-tcg.p.rapidapi.com";
 
+// JustTCG API for Japanese cards (18,000+ Japanese Pokemon cards)
+const JUSTTCG_API_KEY = functions.config().justtcg?.key || 'tcg_a6f7312e9a51438fb830df77c26cf5d4';
+const JUSTTCG_API_URL = 'https://api.justtcg.com/v1';
+
 const mailTransport = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -1561,6 +1565,179 @@ function transformPriceStructure(apiPrices) {
   return Object.keys(transformed).length > 0 ? transformed : null;
 }
 
+// ================================================================================
+// JUSTTCG API HELPERS - Japanese Card Data (18,000+ cards)
+// ================================================================================
+
+/**
+ * Fetch Japanese card data from JustTCG API
+ * @param {string} query - Search query
+ * @param {number} limit - Max results (1-20)
+ * @returns {Promise<Array>} - Array of card objects
+ */
+async function fetchJustTCGCards(query, limit = 20) {
+  try {
+    const params = new URLSearchParams({
+      q: query,
+      game: 'pokemon-japan',
+      limit: Math.min(limit, 20).toString()
+    });
+    
+    const response = await fetch(`${JUSTTCG_API_URL}/cards?${params}`, {
+      headers: {
+        'x-api-key': JUSTTCG_API_KEY
+      }
+    });
+    
+    if (!response.ok) {
+      console.warn(`JustTCG API error: ${response.status}`);
+      return [];
+    }
+    
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('JustTCG API fetch error:', error);
+    return [];
+  }
+}
+
+/**
+ * Fetch Japanese card by specific set
+ * @param {string} setId - JustTCG set ID
+ * @param {number} limit - Max results
+ * @returns {Promise<Array>} - Array of card objects
+ */
+async function fetchJustTCGCardsBySet(setId, limit = 20) {
+  try {
+    const params = new URLSearchParams({
+      game: 'pokemon-japan',
+      set: setId,
+      limit: Math.min(limit, 20).toString()
+    });
+    
+    const response = await fetch(`${JUSTTCG_API_URL}/cards?${params}`, {
+      headers: {
+        'x-api-key': JUSTTCG_API_KEY
+      }
+    });
+    
+    if (!response.ok) {
+      console.warn(`JustTCG API error: ${response.status}`);
+      return [];
+    }
+    
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('JustTCG API fetch error:', error);
+    return [];
+  }
+}
+
+/**
+ * Transform JustTCG card to our internal format
+ * @param {Object} jtcgCard - JustTCG card object
+ * @returns {Object} - Normalized card object
+ */
+function transformJustTCGCard(jtcgCard) {
+  // Get price from first variant (Near Mint preferred)
+  let price = 0;
+  let priceHistory = [];
+  let variant = null;
+  
+  if (jtcgCard.variants && jtcgCard.variants.length > 0) {
+    // Prefer Near Mint variant
+    variant = jtcgCard.variants.find(v => v.condition === 'Near Mint') || jtcgCard.variants[0];
+    price = variant.price || 0;
+    priceHistory = variant.priceHistory || [];
+  }
+  
+  return {
+    // Basic info
+    name: jtcgCard.name,
+    set: jtcgCard.set_name || '',
+    number: jtcgCard.number || '',
+    rarity: jtcgCard.rarity || '',
+    
+    // IDs
+    justTcgId: jtcgCard.id,
+    tcgplayerId: jtcgCard.tcgplayerId || null,
+    
+    // Japanese flag
+    isJapanese: true,
+    language: 'Japanese',
+    
+    // Prices (JustTCG provides USD prices for JP cards)
+    prices: {
+      justtcg: {
+        price: price,
+        condition: variant?.condition || 'Unknown',
+        printing: variant?.printing || 'Normal',
+        currency: 'USD',
+        lastUpdated: variant?.lastUpdated || null,
+        priceChange7d: variant?.priceChange7d || 0,
+        priceChange30d: variant?.priceChange30d || 0,
+      }
+    },
+    
+    // All variants for comprehensive pricing
+    variants: (jtcgCard.variants || []).map(v => ({
+      condition: v.condition,
+      printing: v.printing,
+      language: v.language || 'Japanese',
+      price: v.price,
+      lastUpdated: v.lastUpdated,
+    })),
+    
+    // Source tracking
+    dataSource: 'justtcg',
+    lastUpdated: new Date().toISOString(),
+  };
+}
+
+/**
+ * Fetch prices for a Japanese card from JustTCG
+ * @param {Object} card - Card object with name, set, number
+ * @returns {Promise<Object|null>} - Price data or null
+ */
+async function fetchJustTCGPricesForCard(card) {
+  try {
+    // Search for the card by name
+    const searchQuery = card.name;
+    const results = await fetchJustTCGCards(searchQuery, 20);
+    
+    if (!results || results.length === 0) {
+      return null;
+    }
+    
+    // Try to find exact match by set and number
+    let match = results.find(r => {
+      const setMatch = !card.set || r.set_name?.toLowerCase().includes(card.set.toLowerCase());
+      const numMatch = !card.number || r.number?.includes(card.number);
+      return setMatch && numMatch;
+    });
+    
+    // If no exact match, use first result
+    if (!match && results.length > 0) {
+      match = results[0];
+    }
+    
+    if (!match) {
+      return null;
+    }
+    
+    return transformJustTCGCard(match);
+  } catch (error) {
+    console.error(`Error fetching JustTCG prices for ${card.name}:`, error);
+    return null;
+  }
+}
+
+// ================================================================================
+// END JUSTTCG API HELPERS
+// ================================================================================
+
 // PHASE 2: Update card database cache
 async function updateSingleCardInCache(db, card, existingCard) {
   const cardKey = generateCardKey(card);
@@ -1570,7 +1747,21 @@ async function updateSingleCardInCache(db, card, existingCard) {
   // Fetch fresh market prices
   console.log(`   💰 Fetching prices for: ${card.name}...`);
   const marketPricesRaw = await fetchMarketPricesInternal(card);
-  const marketPrices = transformPriceStructure(marketPricesRaw);
+  let marketPrices = transformPriceStructure(marketPricesRaw);
+  
+  // For Japanese cards, also fetch from JustTCG
+  let justTcgData = null;
+  if (card.isJapanese || card.language === 'Japanese') {
+    console.log(`   🇯🇵 Fetching JustTCG prices for Japanese card: ${card.name}...`);
+    justTcgData = await fetchJustTCGPricesForCard(card);
+    if (justTcgData && justTcgData.prices) {
+      marketPrices = {
+        ...marketPrices,
+        justtcg: justTcgData.prices.justtcg
+      };
+      console.log(`   ✅ JustTCG price found: $${justTcgData.prices.justtcg?.price || 0}`);
+    }
+  }
   
   // Fetch graded prices if we don't have them or they're old
   let gradedPrices = existingCard?.gradedPrices || {};
@@ -2715,6 +2906,318 @@ exports.forceUpdateAllCards = functions.runWith({
       stack: error.stack
     });
     
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stats: stats
+    });
+  }
+});
+
+// ================================================================================
+// JUSTTCG JAPANESE CARD ENDPOINTS
+// ================================================================================
+
+/**
+ * Search Japanese Pokemon cards via JustTCG API
+ * Usage: GET /searchJapaneseCards?q=Pikachu&limit=20
+ */
+exports.searchJapaneseCards = functions.runWith({
+  timeoutSeconds: 30,
+  memory: '256MB'
+}).https.onRequest(async (req, res) => {
+  // CORS headers
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  try {
+    const query = req.query.q || req.query.query || '';
+    const limit = Math.min(parseInt(req.query.limit) || 20, 20);
+    
+    if (!query) {
+      res.status(400).json({ 
+        success: false, 
+        error: 'Query parameter "q" is required' 
+      });
+      return;
+    }
+    
+    console.log(`🇯🇵 Searching Japanese cards for: "${query}"`);
+    
+    const cards = await fetchJustTCGCards(query, limit);
+    
+    // Transform to our format
+    const transformedCards = cards.map(transformJustTCGCard);
+    
+    console.log(`✅ Found ${transformedCards.length} Japanese cards`);
+    
+    res.status(200).json({
+      success: true,
+      count: transformedCards.length,
+      cards: transformedCards,
+      source: 'justtcg',
+      game: 'pokemon-japan'
+    });
+    
+  } catch (error) {
+    console.error('❌ Japanese card search error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Get Japanese card sets from JustTCG
+ * Usage: GET /getJapaneseSets?limit=50
+ */
+exports.getJapaneseSets = functions.runWith({
+  timeoutSeconds: 30,
+  memory: '256MB'
+}).https.onRequest(async (req, res) => {
+  // CORS headers
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    
+    const params = new URLSearchParams({
+      game: 'pokemon-japan',
+      limit: limit.toString()
+    });
+    
+    const response = await fetch(`${JUSTTCG_API_URL}/sets?${params}`, {
+      headers: {
+        'x-api-key': JUSTTCG_API_KEY
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`JustTCG API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    res.status(200).json({
+      success: true,
+      count: data.data?.length || 0,
+      total: data.meta?.total || 0,
+      sets: data.data || [],
+      source: 'justtcg'
+    });
+    
+  } catch (error) {
+    console.error('❌ Japanese sets fetch error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Sync popular Japanese cards to our database (runs weekly)
+ * This caches the most popular Japanese promos for faster access
+ */
+exports.syncJapaneseCards = functions.runWith({
+  timeoutSeconds: 540,
+  memory: '2GB'
+}).pubsub
+  .schedule('0 3 * * 0') // 3 AM UTC every Sunday
+  .timeZone('UTC')
+  .onRun(async (context) => {
+    console.log('🇯🇵 ========================================');
+    console.log('🇯🇵 Starting weekly Japanese card sync...');
+    console.log('🇯🇵 ========================================');
+    
+    const db = admin.firestore();
+    const startTime = Date.now();
+    const stats = { synced: 0, failed: 0, total: 0 };
+    
+    try {
+      // Popular Japanese card searches to cache
+      const searchTerms = [
+        'Pikachu',
+        'Charizard',
+        'Mewtwo',
+        'Eevee',
+        'Mew',
+        'Gengar',
+        'Rayquaza',
+        'Umbreon',
+        'Espeon',
+        'Lugia'
+      ];
+      
+      for (const term of searchTerms) {
+        console.log(`\n🔍 Syncing: ${term}`);
+        
+        try {
+          // Respect rate limit (10 requests/minute)
+          await new Promise(resolve => setTimeout(resolve, 6500));
+          
+          const cards = await fetchJustTCGCards(term, 20);
+          stats.total += cards.length;
+          
+          for (const card of cards) {
+            try {
+              const transformed = transformJustTCGCard(card);
+              const cardKey = `jp_${transformed.justTcgId}`;
+              
+              await db.collection('japanese_cards_cache').doc(cardKey).set({
+                ...transformed,
+                cachedAt: admin.firestore.FieldValue.serverTimestamp()
+              }, { merge: true });
+              
+              stats.synced++;
+            } catch (err) {
+              console.warn(`   ⚠️ Failed to cache: ${card.name}`, err.message);
+              stats.failed++;
+            }
+          }
+          
+          console.log(`   ✅ Synced ${cards.length} cards for "${term}"`);
+          
+        } catch (error) {
+          console.error(`   ❌ Failed to search "${term}":`, error.message);
+        }
+      }
+      
+      const duration = (Date.now() - startTime) / 1000;
+      console.log(`\n✨ Japanese card sync complete in ${duration.toFixed(2)}s`);
+      console.log(`   Synced: ${stats.synced}, Failed: ${stats.failed}, Total: ${stats.total}`);
+      
+      // Log success
+      await db.collection('update_logs').add({
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        type: 'japanese_cards_sync',
+        status: stats.failed === 0 ? 'success' : 'partial',
+        duration: duration,
+        stats: stats
+      });
+      
+      return null;
+      
+    } catch (error) {
+      console.error('❌ Japanese card sync failed:', error);
+      
+      await db.collection('update_logs').add({
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        type: 'japanese_cards_sync',
+        status: 'error',
+        error: error.message
+      });
+      
+      return null;
+    }
+  });
+
+/**
+ * Manually trigger Japanese card sync (for testing)
+ * Usage: GET /triggerJapaneseSync?token=rafchu-force-update-2024
+ */
+exports.triggerJapaneseSync = functions.runWith({
+  timeoutSeconds: 540,
+  memory: '2GB'
+}).https.onRequest(async (req, res) => {
+  // CORS headers
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  // Security check
+  const token = req.query.token;
+  if (token !== 'rafchu-force-update-2024') {
+    res.status(403).json({ 
+      success: false, 
+      error: 'Unauthorized. Include token query parameter.' 
+    });
+    return;
+  }
+  
+  const db = admin.firestore();
+  const startTime = Date.now();
+  const stats = { synced: 0, failed: 0, total: 0 };
+  
+  try {
+    console.log('🇯🇵 Manual Japanese card sync triggered...');
+    
+    // Popular Japanese card searches
+    const searchTerms = req.query.terms 
+      ? req.query.terms.split(',') 
+      : ['Pikachu', 'Charizard', 'Mewtwo', 'Eevee', 'Mew'];
+    
+    for (const term of searchTerms) {
+      console.log(`\n🔍 Syncing: ${term}`);
+      
+      try {
+        await new Promise(resolve => setTimeout(resolve, 6500));
+        
+        const cards = await fetchJustTCGCards(term.trim(), 20);
+        stats.total += cards.length;
+        
+        for (const card of cards) {
+          try {
+            const transformed = transformJustTCGCard(card);
+            const cardKey = `jp_${transformed.justTcgId}`;
+            
+            await db.collection('japanese_cards_cache').doc(cardKey).set({
+              ...transformed,
+              cachedAt: admin.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+            
+            stats.synced++;
+          } catch (err) {
+            stats.failed++;
+          }
+        }
+        
+        console.log(`   ✅ Synced ${cards.length} cards`);
+        
+      } catch (error) {
+        console.error(`   ❌ Failed: ${error.message}`);
+      }
+    }
+    
+    const duration = (Date.now() - startTime) / 1000;
+    
+    // Log to update_logs
+    await db.collection('update_logs').add({
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'japanese_cards_sync_manual',
+      status: stats.failed === 0 ? 'success' : 'partial',
+      duration: duration,
+      stats: stats
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: 'Japanese card sync complete',
+      duration: `${duration.toFixed(2)}s`,
+      stats: stats
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual sync failed:', error);
     res.status(500).json({
       success: false,
       error: error.message,
