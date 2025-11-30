@@ -1664,6 +1664,12 @@ function transformJustTCGCard(jtcgCard) {
   const priceEur = price * usdToEur;
   const lowPriceEur = lowPrice * usdToEur;
   
+  // Build image URLs from TCGPlayer ID (if available)
+  // TCGPlayer CDN hosts images for Japanese cards too!
+  const tcgpId = jtcgCard.tcgplayerId;
+  const imageUrl = tcgpId ? `https://tcgplayer-cdn.tcgplayer.com/product/${tcgpId}_200w.jpg` : null;
+  const imageLarge = tcgpId ? `https://product-images.tcgplayer.com/fit-in/400x400/${tcgpId}.jpg` : null;
+  
   return {
     // Basic info
     name: jtcgCard.name,
@@ -1674,7 +1680,13 @@ function transformJustTCGCard(jtcgCard) {
     // IDs
     id: jtcgCard.id,
     justTcgId: jtcgCard.id,
-    tcgplayerId: jtcgCard.tcgplayerId || null,
+    tcgplayerId: tcgpId || null,
+    
+    // Images from TCGPlayer CDN
+    image: imageLarge || imageUrl || '',
+    imageUrl: imageLarge || imageUrl || '',
+    imageSmall: imageUrl || '',
+    imageLarge: imageLarge || '',
     
     // Japanese flag
     isJapanese: true,

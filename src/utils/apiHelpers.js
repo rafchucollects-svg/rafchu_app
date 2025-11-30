@@ -127,7 +127,7 @@ export async function apiSearchCards(
     if (japaneseData?.success && japaneseData?.cards) {
       const japaneseItems = japaneseData.cards.map(card => ({
         // Map JustTCG format to our internal format
-        id: card.justTcgId,
+        id: card.justTcgId || card.id,
         name: card.name,
         set: card.set,
         number: card.number,
@@ -135,6 +135,13 @@ export async function apiSearchCards(
         nameNumbered: `${card.name} #${card.number}`,
         isJapanese: true,
         language: 'Japanese',
+        // Images from TCGPlayer CDN
+        image: card.image || card.imageUrl || '',
+        imageUrl: card.imageUrl || card.image || '',
+        imageSmall: card.imageSmall || card.image || '',
+        imageLarge: card.imageLarge || card.image || '',
+        // TCGPlayer ID for reference
+        tcgplayerId: card.tcgplayerId,
         // Price info
         prices: card.prices,
         // Variants
