@@ -3011,7 +3011,7 @@ exports.searchJapaneseCards = functions.runWith({
     
     console.log(`   Name query: "${nameQuery}", Number filter: "${numberFilter || 'none'}"`);
     
-    // Search by name (JustTCG handles this better)
+    // Search by name first
     let cards = await fetchJustTCGCards(nameQuery || query, 20);
     
     // If we have a number filter, apply it locally
@@ -3028,12 +3028,34 @@ exports.searchJapaneseCards = functions.runWith({
       });
       
       // If we found matches with the number filter, use those
-      // Otherwise, fall back to all results (user might want to see related cards)
       if (filteredCards.length > 0) {
         cards = filteredCards;
         console.log(`   Filtered to ${cards.length} cards matching number "${numberFilter}"`);
       } else {
-        console.log(`   No exact number matches, returning all ${cards.length} results`);
+        // No matches in first 20 results - try searching by number directly
+        // JustTCG can search by card number too (e.g., "325" or "132")
+        console.log(`   No matches in name results, trying number search...`);
+        const numberCards = await fetchJustTCGCards(numberFilter, 20);
+        
+        if (numberCards.length > 0) {
+          // Filter number results by name (to ensure it's the right Pokemon)
+          const nameWords = nameQuery.toLowerCase().split(' ').filter(w => w.length > 2);
+          const matchedByNumber = numberCards.filter(card => {
+            const cardName = (card.name || '').toLowerCase();
+            return nameWords.some(word => cardName.includes(word));
+          });
+          
+          if (matchedByNumber.length > 0) {
+            cards = matchedByNumber;
+            console.log(`   Found ${cards.length} cards by number search`);
+          } else {
+            // Return number results anyway - user might find what they need
+            cards = numberCards;
+            console.log(`   Returning ${cards.length} cards from number search (name didn't match)`);
+          }
+        } else {
+          console.log(`   No results from number search either, returning name results`);
+        }
       }
     }
     
