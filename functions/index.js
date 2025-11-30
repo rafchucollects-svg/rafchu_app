@@ -1643,15 +1643,26 @@ async function fetchJustTCGCardsBySet(setId, limit = 20) {
 function transformJustTCGCard(jtcgCard) {
   // Get price from first variant (Near Mint preferred)
   let price = 0;
+  let lowPrice = 0;
   let priceHistory = [];
   let variant = null;
   
   if (jtcgCard.variants && jtcgCard.variants.length > 0) {
-    // Prefer Near Mint variant
+    // Prefer Near Mint variant for market price
     variant = jtcgCard.variants.find(v => v.condition === 'Near Mint') || jtcgCard.variants[0];
     price = variant.price || 0;
     priceHistory = variant.priceHistory || [];
+    
+    // Get lowest price from all variants
+    const prices = jtcgCard.variants.map(v => v.price || 0).filter(p => p > 0);
+    lowPrice = prices.length > 0 ? Math.min(...prices) : price;
   }
+  
+  // Convert USD to EUR (approximate rate for CardMarket display)
+  // JustTCG prices are in USD, frontend expects EUR for CardMarket
+  const usdToEur = 0.92;
+  const priceEur = price * usdToEur;
+  const lowPriceEur = lowPrice * usdToEur;
   
   return {
     // Basic info
@@ -1661,6 +1672,7 @@ function transformJustTCGCard(jtcgCard) {
     rarity: jtcgCard.rarity || '',
     
     // IDs
+    id: jtcgCard.id,
     justTcgId: jtcgCard.id,
     tcgplayerId: jtcgCard.tcgplayerId || null,
     
@@ -1668,16 +1680,35 @@ function transformJustTCGCard(jtcgCard) {
     isJapanese: true,
     language: 'Japanese',
     
-    // Prices (JustTCG provides USD prices for JP cards)
+    // Prices in BOTH formats for frontend compatibility
     prices: {
+      // JustTCG native format
       justtcg: {
         price: price,
+        low: lowPrice,
         condition: variant?.condition || 'Unknown',
         printing: variant?.printing || 'Normal',
         currency: 'USD',
         lastUpdated: variant?.lastUpdated || null,
         priceChange7d: variant?.priceChange7d || 0,
         priceChange30d: variant?.priceChange30d || 0,
+      },
+      // TCGPlayer format (USD) - for frontend compatibility
+      tcgplayer: {
+        market_price: price,
+        mid_price: price,
+        low_price: lowPrice,
+        high_price: price,
+        currency: 'USD',
+      },
+      // CardMarket format (EUR) - for frontend compatibility
+      cardmarket: {
+        average: priceEur,
+        avg30: priceEur,
+        lowest: lowPriceEur,
+        lowest_near_mint: priceEur,
+        trend: priceEur,
+        currency: 'EUR',
       }
     },
     
