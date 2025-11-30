@@ -116,32 +116,32 @@ export async function apiSearchCards(
     
     // Apply local ranking for better relevance
     const { numberPieces } = splitQuery(query);
-    
-    if (numberPieces.length) {
-      const hits = items.filter((it) => {
-        const n = ((it.number || "") + "").toLowerCase();
-        const nm = (it.name || "").toLowerCase();
-        const nn = (it.nameNumbered || "").toLowerCase();
-        const tcgid = ((it.tcgid || "") + "").toLowerCase();
-        return numberPieces.some(
-          (p) => n.includes(p) || nm.includes(p) || nn.includes(p) || tcgid.includes(p),
-        );
-      });
-      if (hits.length) items = hits;
-    }
 
-    items = rankByRelevance(items, query);
-    items.sort((a, b) => {
-      const ak = !!a.number;
-      const bk = !!b.number;
-      return ak === bk ? 0 : ak ? -1 : 1;
+  if (numberPieces.length) {
+    const hits = items.filter((it) => {
+      const n = ((it.number || "") + "").toLowerCase();
+      const nm = (it.name || "").toLowerCase();
+      const nn = (it.nameNumbered || "").toLowerCase();
+      const tcgid = ((it.tcgid || "") + "").toLowerCase();
+      return numberPieces.some(
+        (p) => n.includes(p) || nm.includes(p) || nn.includes(p) || tcgid.includes(p),
+      );
     });
+    if (hits.length) items = hits;
+  }
+
+  items = rankByRelevance(items, query);
+  items.sort((a, b) => {
+    const ak = !!a.number;
+    const bk = !!b.number;
+    return ak === bk ? 0 : ak ? -1 : 1;
+  });
     
-    const limited = items.slice(0, maxResults);
-    if (limited.length) {
-      setSearchCacheEntry(canonical, limited);
-    }
-    return limited;
+  const limited = items.slice(0, maxResults);
+  if (limited.length) {
+    setSearchCacheEntry(canonical, limited);
+  }
+  return limited;
   } catch (error) {
     console.error('CardMarket search error:', error);
     return [];
