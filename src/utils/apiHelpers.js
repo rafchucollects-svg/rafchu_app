@@ -74,6 +74,7 @@ export function setSearchCacheEntry(canonical, results) {
 /**
  * Search cards via Cloud Function proxy (secure - no API keys exposed)
  * Routes CardMarket API calls through server-side Cloud Functions
+ * Also searches Japanese cards via JustTCG API
  */
 export async function apiSearchCards(
   query,
@@ -81,6 +82,7 @@ export async function apiSearchCards(
     useCache = true,
     allowExpired = false,
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
+    includeJapanese = true, // Include Japanese card results
   } = {},
 ) {
   if (!query?.trim()) return [];
@@ -96,23 +98,57 @@ export async function apiSearchCards(
   }
 
   try {
-    // Use the searchCardMarket Cloud Function (secure proxy)
-    const url = `${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
-    const response = await fetch(url);
+    // Search both CardMarket (English) and JustTCG (Japanese) in parallel
+    const searchPromises = [
+      // CardMarket search (English cards)
+      fetch(`${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=${maxResults}`)
+        .then(r => r.ok ? r.json() : { success: false })
+        .catch(() => ({ success: false })),
+    ];
     
-    if (!response.ok) {
-      console.warn('CardMarket search via Cloud Function failed:', response.status);
-      return [];
+    // Add Japanese card search if enabled
+    if (includeJapanese) {
+      searchPromises.push(
+        fetch(`${CLOUD_FUNCTIONS_BASE}/searchJapaneseCards?q=${encodeURIComponent(query)}&limit=20`)
+          .then(r => r.ok ? r.json() : { success: false })
+          .catch(() => ({ success: false }))
+      );
     }
     
-    const data = await response.json();
+    const [cardMarketData, japaneseData] = await Promise.all(searchPromises);
     
-    if (!data.success || !data.results) {
-      return [];
+    // Process CardMarket results
+    let items = [];
+    if (cardMarketData?.success && cardMarketData?.results) {
+      items = cardMarketData.results.map(raw => normalizeApiCard(raw)).filter(c => c?.name);
     }
     
-    // Normalize and process results
-    let items = data.results.map(raw => normalizeApiCard(raw)).filter(c => c?.name);
+    // Process Japanese card results and merge
+    if (japaneseData?.success && japaneseData?.cards) {
+      const japaneseItems = japaneseData.cards.map(card => ({
+        // Map JustTCG format to our internal format
+        id: card.justTcgId,
+        name: card.name,
+        set: card.set,
+        number: card.number,
+        rarity: card.rarity,
+        nameNumbered: `${card.name} #${card.number}`,
+        isJapanese: true,
+        language: 'Japanese',
+        // Price info
+        prices: card.prices,
+        // Variants
+        variants: card.variants,
+        // Source tracking
+        dataSource: 'justtcg',
+        // Flag for UI
+        _isJapaneseCard: true,
+      })).filter(c => c?.name);
+      
+      // Merge Japanese cards with English cards
+      items = [...items, ...japaneseItems];
+      console.log(`🇯🇵 Added ${japaneseItems.length} Japanese cards to search results`);
+    }
     
     // Apply local ranking for better relevance
     const { numberPieces } = splitQuery(query);
