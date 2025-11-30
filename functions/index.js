@@ -2921,6 +2921,9 @@ exports.forceUpdateAllCards = functions.runWith({
 /**
  * Search Japanese Pokemon cards via JustTCG API
  * Usage: GET /searchJapaneseCards?q=Pikachu&limit=20
+ * 
+ * Smart search: Handles combined name+number queries like "gengar ex 088"
+ * by searching name only and filtering by number locally
  */
 exports.searchJapaneseCards = functions.runWith({
   timeoutSeconds: 30,
@@ -2950,10 +2953,49 @@ exports.searchJapaneseCards = functions.runWith({
     
     console.log(`🇯🇵 Searching Japanese cards for: "${query}"`);
     
-    const cards = await fetchJustTCGCards(query, limit);
+    // Smart query parsing: separate name from number
+    // Handles queries like "gengar ex 088" or "pikachu 025"
+    const numberMatch = query.match(/(\d{2,4}(?:\/\d{2,4})?)/);
+    const numberFilter = numberMatch ? numberMatch[1] : null;
+    
+    // Remove number from search query (JustTCG searches better by name only)
+    let nameQuery = query;
+    if (numberFilter) {
+      nameQuery = query.replace(numberFilter, '').trim();
+      // Clean up any double spaces
+      nameQuery = nameQuery.replace(/\s+/g, ' ').trim();
+    }
+    
+    console.log(`   Name query: "${nameQuery}", Number filter: "${numberFilter || 'none'}"`);
+    
+    // Search by name (JustTCG handles this better)
+    let cards = await fetchJustTCGCards(nameQuery || query, 20);
+    
+    // If we have a number filter, apply it locally
+    if (numberFilter && cards.length > 0) {
+      const filteredCards = cards.filter(card => {
+        const cardNumber = (card.number || '').toLowerCase();
+        const cardName = (card.name || '').toLowerCase();
+        const filterLower = numberFilter.toLowerCase();
+        
+        // Check if number appears in card number or name
+        return cardNumber.includes(filterLower) || 
+               cardName.includes(filterLower) ||
+               cardNumber.includes(filterLower.replace('/', ''));
+      });
+      
+      // If we found matches with the number filter, use those
+      // Otherwise, fall back to all results (user might want to see related cards)
+      if (filteredCards.length > 0) {
+        cards = filteredCards;
+        console.log(`   Filtered to ${cards.length} cards matching number "${numberFilter}"`);
+      } else {
+        console.log(`   No exact number matches, returning all ${cards.length} results`);
+      }
+    }
     
     // Transform to our format
-    const transformedCards = cards.map(transformJustTCGCard);
+    const transformedCards = cards.slice(0, limit).map(transformJustTCGCard);
     
     console.log(`✅ Found ${transformedCards.length} Japanese cards`);
     
@@ -2962,7 +3004,12 @@ exports.searchJapaneseCards = functions.runWith({
       count: transformedCards.length,
       cards: transformedCards,
       source: 'justtcg',
-      game: 'pokemon-japan'
+      game: 'pokemon-japan',
+      query: {
+        original: query,
+        name: nameQuery,
+        numberFilter: numberFilter
+      }
     });
     
   } catch (error) {
