@@ -9,7 +9,7 @@
 import { normalizeApiCard } from './cardHelpers';
 
 // Import improved search helpers (ranking is done ONCE via improveSearchResults)
-import { improveSearchResults, preprocessQuery } from './searchHelpers';
+import { improveSearchResults, preprocessQuery, parseQuery } from './searchHelpers';
 
 // Cloud Functions base URL (secure - no API keys exposed)
 const CLOUD_FUNCTIONS_BASE = 'https://us-central1-rafchu-tcg-app.cloudfunctions.net';
@@ -524,8 +524,23 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     // Query preprocessed (typos/sets corrected)
   }
   
-  // Use processed query for search, but cache under original for user experience
-  const searchQuery = processedQuery || query;
+  // STEP 0.5: Smart query for API - if query has name + number, search just by name
+  // This is because APIs don't search across number fields well
+  // We'll filter by number client-side after getting results
+  const parsed = parseQuery(processedQuery || query);
+  let searchQuery = processedQuery || query;
+  
+  // If we have both a Pokemon name AND a card number, search by just the name
+  // This ensures we get results that we can then filter by number
+  if (parsed.primaryName && parsed.primaryName.length >= 2 && parsed.numbers.length > 0) {
+    // Build search query with just name + card types (no numbers)
+    const nameParts = [parsed.primaryName];
+    if (parsed.cardTypes.length > 0) {
+      nameParts.push(...parsed.cardTypes);
+    }
+    searchQuery = nameParts.join(' ');
+    console.log(`🔧 Smart search: "${query}" → API query "${searchQuery}" (will filter by #${parsed.numbers.join(', #')})`);
+  }
   
   // Check cache first (using original query for cache key)
   const canonical = canonicalizeQuery(query);
@@ -641,8 +656,10 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // - Deduplicates and merges duplicate entries
   // - Ranks by relevance score
   // - Limits to top results
-  // Use PROCESSED query for ranking (matches what we searched for)
-  finalResults = improveSearchResults(finalResults, searchQuery, {
+  // Use ORIGINAL PROCESSED query for filtering (includes number for proper filtering)
+  // NOT the searchQuery which might have number stripped for better API results
+  const filterQuery = processedQuery || query;
+  finalResults = improveSearchResults(finalResults, filterQuery, {
     maxResults: maxResults,
     enableDeduplication: true,
     enableFiltering: true,
