@@ -34,7 +34,7 @@ export function ManualCardEntry({
   initialQuery = "",
   mode = "collector" 
 }) {
-  const { user } = useApp();
+  const { user, currency } = useApp();
   const isVendor = mode === "vendor";
   
   // Form state
@@ -279,6 +279,7 @@ export function ManualCardEntry({
       rarity: cardRarity.trim() || "Unknown",
       isManualEntry: true,
       manualPrice: manualPrice ? parseFloat(manualPrice) : null,
+      manualPriceCurrency: manualPrice ? (currency || 'EUR') : null, // Store currency with price
       notes: notes.trim() || null,
       image: imageUrl, // Include uploaded image URL
       createdAt: Date.now(),
@@ -287,12 +288,13 @@ export function ManualCardEntry({
       gradingCompany: isGraded ? gradingCompany : null,
       grade: isGraded && grade ? parseFloat(grade) : null,
       gradedPrice: isGraded && gradedPrice ? parseFloat(gradedPrice) : null,
+      gradedPriceCurrency: isGraded && gradedPrice ? (currency || 'EUR') : null, // Store currency for graded price too
     };
     
     if (onAddCard) {
       onAddCard(manualCard, { fromSuggestion: false, isManual: true });
     }
-  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard, isGraded, gradingCompany, grade, gradedPrice]);
+  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard, isGraded, gradingCompany, grade, gradedPrice, currency]);
   
   // Check if form is valid
   const isFormValid = cardName.trim().length > 0 && (!isGraded || grade !== "");
@@ -428,7 +430,7 @@ export function ManualCardEntry({
               
               <div>
                 <label className="block text-sm font-medium mb-1">
-                  Graded Value (USD)
+                  Graded Value ({currency || 'EUR'})
                 </label>
                 <Input
                   type="number"
@@ -438,7 +440,7 @@ export function ManualCardEntry({
                   onChange={(e) => setGradedPrice(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Enter the graded card's value
+                  Enter the graded card's value in {currency || 'EUR'}
                 </p>
               </div>
             </div>
@@ -446,7 +448,7 @@ export function ManualCardEntry({
         </div>
         
         <div>
-          <label className="block text-sm font-medium mb-1">Manual Price (USD)</label>
+          <label className="block text-sm font-medium mb-1">Manual Price ({currency || 'EUR'})</label>
           <Input
             type="number"
             step="0.01"
@@ -455,7 +457,7 @@ export function ManualCardEntry({
             onChange={(e) => setManualPrice(e.target.value)}
           />
           <p className="text-xs text-muted-foreground mt-1">
-            Optional: Set a custom price for this card
+            Optional: Set a custom price in your currency ({currency || 'EUR'})
           </p>
         </div>
         

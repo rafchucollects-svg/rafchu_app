@@ -267,6 +267,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       language: options.language || 'English',
       isJapanese: options.isJapanese || false,
       manualPrice: options.manualPrice || card.manualPrice || null,
+      manualPriceCurrency: options.manualPriceCurrency || card.manualPriceCurrency || null,
       
       // Manual entry support - preserve custom image
       isManualEntry: options.isManualEntry || card.isManualEntry || false,

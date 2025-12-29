@@ -647,12 +647,14 @@ export function CardSearch({ mode = "collector" }) {
           quantity: 1,
           isManualEntry: true,
           manualPrice: card.manualPrice,
+          manualPriceCurrency: card.manualPriceCurrency, // Preserve currency info
           notes: card.notes,
           // Graded card support for manual entries
           isGraded: card.isGraded || false,
           gradingCompany: card.gradingCompany || null,
           grade: card.grade || null,
           gradedPrice: card.gradedPrice || null,
+          gradedPriceCurrency: card.gradedPriceCurrency || null, // Preserve graded price currency
           // Preserve image from manual entry
           manualImage: card.image || null,
         });

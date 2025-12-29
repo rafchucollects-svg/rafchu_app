@@ -307,10 +307,13 @@ export function computeSuggestedPrice({
 
 export function computeItemMetrics(item, userCurrency = 'USD') {
   // For graded cards, use graded price as the primary value
-  // Graded prices are stored in USD, convert to user's currency
+  // API-fetched graded prices are in USD; manual entries store their own currency
   if (item.isGraded && item.gradedPrice) {
-    const gradedValueUSD = parseFloat(item.gradedPrice);
-    const gradedValue = convertCurrency(gradedValueUSD, userCurrency);
+    let gradedValue = parseFloat(item.gradedPrice);
+    const storedCurrency = item.gradedPriceCurrency || 'USD'; // Default to USD for API-fetched prices
+    if (storedCurrency !== userCurrency) {
+      gradedValue = convertCurrency(gradedValue, userCurrency, storedCurrency);
+    }
     return {
       tcg: gradedValue,
       cmAvg: gradedValue,
@@ -321,7 +324,11 @@ export function computeItemMetrics(item, userCurrency = 'USD') {
   
   // For cards with manual price override
   if (item.manualPrice) {
-    const manualValue = parseFloat(item.manualPrice);
+    let manualValue = parseFloat(item.manualPrice);
+    // Convert from stored currency to user's display currency if different
+    if (item.manualPriceCurrency && item.manualPriceCurrency !== userCurrency) {
+      manualValue = convertCurrency(manualValue, userCurrency, item.manualPriceCurrency);
+    }
     return {
       tcg: manualValue,
       cmAvg: manualValue,
