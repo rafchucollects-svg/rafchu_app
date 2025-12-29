@@ -361,7 +361,9 @@ export function preprocessQuery(query, options = {}) {
 }
 
 // Regex to detect card number patterns (pure numbers or alphanumeric codes)
-const CARD_NUMBER_PATTERN = /^([a-z]{1,6}\d{1,4}|\d{1,4}(\/\d{1,4})?)$/i;
+// Matches: 123, SWSH121, SM123, SM-P, SM-P325, 325/SM-P, GG69, SV231, XY-P
+// Does NOT match: pikachu, charizard, ex (Pokemon names/types)
+const CARD_NUMBER_PATTERN = /^(\d{1,4}(\/[a-z-]{1,6})?|[a-z]{1,4}-[a-z](\d{0,4})?|[a-z]{1,6}\d{1,4})$/i;
 
 // Set-related words that should NOT be part of Pokemon name matching
 // These indicate set names, not Pokemon names - they get stored in setWords instead
@@ -499,22 +501,29 @@ export function filterByRelevance(results, query) {
       }
     }
     
-    // RULE 3: If query has a number, require match
+    // RULE 3: If query has numbers/codes, require ALL of them to match
+    // This handles queries like "SM-P 325" where both parts should match "325/SM-P"
     if (numbers.length > 0) {
-      const queryNumber = numbers[0];
-      const normalizedQueryNumber = normalizeCardNumber(queryNumber);
+      const cardId = String(card.id || '').toLowerCase();
       const normalizedCardNumber = normalizeCardNumber(numberLower);
       
-      const hasNumberMatch = 
-        numberLower.includes(queryNumber) || 
-        normalizedCardNumber === normalizedQueryNumber ||
-        normalizedCardNumber.includes(normalizedQueryNumber) ||
-        numberLower === queryNumber;
+      // Check that ALL number parts match somewhere in the card number or ID
+      const allNumbersMatch = numbers.every(queryNumber => {
+        const normalizedQueryNumber = normalizeCardNumber(queryNumber);
+        
+        const hasNumberMatch = 
+          numberLower.includes(queryNumber) || 
+          normalizedCardNumber === normalizedQueryNumber ||
+          normalizedCardNumber.includes(normalizedQueryNumber) ||
+          numberLower === queryNumber ||
+          // Also check if query number appears in cardId (handles various formats)
+          cardId.includes(queryNumber) || 
+          cardId.includes(normalizedQueryNumber);
+        
+        return hasNumberMatch;
+      });
       
-      const cardId = String(card.id || '').toLowerCase();
-      const hasIdMatch = cardId.includes(queryNumber) || cardId.includes(normalizedQueryNumber);
-      
-      if (!hasNumberMatch && !hasIdMatch) {
+      if (!allNumbersMatch) {
         return false;
       }
     }
