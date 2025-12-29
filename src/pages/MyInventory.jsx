@@ -839,10 +839,8 @@ export function MyInventory() {
       } else {
         defaultPrice = Number(item.overridePrice);
       }
-    } else if (item.isGraded && item.calculatedSuggestedPrice) {
-      // Graded card price is in USD, convert to current currency
-      defaultPrice = convertCurrency(item.calculatedSuggestedPrice, currency);
     } else {
+      // Use metrics.suggested which handles currency correctly for all cases
       defaultPrice = metrics.suggested;
     }
     
@@ -877,10 +875,8 @@ export function MyInventory() {
         } else {
           unitPrice = Number(item.overridePrice);
         }
-      } else if (item.isGraded && item.calculatedSuggestedPrice) {
-        // Graded card price is in USD, convert to current currency
-        unitPrice = convertCurrency(item.calculatedSuggestedPrice, currency);
       } else {
+        // Use metrics.suggested which handles currency correctly for all cases
         unitPrice = metrics.suggested;
       }
       
@@ -1351,13 +1347,12 @@ export function MyInventory() {
                 secondaryDisplayPrice = convertCurrency(displayPrice, secondaryCurrency, currency);
               }
             }
-          } else if (item.isGraded && item.calculatedSuggestedPrice) {
-            // Graded card calculated price is in USD, convert it
-            displayPrice = convertCurrency(item.calculatedSuggestedPrice, currency);
-            if (secondaryCurrency && secondaryCurrency !== currency) {
-              secondaryDisplayPrice = convertCurrency(item.calculatedSuggestedPrice, secondaryCurrency);
-            }
           } else {
+            // Use metrics.suggested for all other cases (including graded cards)
+            // computeItemMetrics already handles currency conversion correctly for:
+            // - Manual graded prices (uses gradedPriceCurrency)
+            // - API-fetched graded prices (assumes USD, converts to user currency)
+            // - Regular cards (calculates from market data)
             displayPrice = metrics.suggested;
             if (secondaryCurrency && secondaryCurrency !== currency) {
               // metrics.suggested is already in user's currency, convert to secondary
@@ -1450,7 +1445,7 @@ export function MyInventory() {
                         />
                         {hasOverride && (
                           <span className="text-xs text-muted-foreground whitespace-nowrap">
-                            Suggested: {formatPrice(item.isGraded && item.calculatedSuggestedPrice ? convertCurrency(item.calculatedSuggestedPrice, currency) : metrics.suggested)}
+                            Suggested: {formatPrice(metrics.suggested)}
                           </span>
                         )}
                       </div>
@@ -1500,15 +1495,8 @@ export function MyInventory() {
                         
                         {/* Price Comparison for Manual Overrides - Compact */}
                         {hasOverride && (() => {
-                          // Calculate market price
-                          let marketPrice;
-                          if (item.isGraded && item.calculatedSuggestedPrice) {
-                            marketPrice = convertCurrency(item.calculatedSuggestedPrice, currency);
-                          } else if (item.calculatedSuggestedPrice) {
-                            marketPrice = item.calculatedSuggestedPrice;
-                          } else {
-                            marketPrice = metrics.suggested;
-                          }
+                          // Calculate market price - metrics.suggested handles all cases correctly
+                          const marketPrice = metrics.suggested;
                           
                           // Convert override price to current currency if needed
                           const overrideCurrency = item.overridePriceCurrency || currency;
@@ -1919,12 +1907,8 @@ export function MyInventory() {
                           let price;
                           if (cardDetailsModal.overridePrice != null) {
                             price = cardDetailsModal.overridePrice;
-                          } else if (cardDetailsModal.isGraded && cardDetailsModal.calculatedSuggestedPrice) {
-                            // Graded card calculated price is in USD, convert it
-                            price = convertCurrency(cardDetailsModal.calculatedSuggestedPrice, currency);
-                          } else if (cardDetailsModal.calculatedSuggestedPrice) {
-                            price = cardDetailsModal.calculatedSuggestedPrice;
                           } else {
+                            // Use computeItemMetrics which handles all cases correctly
                             price = computeItemMetrics(cardDetailsModal, currency).suggested;
                           }
                           return formatPrice(price);
@@ -1934,15 +1918,8 @@ export function MyInventory() {
                     
                     {/* Price Comparison for Manual Overrides */}
                     {cardDetailsModal.overridePrice != null && (() => {
-                      // Calculate market price
-                      let marketPrice;
-                      if (cardDetailsModal.isGraded && cardDetailsModal.calculatedSuggestedPrice) {
-                        marketPrice = convertCurrency(cardDetailsModal.calculatedSuggestedPrice, currency);
-                      } else if (cardDetailsModal.calculatedSuggestedPrice) {
-                        marketPrice = cardDetailsModal.calculatedSuggestedPrice;
-                      } else {
-                        marketPrice = computeItemMetrics(cardDetailsModal, currency).suggested;
-                      }
+                      // Calculate market price - computeItemMetrics handles all cases correctly
+                      const marketPrice = computeItemMetrics(cardDetailsModal, currency).suggested;
                       
                       // Convert override price to current currency if needed
                       const overrideCurrency = cardDetailsModal.overridePriceCurrency || currency;

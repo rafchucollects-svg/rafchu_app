@@ -298,23 +298,16 @@ export function TradeCalculator() {
           } else {
             vendorPrice = Number(item.overridePrice);
           }
-        } else if (item.isGraded && item.calculatedSuggestedPrice) {
-          // Graded price is in USD, convert to current currency
-          vendorPrice = convertCurrency(item.calculatedSuggestedPrice, currency);
         } else {
-          const metrics = computeItemMetrics(item);
+          // Use computeItemMetrics which handles currency correctly for all cases
+          const metrics = computeItemMetrics(item, currency);
           vendorPrice = metrics.suggested;
         }
         
         // Use market value for value gained calculation
-        let marketValue;
-        if (item.isGraded && item.calculatedSuggestedPrice) {
-          marketValue = convertCurrency(item.calculatedSuggestedPrice, currency);
-        } else {
-          const tcg = computeTcgPrice(item, item.condition) || 0;
-          const marketAvg = getCardmarketAvg(item, item.condition) || 0;
-          marketValue = marketAvg || tcg;
-        }
+        // computeItemMetrics handles graded cards and currency correctly
+        const metrics = computeItemMetrics(item, currency);
+        const marketValue = metrics.suggested;
         
         const cardData = {
           name: item.name || "",
