@@ -174,28 +174,34 @@ export function SharedInventory() {
         // Calculate prices with graded card conversion and vendor rounding
         let aPrice, bPrice;
         
-        // Get base price for A
+        // Get base price for A - use fresh calculation like MyInventory
         if (a.overridePrice != null) {
           const overrideCurrency = a.overridePriceCurrency || currency;
           aPrice = overrideCurrency !== currency 
             ? convertCurrency(a.overridePrice, currency, overrideCurrency)
             : a.overridePrice;
-        } else if (a.isGraded && a.calculatedSuggestedPrice) {
-          aPrice = convertCurrency(a.calculatedSuggestedPrice, currency);
+        } else if (a.isGraded && a.gradedPrice) {
+          const storedCurrency = a.gradedPriceCurrency || 'USD';
+          aPrice = storedCurrency !== currency
+            ? convertCurrency(a.gradedPrice, currency, storedCurrency)
+            : a.gradedPrice;
         } else {
-          aPrice = a.calculatedSuggestedPrice ?? aMetrics.suggested;
+          aPrice = aMetrics.suggested;
         }
         
-        // Get base price for B
+        // Get base price for B - use fresh calculation like MyInventory
         if (b.overridePrice != null) {
           const overrideCurrency = b.overridePriceCurrency || currency;
           bPrice = overrideCurrency !== currency 
             ? convertCurrency(b.overridePrice, currency, overrideCurrency)
             : b.overridePrice;
-        } else if (b.isGraded && b.calculatedSuggestedPrice) {
-          bPrice = convertCurrency(b.calculatedSuggestedPrice, currency);
+        } else if (b.isGraded && b.gradedPrice) {
+          const storedCurrency = b.gradedPriceCurrency || 'USD';
+          bPrice = storedCurrency !== currency
+            ? convertCurrency(b.gradedPrice, currency, storedCurrency)
+            : b.gradedPrice;
         } else {
-          bPrice = b.calculatedSuggestedPrice ?? bMetrics.suggested;
+          bPrice = bMetrics.suggested;
         }
         
         // Apply vendor's round-up preference
@@ -223,19 +229,21 @@ export function SharedInventory() {
       const metrics = computeItemMetrics(item, currency);
       let itemPrice;
       
-      // Get the base price
+      // Get the base price - use fresh calculation like MyInventory
       if (item.overridePrice != null) {
-        // Manual override price
+        // Manual override price set by vendor
         const overrideCurrency = item.overridePriceCurrency || currency;
         itemPrice = overrideCurrency !== currency 
           ? convertCurrency(item.overridePrice, currency, overrideCurrency)
           : item.overridePrice;
-      } else if (item.isGraded && item.calculatedSuggestedPrice) {
-        // Graded card calculated price is in USD, convert it
-        itemPrice = convertCurrency(item.calculatedSuggestedPrice, currency);
-      } else if (item.calculatedSuggestedPrice != null) {
-        itemPrice = item.calculatedSuggestedPrice;
+      } else if (item.isGraded && item.gradedPrice) {
+        // Graded card - use gradedPrice
+        const storedCurrency = item.gradedPriceCurrency || 'USD';
+        itemPrice = storedCurrency !== currency
+          ? convertCurrency(item.gradedPrice, currency, storedCurrency)
+          : item.gradedPrice;
       } else {
+        // Use fresh calculation from metrics
         itemPrice = metrics.suggested;
       }
       
@@ -389,20 +397,21 @@ export function SharedInventory() {
           // Calculate display price with vendor's rounding preference
           let displayPrice;
           
-          // Get the base price
+          // Get the base price - always use fresh calculation like MyInventory does
           if (item.overridePrice != null) {
-            // Manual override price
+            // Manual override price set by vendor
             const overrideCurrency = item.overridePriceCurrency || currency;
             displayPrice = overrideCurrency !== currency 
               ? convertCurrency(item.overridePrice, currency, overrideCurrency)
               : item.overridePrice;
-          } else if (item.isGraded && item.calculatedSuggestedPrice) {
-            // Graded card calculated price is in USD, convert it
-            displayPrice = convertCurrency(item.calculatedSuggestedPrice, currency);
-          } else if (item.calculatedSuggestedPrice != null) {
-            displayPrice = item.calculatedSuggestedPrice;
+          } else if (item.isGraded && item.gradedPrice) {
+            // Graded card - use gradedPrice (stored in USD for API-fetched, or user currency for manual)
+            const storedCurrency = item.gradedPriceCurrency || 'USD';
+            displayPrice = storedCurrency !== currency
+              ? convertCurrency(item.gradedPrice, currency, storedCurrency)
+              : item.gradedPrice;
           } else {
-            // Fallback: calculate on the fly
+            // Use fresh calculation from metrics (matches MyInventory behavior)
             displayPrice = metrics.suggested;
           }
           
