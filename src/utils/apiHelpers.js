@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v2.2-streamlined';
+const CACHE_VERSION = 'v2.3-set-words';
 
 // In-memory cache
 const searchCache = new Map();

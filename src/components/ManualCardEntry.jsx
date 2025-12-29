@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { AlertCircle, Search, Plus, X, Check, HelpCircle } from "lucide-react";
+import { AlertCircle, Search, Plus, X, Check, HelpCircle, Upload, Image as ImageIcon, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { findFuzzyMatches } from "@/utils/searchHelpers";
 import { apiSearchCardsHybrid } from "@/utils/apiHelpers";
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { useApp } from '@/contexts/AppContext';
 
 /**
  * Debounce hook for search suggestions
@@ -32,6 +34,7 @@ export function ManualCardEntry({
   initialQuery = "",
   mode = "collector" 
 }) {
+  const { user } = useApp();
   const isVendor = mode === "vendor";
   
   // Form state
@@ -41,6 +44,13 @@ export function ManualCardEntry({
   const [cardRarity, setCardRarity] = useState("");
   const [manualPrice, setManualPrice] = useState("");
   const [notes, setNotes] = useState("");
+  
+  // Image upload state
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
   
   // Suggestions state
   const [suggestions, setSuggestions] = useState([]);
@@ -118,15 +128,132 @@ export function ManualCardEntry({
     setShowSuggestions(false);
   }, []);
   
+  // Image validation and selection
+  const validateAndSetImage = useCallback((file) => {
+    if (!file) return false;
+    
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      setImageError('Please select an image file (JPG, PNG, WebP)');
+      return false;
+    }
+    
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      setImageError('Image must be less than 5MB');
+      return false;
+    }
+    
+    setImageError('');
+    setSelectedImage(file);
+    
+    // Create preview
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setImagePreview(reader.result);
+    };
+    reader.readAsDataURL(file);
+    return true;
+  }, []);
+  
+  const handleImageSelect = useCallback((e) => {
+    const file = e.target.files?.[0];
+    validateAndSetImage(file);
+  }, [validateAndSetImage]);
+  
+  const handleImageDragEnter = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+  
+  const handleImageDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+  
+  const handleImageDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+  
+  const handleImageDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      validateAndSetImage(files[0]);
+    }
+  }, [validateAndSetImage]);
+  
+  const clearImage = useCallback(() => {
+    setSelectedImage(null);
+    setImagePreview(null);
+    setImageError('');
+  }, []);
+  
+  // Upload image to Firebase Storage
+  const uploadImageToStorage = useCallback(async (file, cardId) => {
+    if (!file || !user) return null;
+    
+    try {
+      const storage = getStorage();
+      const timestamp = Date.now();
+      const sanitizedName = cardName.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase() || 'card';
+      const fileExtension = file.name.split('.').pop() || 'jpg';
+      const filename = `manual-cards/${user.uid}/${sanitizedName}-${timestamp}.${fileExtension}`;
+      const storageRef = ref(storage, filename);
+      
+      console.log('📤 Uploading manual card image...');
+      
+      const metadata = {
+        contentType: file.type,
+        customMetadata: {
+          uploadedBy: user.uid,
+          cardName: cardName,
+          isManualEntry: 'true',
+        }
+      };
+      
+      const snapshot = await uploadBytes(storageRef, file, metadata);
+      const imageUrl = await getDownloadURL(snapshot.ref);
+      
+      console.log('✅ Manual card image uploaded:', imageUrl);
+      return imageUrl;
+    } catch (error) {
+      console.error('❌ Image upload failed:', error);
+      throw error;
+    }
+  }, [user, cardName]);
+  
   // Handle adding the manual card
-  const handleAddManualCard = useCallback(() => {
+  const handleAddManualCard = useCallback(async () => {
     if (!cardName.trim()) {
       alert("Please enter a card name");
       return;
     }
     
+    const cardId = `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    let imageUrl = null;
+    
+    // Upload image if selected
+    if (selectedImage) {
+      setUploadingImage(true);
+      try {
+        imageUrl = await uploadImageToStorage(selectedImage, cardId);
+      } catch (error) {
+        setImageError('Failed to upload image. Card will be added without image.');
+        console.error('Image upload failed:', error);
+      } finally {
+        setUploadingImage(false);
+      }
+    }
+    
     const manualCard = {
-      id: `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: cardId,
       name: cardName.trim(),
       set: cardSet.trim() || "Unknown Set",
       number: cardNumber.trim() || "N/A",
@@ -134,14 +261,14 @@ export function ManualCardEntry({
       isManualEntry: true,
       manualPrice: manualPrice ? parseFloat(manualPrice) : null,
       notes: notes.trim() || null,
-      image: null, // No image for manual entries
+      image: imageUrl, // Include uploaded image URL
       createdAt: Date.now(),
     };
     
     if (onAddCard) {
       onAddCard(manualCard, { fromSuggestion: false, isManual: true });
     }
-  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, onAddCard]);
+  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard]);
   
   // Check if form is valid
   const isFormValid = cardName.trim().length > 0;
@@ -242,6 +369,78 @@ export function ManualCardEntry({
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
           />
+        </div>
+        
+        {/* Image Upload Section */}
+        <div className="md:col-span-2">
+          <label className="block text-sm font-medium mb-1">
+            <div className="flex items-center gap-1">
+              <ImageIcon className="h-4 w-4" />
+              Card Image (Optional)
+            </div>
+          </label>
+          
+          {!imagePreview ? (
+            <div
+              className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
+                isDragging 
+                  ? 'border-purple-500 bg-purple-50' 
+                  : 'border-gray-300 hover:border-purple-400 hover:bg-purple-50/50'
+              }`}
+              onDragEnter={handleImageDragEnter}
+              onDragOver={handleImageDragOver}
+              onDragLeave={handleImageDragLeave}
+              onDrop={handleImageDrop}
+              onClick={() => document.getElementById('manual-card-image-upload')?.click()}
+            >
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageSelect}
+                className="hidden"
+                id="manual-card-image-upload"
+              />
+              <Upload className={`h-8 w-8 mx-auto mb-2 ${isDragging ? 'text-purple-500' : 'text-gray-400'}`} />
+              <p className="text-sm font-medium">
+                {isDragging ? 'Drop image here' : 'Click or drag to upload'}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                JPG, PNG or WebP (max 5MB)
+              </p>
+            </div>
+          ) : (
+            <div className="relative border rounded-lg p-2 bg-gray-50">
+              <div className="flex items-center gap-3">
+                <img 
+                  src={imagePreview} 
+                  alt="Card preview"
+                  className="w-16 h-22 object-cover rounded border"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-green-600 flex items-center gap-1">
+                    <Check className="h-4 w-4" />
+                    Image selected
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {selectedImage?.name}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearImage}
+                  className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+          
+          {imageError && (
+            <p className="text-xs text-red-500 mt-1">{imageError}</p>
+          )}
         </div>
       </div>
       
@@ -354,11 +553,20 @@ export function ManualCardEntry({
         )}
         <Button
           onClick={handleAddManualCard}
-          disabled={!canAddManually}
+          disabled={!canAddManually || uploadingImage}
           className={isVendor ? "bg-green-600 hover:bg-green-700" : "bg-purple-600 hover:bg-purple-700"}
         >
-          <Plus className="h-4 w-4 mr-1" />
-          Add to {isVendor ? "Inventory" : "Collection"}
+          {uploadingImage ? (
+            <>
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+              Uploading...
+            </>
+          ) : (
+            <>
+              <Plus className="h-4 w-4 mr-1" />
+              Add to {isVendor ? "Inventory" : "Collection"}
+            </>
+          )}
         </Button>
       </div>
       

@@ -130,6 +130,9 @@ const SET_ABBREVIATIONS = {
   'stellar': 'Stellar Crown',
   'surging': 'Surging Sparks',
   'prismatic': 'Prismatic Evolutions',
+  'destined': 'Destined Rivals',
+  'destined rivals': 'Destined Rivals',
+  'dri': 'Destined Rivals',
   
   // Sword & Shield era
   'swsh': 'Sword Shield',
@@ -380,7 +383,7 @@ const SET_RELATED_WORDS = new Set([
   'unbroken', 'bonds', 'unified', 'minds', 'hidden', 'cosmic', 'eclipse',
   'flashfire', 'furious', 'fists', 'phantom', 'primal', 'roaring', 'ancient',
   'origins', 'breakthrough', 'breakpoint', 'generations', 'collide', 'steam', 'siege',
-  'celebrations', 'pokemon', 'go', '151', 'special', 'delivery', 'rivals',
+  'celebrations', 'pokemon', 'go', '151', 'special', 'delivery', 'rivals', 'dri',
 ]);
 
 /**
@@ -466,23 +469,25 @@ export function filterByRelevance(results, query) {
   const parsed = parseQuery(query);
   const { primaryName, cardTypes, numbers, setWords } = parsed;
   
+  console.log(`🔎 filterByRelevance called with query: "${query}"`);
+  console.log(`   Parsed: primaryName="${primaryName}", setWords=[${setWords.join(', ')}], cardTypes=[${cardTypes.join(', ')}], numbers=[${numbers.join(', ')}]`);
+  console.log(`   Input results count: ${results?.length || 0}`);
+  
   // If query is ONLY a number/code (no name), don't filter by name at all
   const isNumberOnlySearch = numbers.length > 0 && !primaryName && setWords.length === 0;
   
   // If query is ONLY set words (no Pokemon name), don't filter by name
   const isSetOnlySearch = setWords.length > 0 && !primaryName;
   
-  return results.filter(card => {
-    // Normalize card name and set for comparison
+  // Helper function to apply core filters (name, type, number) - NOT set
+  const applyCoreFilters = (card) => {
     const nameLower = normalizeApostrophes((card.name || '').toLowerCase());
-    const setLower = normalizeApostrophes((card.set || '').toLowerCase());
     const numberLower = String(card.number || '').toLowerCase();
     
     // RULE 1: If query has a primary Pokemon name (>2 chars), REQUIRE it in card name
-    // Skip this rule for number-only or set-only searches
     if (!isNumberOnlySearch && !isSetOnlySearch && primaryName && primaryName.length > 2) {
       if (!nameLower.includes(primaryName)) {
-        return false; // Skip this card - wrong Pokemon
+        return false;
       }
     }
     
@@ -490,42 +495,59 @@ export function filterByRelevance(results, query) {
     if (cardTypes.length > 0) {
       const hasAnyType = cardTypes.some(type => nameLower.includes(type));
       if (!hasAnyType) {
-        return false; // Skip this card - wrong type
+        return false;
       }
     }
     
-    // RULE 3: If query has set words, require at least one to match the set name
-    if (setWords.length > 0) {
-      const hasSetMatch = setWords.some(setWord => setLower.includes(setWord));
-      if (!hasSetMatch) {
-        return false; // Skip this card - wrong set
-      }
-    }
-    
-    // RULE 4: If query has a number, require match (with normalization)
+    // RULE 3: If query has a number, require match
     if (numbers.length > 0) {
       const queryNumber = numbers[0];
       const normalizedQueryNumber = normalizeCardNumber(queryNumber);
       const normalizedCardNumber = normalizeCardNumber(numberLower);
       
-      // Check card number field AND card name/id for the number
       const hasNumberMatch = 
         numberLower.includes(queryNumber) || 
         normalizedCardNumber === normalizedQueryNumber ||
         normalizedCardNumber.includes(normalizedQueryNumber) ||
         numberLower === queryNumber;
       
-      // Also check if the number appears in the card's ID (for promo cards)
       const cardId = String(card.id || '').toLowerCase();
       const hasIdMatch = cardId.includes(queryNumber) || cardId.includes(normalizedQueryNumber);
       
       if (!hasNumberMatch && !hasIdMatch) {
-        return false; // Skip this card - wrong number
+        return false;
       }
     }
     
-    return true; // Card passed all relevance checks
-  });
+    return true;
+  };
+  
+  // Helper to check set match
+  const matchesSet = (card) => {
+    if (setWords.length === 0) return true;
+    const setLower = normalizeApostrophes((card.set || '').toLowerCase());
+    return setWords.some(setWord => setLower.includes(setWord));
+  };
+  
+  // First pass: Apply ALL filters including set words
+  let filtered = results.filter(card => applyCoreFilters(card) && matchesSet(card));
+  
+  // FALLBACK: If set filtering removed ALL results, try without set filter
+  // This handles cases like "mewtwo destined" where "destined" isn't a real set
+  if (filtered.length === 0 && setWords.length > 0 && results.length > 0) {
+    console.log(`   ⚠️ Set words [${setWords.join(', ')}] matched no cards - falling back to name-only search`);
+    filtered = results.filter(card => applyCoreFilters(card));
+  }
+  
+  console.log(`   Output results count: ${filtered.length}`);
+  if (filtered.length === 0 && results?.length > 0) {
+    console.log(`   ⚠️ ALL RESULTS FILTERED OUT! Sample input cards:`);
+    results.slice(0, 3).forEach(c => {
+      console.log(`      - "${c.name}" | set: "${c.set}" | num: "${c.number}"`);
+    });
+  }
+  
+  return filtered;
 }
 
 /**
