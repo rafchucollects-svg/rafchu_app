@@ -6,15 +6,10 @@
  * to keep API keys secure on the server side.
  */
 
-import { normalizeApiCard, splitQuery, tokenize, extractNumberPieces } from './cardHelpers';
+import { normalizeApiCard } from './cardHelpers';
 
-// Import improved search helpers
-import {
-  improveSearchResults,
-  filterByRelevance,
-  rankByRelevance,
-  deduplicateResults,
-} from './searchHelpers';
+// Import improved search helpers (ranking is done ONCE via improveSearchResults)
+import { improveSearchResults } from './searchHelpers';
 
 // Cloud Functions base URL (secure - no API keys exposed)
 const CLOUD_FUNCTIONS_BASE = 'https://us-central1-rafchu-tcg-app.cloudfunctions.net';
@@ -25,13 +20,15 @@ export const RAPIDAPI_HOST = "cardmarket-api-tcg.p.rapidapi.com";
 export const API_BASE = CLOUD_FUNCTIONS_BASE;
 
 // Cache configuration
-export const CACHE_DURATION_MS = 12 * 60 * 60 * 1000; // 12 hours
+export const CACHE_DURATION_MS = 12 * 60 * 60 * 1000; // 12 hours for good results
+export const CACHE_DURATION_LOW_RESULTS_MS = 2 * 60 * 60 * 1000; // 2 hours for low result count (might improve)
+export const CACHE_LOW_RESULTS_THRESHOLD = 3; // Results below this count get shorter cache
 export const SEARCH_CACHE_RESULT_LIMIT = 200;
 export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v2.1-merged-apis';
+const CACHE_VERSION = 'v2.2-streamlined';
 
 // In-memory cache
 const searchCache = new Map();
@@ -48,54 +45,55 @@ export function canonicalizeQuery(query) {
 
 /**
  * Get cached search results
+ * Uses adaptive cache duration - shorter for low result counts
  */
 export function getSearchCacheEntry(canonical) {
   if (!canonical) return null;
   const entry = searchCache.get(canonical);
   if (!entry) return null;
+  
   const age = Date.now() - entry.ts;
+  const resultCount = entry.results?.length || 0;
+  
+  // Use shorter cache duration for low result counts (might improve with retry)
+  const cacheDuration = resultCount < CACHE_LOW_RESULTS_THRESHOLD 
+    ? CACHE_DURATION_LOW_RESULTS_MS 
+    : CACHE_DURATION_MS;
+  
   return {
     ...entry,
-    expired: age > CACHE_DURATION_MS,
+    expired: age > cacheDuration,
+    resultCount,
+    cacheDuration,
   };
 }
 
 /**
  * Save search results to cache
+ * Stores result count for adaptive cache expiration
  */
 export function setSearchCacheEntry(canonical, results) {
   if (!canonical) return;
+  const resultArray = results || [];
   searchCache.set(canonical, {
     ts: Date.now(),
-    results: results || [],
+    results: resultArray,
+    resultCount: resultArray.length,
   });
 }
 
 /**
- * Search cards via Cloud Function proxy (secure - no API keys exposed)
- * Routes CardMarket API calls through server-side Cloud Functions
- * Also searches Japanese cards via JustTCG API
+ * INTERNAL: Fetch raw card results without ranking
+ * Used by hybrid search to avoid duplicate ranking operations
  */
-export async function apiSearchCards(
+async function apiSearchCardsRaw(
   query,
   {
-    useCache = true,
-    allowExpired = false,
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
-    includeJapanese = true, // Include Japanese card results
+    includeJapanese = true,
   } = {},
 ) {
   if (!query?.trim()) return [];
-
-  const canonical = canonicalizeQuery(query);
-  if (useCache) {
-    const cached = getSearchCacheEntry(canonical);
-    if (cached && cached.results.length) {
-      if (!cached.expired || allowExpired) {
-        return cached.results.slice(0, maxResults);
-      }
-    }
-  }
 
   try {
     // Search both CardMarket (English) and JustTCG (Japanese) in parallel
@@ -157,38 +155,63 @@ export async function apiSearchCards(
       console.log(`🇯🇵 Added ${japaneseItems.length} Japanese cards to search results`);
     }
     
-    // Apply local ranking for better relevance
-    const { numberPieces } = splitQuery(query);
-
-  if (numberPieces.length) {
-    const hits = items.filter((it) => {
-      const n = ((it.number || "") + "").toLowerCase();
-      const nm = (it.name || "").toLowerCase();
-      const nn = (it.nameNumbered || "").toLowerCase();
-      const tcgid = ((it.tcgid || "") + "").toLowerCase();
-      return numberPieces.some(
-        (p) => n.includes(p) || nm.includes(p) || nn.includes(p) || tcgid.includes(p),
-      );
-    });
-    if (hits.length) items = hits;
-  }
-
-  items = rankByRelevance(items, query);
-  items.sort((a, b) => {
-    const ak = !!a.number;
-    const bk = !!b.number;
-    return ak === bk ? 0 : ak ? -1 : 1;
-  });
-    
-  const limited = items.slice(0, maxResults);
-  if (limited.length) {
-    setSearchCacheEntry(canonical, limited);
-  }
-  return limited;
+    return items; // Return RAW results - no ranking here!
   } catch (error) {
-    console.error('CardMarket search error:', error);
+    console.error('CardMarket raw search error:', error);
     return [];
   }
+}
+
+/**
+ * Search cards via Cloud Function proxy (secure - no API keys exposed)
+ * Routes CardMarket API calls through server-side Cloud Functions
+ * Also searches Japanese cards via JustTCG API
+ * 
+ * NOTE: This function applies ranking. For raw results, use apiSearchCardsRaw internally.
+ */
+export async function apiSearchCards(
+  query,
+  {
+    useCache = true,
+    allowExpired = false,
+    maxResults = SEARCH_CACHE_RESULT_LIMIT,
+    includeJapanese = true,
+    skipRanking = false, // Allow skipping ranking for hybrid search
+  } = {},
+) {
+  if (!query?.trim()) return [];
+
+  const canonical = canonicalizeQuery(query);
+  if (useCache) {
+    const cached = getSearchCacheEntry(canonical);
+    if (cached && cached.results.length) {
+      if (!cached.expired || allowExpired) {
+        return cached.results.slice(0, maxResults);
+      }
+    }
+  }
+
+  // Fetch raw results
+  let items = await apiSearchCardsRaw(query, { maxResults, includeJapanese });
+  
+  // If skipRanking is true, return raw results (used by hybrid search)
+  if (skipRanking) {
+    return items.slice(0, maxResults);
+  }
+  
+  // Apply ranking for standalone use
+  items = improveSearchResults(items, query, {
+    maxResults,
+    enableDeduplication: true,
+    enableFiltering: true,
+    enableRanking: true,
+  });
+    
+  if (items.length) {
+    setSearchCacheEntry(canonical, items);
+  }
+  
+  return items;
 }
 
 /**
@@ -487,14 +510,15 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   const [priceChartingResults, cardMarketResults] = await Promise.all([
     Promise.race([
       apiSearchPriceCharting(query, { limit: maxResults }),
-      timeout(10000) // Reduced from 15s to 10s
+      timeout(10000)
     ]).catch(err => {
       console.error('PriceCharting search error:', err.message);
       return [];
     }),
     Promise.race([
-      apiSearchCards(query, { useCache: false, maxResults: maxResults }),
-      timeout(8000) // Reduced from 30s to 8s - fail faster on slow APIs
+      // Use skipRanking to avoid duplicate ranking - we'll rank once at the end
+      apiSearchCards(query, { useCache: false, maxResults: maxResults, skipRanking: true }),
+      timeout(8000)
     ]).catch(err => {
       console.error('CardMarket search error:', err.message);
       return [];

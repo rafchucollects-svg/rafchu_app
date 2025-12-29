@@ -484,11 +484,92 @@ export function tokenize(q) {
     .filter(Boolean);
 }
 
+/**
+ * Normalize a card number for comparison
+ * - Strips leading zeros (001 → 1)
+ * - Handles promo prefixes (SWSH001 → swsh1)
+ * - Preserves slash notation (123/456)
+ */
+export function normalizeCardNumber(num) {
+  if (!num) return '';
+  let n = String(num).toLowerCase().trim();
+  
+  // Handle slash notation (preserve it but normalize each part)
+  if (n.includes('/')) {
+    const [before, after] = n.split('/');
+    const normBefore = before.replace(/^0+/, '') || '0';
+    const normAfter = after.replace(/^0+/, '') || '0';
+    return `${normBefore}/${normAfter}`;
+  }
+  
+  // Handle alphanumeric promo codes (SWSH001 → swsh1)
+  const promoMatch = n.match(/^([a-z]+)0*(\d+)$/i);
+  if (promoMatch) {
+    return `${promoMatch[1].toLowerCase()}${promoMatch[2]}`;
+  }
+  
+  // Handle pure numbers - strip leading zeros
+  const pureNumber = n.replace(/^0+/, '');
+  return pureNumber || '0';
+}
+
+/**
+ * Extract number-like pieces from a search query
+ * Enhanced to handle:
+ * - Simple numbers (123, 001)
+ * - Slash notation (123/456)
+ * - Promo codes (SWSH001, SM123, XY045)
+ * - Set-number combos (SV06-123, sv6-123)
+ * - Long alphanumeric codes (up to 6 letters + numbers)
+ */
 export function extractNumberPieces(q) {
   if (!q) return [];
   const normalized = normalizeApostrophes(q);
-  const m = normalized.match(/([a-z]{1,3}\d+|\d{1,3}\/\d{1,3}|\d{1,3})/gi) || [];
-  return m.map((x) => x.toLowerCase());
+  
+  // Match various number patterns:
+  // - Pure numbers: 123, 001
+  // - Slash notation: 123/456
+  // - Short prefix codes: sv123, gg69
+  // - Long promo codes: SWSH001, SM123
+  // - Set-number combos with hyphen: SV06-123
+  const patterns = [
+    /([a-z]{1,6}\d{1,4})/gi,           // Alphanumeric codes (swsh001, sv123, gg69)
+    /(\d{1,4}\/\d{1,4})/gi,             // Slash notation (123/456)
+    /(\d{1,4})/gi,                       // Pure numbers (123, 001)
+    /([a-z]{1,4}\d{1,3}-\d{1,4})/gi,    // Set-number combos (SV06-123)
+  ];
+  
+  const pieces = new Set();
+  
+  for (const pattern of patterns) {
+    const matches = normalized.match(pattern) || [];
+    for (const match of matches) {
+      const lower = match.toLowerCase();
+      pieces.add(lower);
+      
+      // Also add normalized version (without leading zeros)
+      const norm = normalizeCardNumber(lower);
+      if (norm && norm !== lower) {
+        pieces.add(norm);
+      }
+      
+      // For set-number combos like SV06-123, also extract just the number part
+      if (lower.includes('-')) {
+        const parts = lower.split('-');
+        parts.forEach(part => {
+          if (/\d/.test(part)) {
+            pieces.add(part);
+            const normPart = normalizeCardNumber(part);
+            if (normPart && normPart !== part) {
+              pieces.add(normPart);
+            }
+          }
+        });
+      }
+    }
+  }
+  
+  return Array.from(pieces);
 }
 
 export function splitQuery(q) {
@@ -518,7 +599,8 @@ export function rankByRelevance(items, q) {
       // Normalize card name for comparison (handles apostrophe variations)
       const name = normalizeApostrophes((card.name || "").toLowerCase());
       const nameNumbered = normalizeApostrophes((card.nameNumbered || "").toLowerCase());
-      const number = ((card.number || "") + "").toLowerCase();
+      const cardNumber = ((card.number || "") + "").toLowerCase();
+      const normalizedCardNumber = normalizeCardNumber(cardNumber);
       
       // Exact name match (after normalization)
       if (name === normalizedQuery) score += 100;
@@ -533,11 +615,26 @@ export function rankByRelevance(items, q) {
         if (nameNumbered.includes(normalizedToken)) score += 2;
       });
       
-      // Number matches
+      // Number matches - enhanced with normalization
       nums.forEach((n) => {
-        if (number === n) score += 10;
-        else if (number.includes(n)) score += 3;
-        else if (nameNumbered.includes(n)) score += 2;
+        const normalizedN = normalizeCardNumber(n);
+        
+        // Exact match (normalized)
+        if (normalizedCardNumber === normalizedN) {
+          score += 15; // Increased from 10 for exact number match
+        }
+        // Raw match
+        else if (cardNumber === n) {
+          score += 12;
+        }
+        // Partial match
+        else if (cardNumber.includes(n) || normalizedCardNumber.includes(normalizedN)) {
+          score += 5;
+        }
+        // Check in nameNumbered
+        else if (nameNumbered.includes(n)) {
+          score += 3;
+        }
       });
       
       return { card, score };

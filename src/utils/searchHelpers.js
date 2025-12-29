@@ -3,7 +3,7 @@
  * Provides relevance filtering, scoring, and ranking for card search
  */
 
-import { normalizeApostrophes } from './cardHelpers';
+import { normalizeApostrophes, normalizeCardNumber } from './cardHelpers';
 
 // Card type keywords that might appear in queries
 const CARD_TYPE_KEYWORDS = ['ex', 'gx', 'v', 'vmax', 'vstar', 'break', 'prism', 'star', 'lv.x', 'lvx'];
@@ -82,11 +82,19 @@ export function filterByRelevance(results, query) {
       }
     }
     
-    // RULE 3: If query has a number, require exact match or partial match
+    // RULE 3: If query has a number, require match (with normalization for leading zeros)
     if (numbers.length > 0) {
       const queryNumber = numbers[0];
-      // Exact match or card number contains the query number
-      if (!numberLower.includes(queryNumber)) {
+      const normalizedQueryNumber = normalizeCardNumber(queryNumber);
+      const normalizedCardNumber = normalizeCardNumber(numberLower);
+      
+      // Check for match (normalized or raw)
+      const hasMatch = 
+        numberLower.includes(queryNumber) || 
+        normalizedCardNumber === normalizedQueryNumber ||
+        normalizedCardNumber.includes(normalizedQueryNumber);
+      
+      if (!hasMatch) {
         return false; // Skip this card - wrong number
       }
     }
@@ -141,13 +149,23 @@ export function scoreRelevance(card, query) {
     }
   }
   
-  // 6. EXACT NUMBER MATCH (15 points)
+  // 6. EXACT NUMBER MATCH (15 points) - with normalization
   if (numbers.length > 0) {
     const queryNumber = numbers[0];
-    if (numberLower === queryNumber) {
+    const normalizedQueryNumber = normalizeCardNumber(queryNumber);
+    const normalizedCardNumber = normalizeCardNumber(numberLower);
+    
+    // Exact normalized match (handles 001 vs 1)
+    if (normalizedCardNumber === normalizedQueryNumber) {
       score += 15;
-    } else if (numberLower.includes(queryNumber)) {
-      score += 5; // Partial number match
+    }
+    // Exact raw match
+    else if (numberLower === queryNumber) {
+      score += 12;
+    }
+    // Partial match
+    else if (numberLower.includes(queryNumber) || normalizedCardNumber.includes(normalizedQueryNumber)) {
+      score += 5;
     }
   }
   
