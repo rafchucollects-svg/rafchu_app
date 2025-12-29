@@ -360,6 +360,29 @@ export function preprocessQuery(query, options = {}) {
 // Regex to detect card number patterns (pure numbers or alphanumeric codes)
 const CARD_NUMBER_PATTERN = /^([a-z]{1,6}\d{1,4}|\d{1,4}(\/\d{1,4})?)$/i;
 
+// Set-related words that should NOT be part of Pokemon name matching
+// These indicate set names, not Pokemon names - they get stored in setWords instead
+const SET_RELATED_WORDS = new Set([
+  // Common set words
+  'set', 'base', 'jungle', 'fossil', 'rocket', 'gym', 'heroes', 'challenge',
+  'neo', 'genesis', 'discovery', 'revelation', 'destiny', 'destined',
+  // Era names
+  'scarlet', 'violet', 'sword', 'shield', 'sun', 'moon', 'xy', 'black', 'white',
+  // Set descriptors
+  'vivid', 'voltage', 'darkness', 'ablaze', 'rebel', 'clash', 'champion', 'path',
+  'shining', 'fates', 'battle', 'styles', 'chilling', 'reign', 'evolving', 'skies',
+  'fusion', 'strike', 'brilliant', 'stars', 'astral', 'radiance', 'lost', 'origin',
+  'silver', 'tempest', 'crown', 'zenith', 'paldea', 'evolved', 'obsidian', 'flames',
+  'paradox', 'rift', 'paldean', 'temporal', 'forces', 'twilight', 'masquerade',
+  'shrouded', 'fable', 'stellar', 'surging', 'sparks', 'prismatic', 'evolutions',
+  'guardians', 'rising', 'burning', 'shadows', 'crimson', 'invasion', 'ultra',
+  'forbidden', 'light', 'celestial', 'storm', 'dragon', 'majesty', 'team', 'up',
+  'unbroken', 'bonds', 'unified', 'minds', 'hidden', 'cosmic', 'eclipse',
+  'flashfire', 'furious', 'fists', 'phantom', 'primal', 'roaring', 'ancient',
+  'origins', 'breakthrough', 'breakpoint', 'generations', 'collide', 'steam', 'siege',
+  'celebrations', 'pokemon', 'go', '151', 'special', 'delivery', 'rivals',
+]);
+
 /**
  * Check if a word looks like a card number/code
  * Matches: 123, SWSH121, SM123, GG69, SV231, 123/456
@@ -370,12 +393,21 @@ function isCardNumberLike(word) {
 }
 
 /**
- * Parse query to extract primary Pokemon name, card types, and numbers
+ * Check if a word is set-related (not a Pokemon name)
+ */
+function isSetRelatedWord(word) {
+  if (!word) return false;
+  return SET_RELATED_WORDS.has(word.toLowerCase());
+}
+
+/**
+ * Parse query to extract primary Pokemon name, card types, numbers, and set words
  * Normalizes apostrophes for consistent matching
  * Enhanced to detect alphanumeric card codes (SWSH121, SM123, etc.)
+ * Now separates set-related words from Pokemon names for better filtering
  */
 export function parseQuery(query) {
-  if (!query) return { primaryName: '', cardTypes: [], numbers: [], originalQuery: '', queryLower: '' };
+  if (!query) return { primaryName: '', cardTypes: [], numbers: [], setWords: [], originalQuery: '', queryLower: '' };
   
   // Normalize apostrophes first (convert curly to straight, etc.)
   const normalized = normalizeApostrophes(query);
@@ -385,27 +417,32 @@ export function parseQuery(query) {
   let primaryName = '';
   const cardTypes = [];
   const numbers = [];
+  const setWords = [];
   
   for (let i = 0; i < queryWords.length; i++) {
     const word = queryWords[i];
     
-    // Check if it's a card type keyword
+    // Check if it's a card type keyword (ex, gx, v, vmax, etc.)
     if (CARD_TYPE_KEYWORDS.includes(word)) {
       cardTypes.push(word);
-      // Continue processing to capture any trailing numbers (e.g., "Mewtwo ex 231")
       continue;
     }
     
     // Check if it's a number or alphanumeric code (SWSH121, SM123, GG69, etc.)
     if (isCardNumberLike(word)) {
       numbers.push(word);
-      // Continue processing - don't add numbers to name
       continue;
     }
     
-    // Otherwise, add to primary name (only if we haven't hit a card type yet)
-    // This prevents "231" from being added to name after "ex"
-    if (cardTypes.length === 0 && numbers.length === 0) {
+    // Check if it's a set-related word (vivid, voltage, crown, zenith, etc.)
+    if (isSetRelatedWord(word)) {
+      setWords.push(word);
+      continue;
+    }
+    
+    // Otherwise, add to primary name (only if we haven't hit card type/number/set words)
+    // This ensures only actual Pokemon names go into primaryName
+    if (cardTypes.length === 0 && numbers.length === 0 && setWords.length === 0) {
       primaryName += (primaryName ? ' ' : '') + word;
     }
   }
@@ -414,6 +451,7 @@ export function parseQuery(query) {
     primaryName: primaryName.trim(),
     cardTypes,
     numbers,
+    setWords, // NEW: Set-related words for set matching
     originalQuery: query,
     queryLower
   };
@@ -422,24 +460,27 @@ export function parseQuery(query) {
 /**
  * Filter results to only include truly relevant cards
  * Normalizes apostrophes for consistent matching
- * Enhanced to handle number-only searches (like SWSH121)
+ * Enhanced to handle number-only searches and set-based searches
  */
 export function filterByRelevance(results, query) {
   const parsed = parseQuery(query);
-  const { primaryName, cardTypes, numbers } = parsed;
+  const { primaryName, cardTypes, numbers, setWords } = parsed;
   
   // If query is ONLY a number/code (no name), don't filter by name at all
-  const isNumberOnlySearch = numbers.length > 0 && !primaryName;
+  const isNumberOnlySearch = numbers.length > 0 && !primaryName && setWords.length === 0;
+  
+  // If query is ONLY set words (no Pokemon name), don't filter by name
+  const isSetOnlySearch = setWords.length > 0 && !primaryName;
   
   return results.filter(card => {
-    // Normalize card name for comparison (handles apostrophe variations)
+    // Normalize card name and set for comparison
     const nameLower = normalizeApostrophes((card.name || '').toLowerCase());
+    const setLower = normalizeApostrophes((card.set || '').toLowerCase());
     const numberLower = String(card.number || '').toLowerCase();
     
     // RULE 1: If query has a primary Pokemon name (>2 chars), REQUIRE it in card name
-    // Skip this rule for number-only searches
-    if (!isNumberOnlySearch && primaryName && primaryName.length > 2) {
-      // primaryName is already normalized via parseQuery
+    // Skip this rule for number-only or set-only searches
+    if (!isNumberOnlySearch && !isSetOnlySearch && primaryName && primaryName.length > 2) {
       if (!nameLower.includes(primaryName)) {
         return false; // Skip this card - wrong Pokemon
       }
@@ -453,13 +494,20 @@ export function filterByRelevance(results, query) {
       }
     }
     
-    // RULE 3: If query has a number, require match (with normalization)
+    // RULE 3: If query has set words, require at least one to match the set name
+    if (setWords.length > 0) {
+      const hasSetMatch = setWords.some(setWord => setLower.includes(setWord));
+      if (!hasSetMatch) {
+        return false; // Skip this card - wrong set
+      }
+    }
+    
+    // RULE 4: If query has a number, require match (with normalization)
     if (numbers.length > 0) {
       const queryNumber = numbers[0];
       const normalizedQueryNumber = normalizeCardNumber(queryNumber);
       const normalizedCardNumber = normalizeCardNumber(numberLower);
       
-      // For number-only searches, be more flexible with matching
       // Check card number field AND card name/id for the number
       const hasNumberMatch = 
         numberLower.includes(queryNumber) || 
@@ -467,7 +515,7 @@ export function filterByRelevance(results, query) {
         normalizedCardNumber.includes(normalizedQueryNumber) ||
         numberLower === queryNumber;
       
-      // Also check if the number appears in the card's ID or name (for promo cards)
+      // Also check if the number appears in the card's ID (for promo cards)
       const cardId = String(card.id || '').toLowerCase();
       const hasIdMatch = cardId.includes(queryNumber) || cardId.includes(normalizedQueryNumber);
       
@@ -491,7 +539,7 @@ export function scoreRelevance(card, query) {
   const setLower = normalizeApostrophes((card.set || '').toLowerCase());
   const numberLower = String(card.number || '').toLowerCase();
   const parsed = parseQuery(query); // parseQuery already normalizes
-  const { queryLower, primaryName, cardTypes, numbers } = parsed;
+  const { queryLower, primaryName, cardTypes, numbers, setWords } = parsed;
   const queryWords = queryLower.split(/\s+/);
   
   let score = 0;
@@ -554,9 +602,17 @@ export function scoreRelevance(card, query) {
     }
   }
   
-  // 8. SET NAME MATCH (8 points)
-  if (queryWords.some(w => setLower.includes(w))) {
-    score += 8;
+  // 8. SET WORD MATCH (up to 15 points for set-specific searches)
+  if (setWords.length > 0) {
+    const matchingSetWords = setWords.filter(sw => setLower.includes(sw));
+    if (matchingSetWords.length > 0) {
+      // More matching set words = higher score
+      score += 8 + (matchingSetWords.length * 3);
+    }
+  }
+  // Fallback: check if any query word appears in set name
+  else if (queryWords.some(w => setLower.includes(w) && w.length > 2)) {
+    score += 5;
   }
   
   // 9. DATA COMPLETENESS BONUS (up to 7 points)
