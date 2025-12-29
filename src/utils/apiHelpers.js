@@ -28,7 +28,34 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v2.3-set-words';
+const CACHE_VERSION = 'v3.0-promo-codes';
+
+// Simple search analytics (in-memory for now, could be sent to analytics service)
+const searchAnalytics = {
+  searches: [],
+  maxEntries: 100,
+  
+  log(query, resultCount, source) {
+    this.searches.push({
+      query: query.toLowerCase().trim(),
+      resultCount,
+      source,
+      timestamp: Date.now(),
+    });
+    // Keep only last N entries
+    if (this.searches.length > this.maxEntries) {
+      this.searches.shift();
+    }
+  },
+  
+  getRecentSearches() {
+    return this.searches.slice(-20);
+  },
+  
+  getZeroResultSearches() {
+    return this.searches.filter(s => s.resultCount === 0);
+  },
+};
 
 // In-memory cache
 const searchCache = new Map();
@@ -152,7 +179,7 @@ async function apiSearchCardsRaw(
       
       // Merge Japanese cards with English cards
       items = [...items, ...japaneseItems];
-      console.log(`🇯🇵 Added ${japaneseItems.length} Japanese cards to search results`);
+      // Japanese cards added to results
     }
     
     return items; // Return RAW results - no ranking here!
@@ -421,7 +448,7 @@ export async function apiFetchGradedPrices(card, gradingCompany, grade) {
     });
     
     const url = `${CLOUD_FUNCTIONS_BASE}/fetchGradedPrices?${params.toString()}`;
-    console.log('🏆 Fetching graded price:', url);
+    // Fetching graded price
     const response = await fetch(url);
     
     if (!response.ok) {
@@ -430,7 +457,7 @@ export async function apiFetchGradedPrices(card, gradingCompany, grade) {
     }
     
     const data = await response.json();
-    console.log('✅ Graded price response:', data);
+    // Graded price fetched
     return data;
   } catch (error) {
     console.error('Error fetching graded prices:', error);
@@ -440,7 +467,7 @@ export async function apiFetchGradedPrices(card, gradingCompany, grade) {
 
 export async function apiFetchMarketPrices(card) {
   try {
-    console.log('💰 Fetching on-demand prices for:', card.name, card.set, card.number);
+    // Fetching on-demand prices
     
     const params = new URLSearchParams({
       name: card.name,
@@ -463,7 +490,7 @@ export async function apiFetchMarketPrices(card) {
       return null;
     }
     
-    console.log('✅ Market prices fetched:', data.prices);
+    // Market prices fetched
     return data.prices; // { us: {...}, eu: {...} }
     
   } catch (error) {
@@ -494,8 +521,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   const { processed: processedQuery, wasModified, corrections } = preprocessQuery(query);
   
   if (wasModified) {
-    console.log(`🔧 Query preprocessed: "${query}" → "${processedQuery}"`);
-    corrections.forEach(c => console.log(`   ${c.type}: ${c.before} → ${c.after}`));
+    // Query preprocessed (typos/sets corrected)
   }
   
   // Use processed query for search, but cache under original for user experience
@@ -513,7 +539,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   }
   
   // Search BOTH APIs in parallel for comprehensive results
-  console.log(`🔍 Searching both PriceCharting and CardMarket for: "${searchQuery}"`);
+  // Searching both APIs in parallel
   
   // Add timeout to prevent hanging (8s for CardMarket, 10s for PriceCharting)
   const timeout = (ms) => new Promise((_, reject) => 
@@ -539,8 +565,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     })
   ]);
   
-  console.log(`📊 PriceCharting: ${priceChartingResults.length} results`);
-  console.log(`📊 CardMarket: ${cardMarketResults.length} results`);
+  // Results received from both APIs
   
   // Helper to normalize set names for better deduplication
   const normalizeSetName = (setName) => {
@@ -609,7 +634,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Convert Map back to array
   let finalResults = Array.from(cardMap.values());
   
-  console.log(`📥 Before improvements: ${finalResults.length} results`);
+  // Applying search improvements (filter, dedupe, rank)
   
   // Apply comprehensive search improvements
   // - Filters out irrelevant cards (e.g., non-Charizard cards when searching "charizard 199")
@@ -629,10 +654,13 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     setSearchCacheEntry(canonical, finalResults);
   }
   
-  console.log(`✅ Returning ${finalResults.length} improved results`);
-  console.log(`   📍 ${finalResults.filter(c => c.source === 'cardmarket').length} from CardMarket`);
-  console.log(`   📍 ${finalResults.filter(c => c.source === 'pricecharting').length} from PriceCharting only`);
-  console.log(`   💰 NO PRICES in results (fetched on-demand)`);
+  // Log search analytics
+  searchAnalytics.log(query, finalResults.length, 'hybrid');
+  
+  // Clean summary log (not verbose debug)
+  const cmCount = finalResults.filter(c => c.source === 'cardmarket').length;
+  const pcCount = finalResults.filter(c => c.source === 'pricecharting').length;
+  console.log(`✅ Search "${query}" → ${finalResults.length} results (${cmCount} CM, ${pcCount} PC)`);
   
   return finalResults;
 }
@@ -659,7 +687,7 @@ export async function apiSearchCardsCached(query, options = {}) {
     maxResults = MAX_SUGGESTION_LIMIT,
   } = options;
 
-  console.log(`🔍 Searching with intelligent cache: "${query}"`);
+  // Searching with intelligent cache
   
   try {
     const searchUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/searchCards?q=${encodeURIComponent(query)}`;
@@ -675,7 +703,7 @@ export async function apiSearchCardsCached(query, options = {}) {
       throw new Error(data.error || 'Search failed');
     }
     
-    console.log(`✅ Got ${data.results.length} results from ${data.source} (${data.cached ? 'CACHED' : 'FRESH'})`);
+    // Results from intelligent cache
     
     // If cached search returned results, use them
     if (data.results.length > 0) {
@@ -683,7 +711,7 @@ export async function apiSearchCardsCached(query, options = {}) {
     }
     
     // No results from cache - fall back to hybrid search (PriceCharting + CardMarket)
-    console.log('⚠️ No results from cache, falling back to hybrid search...');
+    // No cache results, falling back to hybrid search
     return apiSearchCardsHybrid(query, options);
     
   } catch (error) {

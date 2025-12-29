@@ -234,7 +234,7 @@ export function correctTypos(query) {
     // Check if this word has a known correction
     const correction = POKEMON_TYPO_CORRECTIONS[word];
     if (correction) {
-      console.log(`📝 Typo corrected: "${word}" → "${correction}"`);
+      // Typo corrected silently
       return correction;
     }
     return word;
@@ -258,7 +258,7 @@ export function expandSetAbbreviations(query) {
   // If so, don't expand any abbreviations - treat the whole thing as a promo search
   const promoCodePattern = /\b[a-z]{2,4}-[a-z]\b/i;
   if (promoCodePattern.test(queryLower)) {
-    console.log(`🎫 Promo code detected in "${query}" - skipping set expansion`);
+    // Promo code detected - skip expansion to preserve SM-P, XY-P, etc.
     return query;
   }
   
@@ -282,7 +282,7 @@ export function expandSetAbbreviations(query) {
         const promoPattern = new RegExp(`${escapeRegex(abbrev)}-`, 'gi');
         if (!promoPattern.test(queryLower)) {
           const expanded = query.replace(regex, fullName);
-          console.log(`📦 Set expanded: "${query}" → "${expanded}"`);
+          // Set abbreviation expanded
           return expanded;
         }
       }
@@ -460,7 +460,7 @@ export function parseQuery(query) {
     // Otherwise, add to primary name (only if we haven't hit card type/number/set words)
     // This ensures only actual Pokemon names go into primaryName
     if (cardTypes.length === 0 && numbers.length === 0 && setWords.length === 0) {
-      primaryName += (primaryName ? ' ' : '') + word;
+    primaryName += (primaryName ? ' ' : '') + word;
     }
   }
   
@@ -483,9 +483,8 @@ export function filterByRelevance(results, query) {
   const parsed = parseQuery(query);
   const { primaryName, cardTypes, numbers, setWords } = parsed;
   
-  console.log(`🔎 filterByRelevance called with query: "${query}"`);
-  console.log(`   Parsed: primaryName="${primaryName}", setWords=[${setWords.join(', ')}], cardTypes=[${cardTypes.join(', ')}], numbers=[${numbers.join(', ')}]`);
-  console.log(`   Input results count: ${results?.length || 0}`);
+  // Debug: uncomment to trace filtering issues
+  // console.log(`🔎 filterByRelevance: "${query}" → name="${primaryName}", sets=[${setWords}], nums=[${numbers}]`);
   
   // If query is ONLY a number/code (no name), don't filter by name at all
   const isNumberOnlySearch = numbers.length > 0 && !primaryName && setWords.length === 0;
@@ -556,17 +555,14 @@ export function filterByRelevance(results, query) {
   // FALLBACK: If set filtering removed ALL results, try without set filter
   // This handles cases like "mewtwo destined" where "destined" isn't a real set
   if (filtered.length === 0 && setWords.length > 0 && results.length > 0) {
-    console.log(`   ⚠️ Set words [${setWords.join(', ')}] matched no cards - falling back to name-only search`);
+    // Set words matched no cards - fall back to name-only search
     filtered = results.filter(card => applyCoreFilters(card));
   }
   
-  console.log(`   Output results count: ${filtered.length}`);
-  if (filtered.length === 0 && results?.length > 0) {
-    console.log(`   ⚠️ ALL RESULTS FILTERED OUT! Sample input cards:`);
-    results.slice(0, 3).forEach(c => {
-      console.log(`      - "${c.name}" | set: "${c.set}" | num: "${c.number}"`);
-    });
-  }
+  // Debug: uncomment to trace zero-result issues
+  // if (filtered.length === 0 && results?.length > 0) {
+  //   console.log(`⚠️ Filter removed all ${results.length} results for "${query}"`);
+  // }
   
   return filtered;
 }
@@ -962,29 +958,21 @@ export function improveSearchResults(results, query, options = {}) {
   // Step 1: Filter by relevance (remove irrelevant cards)
   if (enableFiltering) {
     improved = filterByRelevance(improved, query);
-    console.log(`🔍 Filtered to ${improved.length} relevant results`);
   }
   
   // Step 2: Deduplicate (merge duplicate cards)
   if (enableDeduplication) {
-    const beforeCount = improved.length;
     improved = deduplicateResults(improved);
-    const removedCount = beforeCount - improved.length;
-    if (removedCount > 0) {
-      console.log(`🔄 Removed ${removedCount} duplicate(s)`);
-    }
   }
   
   // Step 3: Rank by relevance score
   if (enableRanking) {
     improved = rankByRelevance(improved, query);
-    console.log(`📊 Ranked ${improved.length} results by relevance`);
   }
   
   // Step 4: Limit results
   if (maxResults && improved.length > maxResults) {
     improved = improved.slice(0, maxResults);
-    console.log(`✂️ Limited to top ${maxResults} results`);
   }
   
   return improved;
