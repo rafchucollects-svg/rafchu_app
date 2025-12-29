@@ -648,9 +648,17 @@ export function CardSearch({ mode = "collector" }) {
           isManualEntry: true,
           manualPrice: card.manualPrice,
           notes: card.notes,
+          // Graded card support for manual entries
+          isGraded: card.isGraded || false,
+          gradingCompany: card.gradingCompany || null,
+          grade: card.grade || null,
+          gradedPrice: card.gradedPrice || null,
+          // Preserve image from manual entry
+          manualImage: card.image || null,
         });
         if (newItem) {
-          triggerQuickAddFeedback(`${card.name} (manual entry) added to ${isVendor ? 'inventory' : 'collection'}`);
+          const gradedLabel = card.isGraded ? ` (${card.gradingCompany} ${card.grade})` : '';
+          triggerQuickAddFeedback(`${card.name}${gradedLabel} (manual entry) added to ${isVendor ? 'inventory' : 'collection'}`);
         }
       }
       

@@ -45,6 +45,25 @@ export function ManualCardEntry({
   const [manualPrice, setManualPrice] = useState("");
   const [notes, setNotes] = useState("");
   
+  // Graded card state
+  const [isGraded, setIsGraded] = useState(false);
+  const [gradingCompany, setGradingCompany] = useState("PSA");
+  const [grade, setGrade] = useState("");
+  const [gradedPrice, setGradedPrice] = useState("");
+  
+  // Grading companies list
+  const GRADING_COMPANIES = [
+    { value: 'PSA', label: 'PSA' },
+    { value: 'CGC', label: 'CGC' },
+    { value: 'BGS', label: 'BGS (Beckett)' },
+    { value: 'SGC', label: 'SGC' },
+    { value: 'ACE', label: 'ACE' },
+    { value: 'Other', label: 'Other' },
+  ];
+  
+  // Common grades
+  const GRADE_OPTIONS = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6.5', '6', '5', '4', '3', '2', '1'];
+  
   // Image upload state
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
@@ -263,15 +282,20 @@ export function ManualCardEntry({
       notes: notes.trim() || null,
       image: imageUrl, // Include uploaded image URL
       createdAt: Date.now(),
+      // Graded card fields
+      isGraded: isGraded,
+      gradingCompany: isGraded ? gradingCompany : null,
+      grade: isGraded && grade ? parseFloat(grade) : null,
+      gradedPrice: isGraded && gradedPrice ? parseFloat(gradedPrice) : null,
     };
     
     if (onAddCard) {
       onAddCard(manualCard, { fromSuggestion: false, isManual: true });
     }
-  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard]);
+  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard, isGraded, gradingCompany, grade, gradedPrice]);
   
   // Check if form is valid
-  const isFormValid = cardName.trim().length > 0;
+  const isFormValid = cardName.trim().length > 0 && (!isGraded || grade !== "");
   
   // Should show the add button (either no suggestions or confirmed no match)
   const canAddManually = isFormValid && (suggestions.length === 0 || confirmedNoMatch);
@@ -346,6 +370,79 @@ export function ManualCardEntry({
             <option value="Hyper Rare">Hyper Rare</option>
             <option value="Promo">Promo</option>
           </select>
+        </div>
+        
+        {/* Graded Card Section */}
+        <div className="md:col-span-2 border rounded-lg p-4 bg-gray-50">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={isGraded}
+              onChange={(e) => {
+                setIsGraded(e.target.checked);
+                if (!e.target.checked) {
+                  setGrade("");
+                  setGradedPrice("");
+                }
+              }}
+              className="h-4 w-4 rounded border-gray-300"
+            />
+            <span className="text-sm font-medium">🏆 This is a graded card</span>
+          </label>
+          
+          {isGraded && (
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Grading Company <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={gradingCompany}
+                  onChange={(e) => setGradingCompany(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-md bg-background"
+                >
+                  {GRADING_COMPANIES.map(company => (
+                    <option key={company.value} value={company.value}>
+                      {company.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Grade <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={grade}
+                  onChange={(e) => setGrade(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-md bg-background"
+                  required={isGraded}
+                >
+                  <option value="">Select Grade...</option>
+                  {GRADE_OPTIONS.map(g => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Graded Value (USD)
+                </label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  placeholder="e.g., 500.00"
+                  value={gradedPrice}
+                  onChange={(e) => setGradedPrice(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Enter the graded card's value
+                </p>
+              </div>
+            </div>
+          )}
         </div>
         
         <div>
