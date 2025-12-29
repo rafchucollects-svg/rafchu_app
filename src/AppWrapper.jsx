@@ -21,15 +21,17 @@ import { AppRouter } from "./Router";
  * Handles Firebase initialization and provides global context
  */
 
-// Firebase Configuration - loaded from environment variables
+// Firebase Configuration
+// Uses environment variables if available, otherwise falls back to production config
+// Note: Firebase API keys are safe to be public - security comes from Firebase Security Rules
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyD9sA1Vz3Cmw28kkvaEs1SaTucJY1SvNTQ",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "rafchu-tcg-app.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "rafchu-tcg-app",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "rafchu-tcg-app.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1045008710585",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1045008710585:web:bafe104ec40fdaf3e71468",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "",
 };
 
 // Initialize Firebase

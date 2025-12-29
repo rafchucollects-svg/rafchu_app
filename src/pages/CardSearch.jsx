@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Package, Store, Plus, ShoppingBag, Heart, LayoutGrid, Calculator, TrendingUp, MessageSquare, Upload, ExternalLink } from "lucide-react";
-import { motion } from "framer-motion";
+import { Package, Store, Plus, ShoppingBag, Heart, LayoutGrid, Calculator, TrendingUp, MessageSquare, Upload, ExternalLink, PlusCircle } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useApp } from "@/contexts/AppContext";
 import { 
   apiSearchCards, 
@@ -28,6 +28,7 @@ import {
 import { AddCardModal } from "@/components/AddCardModal";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { GradedCardModal } from "@/components/GradedCardModal";
+import { ManualCardModal } from "@/components/ManualCardEntry";
 import { formatCurrency, convertCurrency } from "@/utils/cardHelpers";
 import { needsImage } from "@/utils/imageHelpers";
 
@@ -95,6 +96,9 @@ export function CardSearch({ mode = "collector" }) {
   // Community Image Upload Modal state
   const [imageUploadModalOpen, setImageUploadModalOpen] = useState(false);
   const [cardForImageUpload, setCardForImageUpload] = useState(null);
+  
+  // Manual card entry modal state
+  const [manualCardModalOpen, setManualCardModalOpen] = useState(false);
   
   // Graded filter state - persist to localStorage per mode
   const [isGradedFilter, setIsGradedFilter] = useState(() => {
@@ -617,6 +621,46 @@ export function CardSearch({ mode = "collector" }) {
     }
   }, [addToCollection, triggerQuickAddFeedback, isVendor, mode]);
 
+  // Handle manual card entry
+  const handleManualCardAdd = useCallback(async (card, options = {}) => {
+    if (!user) {
+      alert("Please sign in to add cards");
+      return;
+    }
+    
+    try {
+      // If it's from a suggestion (existing card), add it normally
+      if (options.fromSuggestion) {
+        const newItem = await addToCollection(card, {
+          mode: mode,
+          condition: defaultCondition,
+          quantity: 1,
+        });
+        if (newItem) {
+          triggerQuickAddFeedback(`${card.name} added to ${isVendor ? 'inventory' : 'collection'}`);
+        }
+      } else {
+        // It's a manual entry
+        const newItem = await addToCollection(card, {
+          mode: mode,
+          condition: defaultCondition,
+          quantity: 1,
+          isManualEntry: true,
+          manualPrice: card.manualPrice,
+          notes: card.notes,
+        });
+        if (newItem) {
+          triggerQuickAddFeedback(`${card.name} (manual entry) added to ${isVendor ? 'inventory' : 'collection'}`);
+        }
+      }
+      
+      setManualCardModalOpen(false);
+    } catch (error) {
+      console.error("Error adding manual card:", error);
+      alert("Failed to add card. Please try again.");
+    }
+  }, [user, addToCollection, mode, defaultCondition, triggerQuickAddFeedback, isVendor]);
+
   // Full card add handlers
   const handleAddToCollection = useCallback(async () => {
     if (!activeCard) return;
@@ -968,6 +1012,32 @@ export function CardSearch({ mode = "collector" }) {
               </Button>
             </div>
           )}
+          
+          {/* Can't find card? Add manually option */}
+          {query.trim().length >= 3 && !loading && (
+            <motion.div
+              initial={{ opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 pt-4 border-t"
+            >
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-sm text-muted-foreground">
+                  {visibleSuggestions.length === 0 
+                    ? "No cards found matching your search."
+                    : "Can't find the card you're looking for?"}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setManualCardModalOpen(true)}
+                  className="border-purple-200 text-purple-700 hover:bg-purple-50"
+                >
+                  <PlusCircle className="h-4 w-4 mr-1" />
+                  Add Card Manually
+                </Button>
+              </div>
+            </motion.div>
+          )}
         </CardContent>
       </Card>
 
@@ -1209,6 +1279,15 @@ export function CardSearch({ mode = "collector" }) {
         onSubmit={handleGradedModalSubmit}
         mode={mode}
         target={gradedModalTarget}
+      />
+      
+      {/* Manual Card Entry Modal */}
+      <ManualCardModal
+        isOpen={manualCardModalOpen}
+        onClose={() => setManualCardModalOpen(false)}
+        onAddCard={handleManualCardAdd}
+        initialQuery={query}
+        mode={mode}
       />
     </div>
   );

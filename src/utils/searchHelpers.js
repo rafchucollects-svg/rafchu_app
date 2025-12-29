@@ -3,14 +3,21 @@
  * Provides relevance filtering, scoring, and ranking for card search
  */
 
+import { normalizeApostrophes } from './cardHelpers';
+
 // Card type keywords that might appear in queries
 const CARD_TYPE_KEYWORDS = ['ex', 'gx', 'v', 'vmax', 'vstar', 'break', 'prism', 'star', 'lv.x', 'lvx'];
 
 /**
  * Parse query to extract primary Pokemon name, card types, and numbers
+ * Normalizes apostrophes for consistent matching
  */
 export function parseQuery(query) {
-  const queryLower = query.toLowerCase().trim();
+  if (!query) return { primaryName: '', cardTypes: [], numbers: [], originalQuery: '', queryLower: '' };
+  
+  // Normalize apostrophes first (convert curly to straight, etc.)
+  const normalized = normalizeApostrophes(query);
+  const queryLower = normalized.toLowerCase().trim();
   const queryWords = queryLower.split(/\s+/);
   
   let primaryName = '';
@@ -48,17 +55,20 @@ export function parseQuery(query) {
 /**
  * Filter results to only include truly relevant cards
  * CRITICAL: Requires primary Pokemon name to be in card name
+ * Normalizes apostrophes for consistent matching
  */
 export function filterByRelevance(results, query) {
   const parsed = parseQuery(query);
   const { primaryName, cardTypes, numbers } = parsed;
   
   return results.filter(card => {
-    const nameLower = (card.name || '').toLowerCase();
+    // Normalize card name for comparison (handles apostrophe variations)
+    const nameLower = normalizeApostrophes((card.name || '').toLowerCase());
     const numberLower = String(card.number || '').toLowerCase();
     
     // RULE 1: If query has a primary Pokemon name (>2 chars), REQUIRE it in card name
     if (primaryName && primaryName.length > 2) {
+      // primaryName is already normalized via parseQuery
       if (!nameLower.includes(primaryName)) {
         return false; // Skip this card - wrong Pokemon
       }
@@ -88,12 +98,14 @@ export function filterByRelevance(results, query) {
 /**
  * Calculate relevance score for a card based on query
  * Higher score = more relevant
+ * Normalizes apostrophes for consistent matching
  */
 export function scoreRelevance(card, query) {
-  const nameLower = (card.name || '').toLowerCase();
-  const setLower = (card.set || '').toLowerCase();
+  // Normalize all strings for comparison
+  const nameLower = normalizeApostrophes((card.name || '').toLowerCase());
+  const setLower = normalizeApostrophes((card.set || '').toLowerCase());
   const numberLower = String(card.number || '').toLowerCase();
-  const parsed = parseQuery(query);
+  const parsed = parseQuery(query); // parseQuery already normalizes
   const { queryLower, primaryName, cardTypes, numbers } = parsed;
   const queryWords = queryLower.split(/\s+/);
   
@@ -215,10 +227,12 @@ function normalizeSetName(setName) {
  * Normalize card key for deduplication
  * Cards with same name + number are considered duplicates
  * Set is normalized aggressively to handle variations
+ * Apostrophes are preserved to maintain card identity
  */
 export function normalizeCardKey(card) {
-  const name = (card.name || '').toLowerCase()
-    .replace(/[^\w\s]/g, '')
+  // Normalize apostrophes first, then clean up
+  const name = normalizeApostrophes((card.name || '').toLowerCase())
+    .replace(/[^\w\s']/g, '') // Keep apostrophes in names like "Rocket's"
     .replace(/\s+/g, ' ')
     .trim();
   
@@ -320,6 +334,122 @@ export function deduplicateResults(results) {
   }
   
   return Array.from(cardMap.values());
+}
+
+/**
+ * Calculate Levenshtein distance between two strings
+ * Used for fuzzy matching in "Did you mean?" suggestions
+ */
+export function levenshteinDistance(str1, str2) {
+  const s1 = normalizeApostrophes(str1.toLowerCase());
+  const s2 = normalizeApostrophes(str2.toLowerCase());
+  
+  if (s1 === s2) return 0;
+  if (s1.length === 0) return s2.length;
+  if (s2.length === 0) return s1.length;
+  
+  const matrix = [];
+  
+  for (let i = 0; i <= s2.length; i++) {
+    matrix[i] = [i];
+  }
+  
+  for (let j = 0; j <= s1.length; j++) {
+    matrix[0][j] = j;
+  }
+  
+  for (let i = 1; i <= s2.length; i++) {
+    for (let j = 1; j <= s1.length; j++) {
+      if (s2.charAt(i - 1) === s1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1,     // insertion
+          matrix[i - 1][j] + 1      // deletion
+        );
+      }
+    }
+  }
+  
+  return matrix[s2.length][s1.length];
+}
+
+/**
+ * Calculate similarity score between two strings (0-1, higher is more similar)
+ */
+export function stringSimilarity(str1, str2) {
+  if (!str1 || !str2) return 0;
+  const maxLen = Math.max(str1.length, str2.length);
+  if (maxLen === 0) return 1;
+  const distance = levenshteinDistance(str1, str2);
+  return 1 - distance / maxLen;
+}
+
+/**
+ * Find fuzzy matches for a card query
+ * Returns cards that are similar but not exact matches
+ * Used for "Did you mean?" suggestions
+ */
+export function findFuzzyMatches(query, cards, options = {}) {
+  const { 
+    maxResults = 5, 
+    minSimilarity = 0.5,
+    includeNumber = true 
+  } = options;
+  
+  if (!query || !cards?.length) return [];
+  
+  const normalizedQuery = normalizeApostrophes(query.toLowerCase().trim());
+  const queryParts = normalizedQuery.split(/\s+/);
+  
+  // Score each card
+  const scored = cards.map(card => {
+    const cardName = normalizeApostrophes((card.name || '').toLowerCase());
+    
+    // Calculate name similarity
+    const nameSimilarity = stringSimilarity(normalizedQuery, cardName);
+    
+    // Check if all query words appear in card name
+    const wordMatchScore = queryParts.reduce((score, word) => {
+      if (cardName.includes(word)) return score + (1 / queryParts.length);
+      // Check partial word match
+      if (cardName.split(/\s+/).some(w => w.startsWith(word) || word.startsWith(w))) {
+        return score + (0.5 / queryParts.length);
+      }
+      return score;
+    }, 0);
+    
+    // Bonus for number match
+    let numberBonus = 0;
+    if (includeNumber && card.number) {
+      const queryNumbers = normalizedQuery.match(/\d+/g) || [];
+      const cardNumber = String(card.number).toLowerCase();
+      if (queryNumbers.some(n => cardNumber === n || cardNumber.includes(n))) {
+        numberBonus = 0.2;
+      }
+    }
+    
+    // Combined score
+    const totalScore = (nameSimilarity * 0.4) + (wordMatchScore * 0.4) + numberBonus;
+    
+    return {
+      card,
+      similarity: totalScore,
+      nameSimilarity,
+      wordMatchScore
+    };
+  });
+  
+  // Filter and sort by similarity
+  return scored
+    .filter(s => s.similarity >= minSimilarity)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, maxResults)
+    .map(s => ({
+      ...s.card,
+      _matchScore: s.similarity
+    }));
 }
 
 /**

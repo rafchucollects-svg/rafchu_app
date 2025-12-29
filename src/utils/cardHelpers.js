@@ -456,45 +456,81 @@ export function normalizeApiCard(raw) {
 // Search & Filtering Helpers
 // =============================
 
+/**
+ * Normalize apostrophes - converts curly apostrophes to straight ones
+ * and handles common variations
+ */
+export function normalizeApostrophes(str) {
+  if (!str) return '';
+  return str
+    .replace(/[\u2018\u2019\u201B\u0060\u00B4]/g, "'") // Curly quotes and accents to straight apostrophe
+    .replace(/[\u201C\u201D]/g, '"'); // Curly double quotes to straight
+}
+
+/**
+ * Tokenize a search query into words
+ * PRESERVES apostrophes within words (e.g., "Rocket's" stays as one token)
+ * Splits on spaces, commas, and other non-word separators
+ */
 export function tokenize(q) {
-  return q.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (!q) return [];
+  // Normalize apostrophes first
+  const normalized = normalizeApostrophes(q.toLowerCase());
+  // Split on spaces and punctuation BUT keep apostrophes attached to words
+  // This regex splits on anything that's not: letters, numbers, or apostrophes between letters
+  return normalized
+    .split(/[\s,;:!?\-_\(\)\[\]{}]+/) // Split on whitespace and common separators
+    .map(token => token.replace(/^[']+|[']+$/g, '')) // Trim leading/trailing apostrophes
+    .filter(Boolean);
 }
 
 export function extractNumberPieces(q) {
-  const m = q.match(/([a-z]{1,3}\d+|\d{1,3}\/\d{1,3}|\d{1,3})/gi) || [];
+  if (!q) return [];
+  const normalized = normalizeApostrophes(q);
+  const m = normalized.match(/([a-z]{1,3}\d+|\d{1,3}\/\d{1,3}|\d{1,3})/gi) || [];
   return m.map((x) => x.toLowerCase());
 }
 
 export function splitQuery(q) {
-  const raw = tokenize(q);
-  const numberLike = extractNumberPieces(q);
+  if (!q) return { nameQuery: '', numberPieces: [], tokens: [] };
+  const normalized = normalizeApostrophes(q);
+  const raw = tokenize(normalized);
+  const numberLike = extractNumberPieces(normalized);
   const isNumLike = (t) => numberLike.includes(t);
   const nameTokens = raw.filter((t) => !isNumLike(t));
   return {
-    nameQuery: nameTokens.join(" ") || q,
+    nameQuery: nameTokens.join(" ") || normalized,
     numberPieces: numberLike,
     tokens: raw,
   };
 }
 
 export function rankByRelevance(items, q) {
+  if (!q || !items?.length) return items || [];
+  
+  const normalizedQuery = normalizeApostrophes(q.toLowerCase());
   const tokens = tokenize(q);
   const nums = extractNumberPieces(q);
   
   return items
     .map((card) => {
       let score = 0;
-      const name = (card.name || "").toLowerCase();
-      const nameNumbered = (card.nameNumbered || "").toLowerCase();
+      // Normalize card name for comparison (handles apostrophe variations)
+      const name = normalizeApostrophes((card.name || "").toLowerCase());
+      const nameNumbered = normalizeApostrophes((card.nameNumbered || "").toLowerCase());
       const number = ((card.number || "") + "").toLowerCase();
       
-      // Exact name match
-      if (name === q.toLowerCase()) score += 100;
+      // Exact name match (after normalization)
+      if (name === normalizedQuery) score += 100;
+      
+      // Name contains full query
+      if (name.includes(normalizedQuery)) score += 50;
       
       // Name token matches
       tokens.forEach((t) => {
-        if (name.includes(t)) score += 5;
-        if (nameNumbered.includes(t)) score += 2;
+        const normalizedToken = normalizeApostrophes(t);
+        if (name.includes(normalizedToken)) score += 5;
+        if (nameNumbered.includes(normalizedToken)) score += 2;
       });
       
       // Number matches
