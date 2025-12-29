@@ -254,6 +254,14 @@ export function expandSetAbbreviations(query) {
   
   const queryLower = query.toLowerCase();
   
+  // FIRST: Check if query contains promo code patterns (SM-P, XY-P, BW-P, etc.)
+  // If so, don't expand any abbreviations - treat the whole thing as a promo search
+  const promoCodePattern = /\b[a-z]{2,4}-[a-z]\b/i;
+  if (promoCodePattern.test(queryLower)) {
+    console.log(`🎫 Promo code detected in "${query}" - skipping set expansion`);
+    return query;
+  }
+  
   // Sort abbreviations by length (longest first) to match "crown zenith" before "crown"
   const sortedAbbrevs = Object.entries(SET_ABBREVIATIONS)
     .sort((a, b) => b[0].length - a[0].length);
@@ -270,9 +278,13 @@ export function expandSetAbbreviations(query) {
       // Don't expand if it's part of a card code like SWSH121
       const codePattern = new RegExp(`${escapeRegex(abbrev)}\\d+`, 'gi');
       if (!codePattern.test(queryLower)) {
-        const expanded = query.replace(regex, fullName);
-        console.log(`📦 Set expanded: "${query}" → "${expanded}"`);
-        return expanded;
+        // Also don't expand if followed by a hyphen (promo code like SM-P)
+        const promoPattern = new RegExp(`${escapeRegex(abbrev)}-`, 'gi');
+        if (!promoPattern.test(queryLower)) {
+          const expanded = query.replace(regex, fullName);
+          console.log(`📦 Set expanded: "${query}" → "${expanded}"`);
+          return expanded;
+        }
       }
     }
   }
