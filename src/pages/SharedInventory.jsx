@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Store, Package, Search, LogIn, Award } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { LoginModal } from "@/components/LoginModal";
-import { computeInventoryTotals, formatCurrency, computeItemMetrics, getConditionColorClass, convertCurrency } from "@/utils/cardHelpers";
+import { computeInventoryTotals, formatCurrency, computeItemMetrics, getConditionColorClass, convertCurrency, getConditionDisplayLabel, isViewerInEurope } from "@/utils/cardHelpers";
 import { getDoc, doc } from "firebase/firestore";
 
 /**
@@ -446,7 +446,7 @@ export function SharedInventory() {
                     </span>
                   ) : (
                     <span className={`text-xs font-semibold px-2 py-1 rounded border ${getConditionColorClass(item.condition)}`}>
-                      {item.condition || "NM"}
+                      {getConditionDisplayLabel(item.condition || "NM")}
                     </span>
                   )}
                   

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Package, Search, LogIn } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { LoginModal } from "@/components/LoginModal";
-import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, getConditionColorClass, convertCurrency } from "@/utils/cardHelpers";
+import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, getConditionColorClass, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { getDoc, doc } from "firebase/firestore";
 
 /**
@@ -298,7 +298,7 @@ export function SharedCollection() {
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-xs text-muted-foreground">Qty: {item.quantity || 1}</span>
                     <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${getConditionColorClass(item.condition)}`}>
-                      {item.condition || "NM"}
+                      {getConditionDisplayLabel(item.condition || "NM")}
                     </span>
                   </div>
                 </div>

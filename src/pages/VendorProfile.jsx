@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Store, MapPin, Instagram, Youtube, MessageCircle, ThumbsUp, Search, Package, Heart, Award } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
-import { formatCurrency, computeItemMetrics, getConditionColorClass } from "@/utils/cardHelpers";
+import { formatCurrency, computeItemMetrics, getConditionColorClass, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { getDoc, doc, collection, query, where, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
 
 /**
@@ -594,7 +594,7 @@ export function VendorProfile() {
                       </span>
                     ) : (
                       <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${getConditionColorClass(item.condition)}`}>
-                        {item.condition || "NM"}
+                        {getConditionDisplayLabel(item.condition || "NM")}
                       </span>
                     )}
                   </div>

@@ -50,6 +50,109 @@ export const CONDITION_LABEL_TO_CODE = {
 
 export const CONDITION_DISPLAY_ORDER = ["NM", "LP", "MP", "HP", "DMG"];
 
+// TCGPlayer to Cardmarket condition mapping
+// Used for displaying conditions to European viewers
+export const TCG_TO_CARDMARKET_CONDITION = {
+  "Mint": "Mint",
+  "Near Mint": "Near Mint",
+  "NM": "Near Mint",
+  "Lightly Played": "Excellent",
+  "LP": "Excellent",
+  "Moderately Played": "Good",
+  "MP": "Good",
+  "Heavily Played": "Played",
+  "HP": "Played",
+  "Damaged": "Poor",
+  "DMG": "Poor",
+};
+
+// Cardmarket to TCGPlayer condition mapping (reverse)
+export const CARDMARKET_TO_TCG_CONDITION = {
+  "Mint": "Mint",
+  "Near Mint": "Near Mint",
+  "Excellent": "Lightly Played",
+  "Good": "Moderately Played",
+  "Played": "Heavily Played",
+  "Poor": "Damaged",
+};
+
+// European country codes (for IP-based detection fallback)
+export const EUROPEAN_COUNTRIES = [
+  'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE', 
+  'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE', // EU
+  'NO', 'IS', 'CH', 'LI', 'GB', 'UK', // Non-EU European
+];
+
+// European timezones for detection
+export const EUROPEAN_TIMEZONES = [
+  'Europe/', 'Atlantic/Reykjavik', 'Atlantic/Canary', 'Atlantic/Faroe', 'Atlantic/Madeira',
+];
+
+/**
+ * Detect if viewer is likely in Europe based on timezone
+ * This is a client-side heuristic - more reliable than IP for browser detection
+ */
+export function isViewerInEurope() {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return EUROPEAN_TIMEZONES.some(tz => timezone.startsWith(tz));
+  } catch {
+    // Fallback: check locale
+    try {
+      const locale = navigator.language || navigator.userLanguage || '';
+      const countryCode = locale.split('-')[1]?.toUpperCase();
+      return countryCode && EUROPEAN_COUNTRIES.includes(countryCode);
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Get the display label for a condition based on viewer's region
+ * @param {string} condition - The condition code or TCG label (e.g., "NM", "LP", "Near Mint")
+ * @param {boolean} forEurope - Whether to use Cardmarket labels (default: auto-detect)
+ * @returns {string} The display label appropriate for the viewer's region
+ */
+export function getConditionDisplayLabel(condition, forEurope = null) {
+  // Auto-detect if not specified
+  const useEuropeanLabels = forEurope !== null ? forEurope : isViewerInEurope();
+  
+  if (!condition) return useEuropeanLabels ? "Near Mint" : "Near Mint";
+  
+  // Normalize the condition input
+  const normalizedCondition = condition.trim();
+  
+  // If using European labels, convert TCG -> Cardmarket
+  if (useEuropeanLabels) {
+    // Check if it's already a Cardmarket label
+    if (CARDMARKET_TO_TCG_CONDITION[normalizedCondition]) {
+      return normalizedCondition; // Already in Cardmarket format
+    }
+    // Convert from TCG to Cardmarket
+    return TCG_TO_CARDMARKET_CONDITION[normalizedCondition] || 
+           TCG_TO_CARDMARKET_CONDITION[normalizedCondition.toUpperCase()] ||
+           normalizedCondition;
+  }
+  
+  // Using TCG labels (non-European)
+  // Check if it's a Cardmarket label that needs conversion
+  if (CARDMARKET_TO_TCG_CONDITION[normalizedCondition] && !TCG_TO_CARDMARKET_CONDITION[normalizedCondition]) {
+    return CARDMARKET_TO_TCG_CONDITION[normalizedCondition];
+  }
+  
+  // Expand short codes to full TCG names for display
+  const codeToFullTCG = {
+    "NM": "Near Mint",
+    "LP": "Lightly Played",
+    "MP": "Moderately Played", 
+    "HP": "Heavily Played",
+    "DMG": "Damaged",
+  };
+  
+  return codeToFullTCG[normalizedCondition.toUpperCase()] || normalizedCondition;
+}
+
 export const CONDITION_STYLES = {
   NM: {
     badge: "border border-emerald-300 bg-emerald-100 text-emerald-700 shadow-sm",
