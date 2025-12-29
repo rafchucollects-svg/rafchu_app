@@ -8,9 +8,22 @@ import { normalizeApostrophes, normalizeCardNumber } from './cardHelpers';
 // Card type keywords that might appear in queries
 const CARD_TYPE_KEYWORDS = ['ex', 'gx', 'v', 'vmax', 'vstar', 'break', 'prism', 'star', 'lv.x', 'lvx'];
 
+// Regex to detect card number patterns (pure numbers or alphanumeric codes)
+const CARD_NUMBER_PATTERN = /^([a-z]{1,6}\d{1,4}|\d{1,4}(\/\d{1,4})?)$/i;
+
+/**
+ * Check if a word looks like a card number/code
+ * Matches: 123, SWSH121, SM123, GG69, SV231, 123/456
+ */
+function isCardNumberLike(word) {
+  if (!word) return false;
+  return CARD_NUMBER_PATTERN.test(word);
+}
+
 /**
  * Parse query to extract primary Pokemon name, card types, and numbers
  * Normalizes apostrophes for consistent matching
+ * Enhanced to detect alphanumeric card codes (SWSH121, SM123, etc.)
  */
 export function parseQuery(query) {
   if (!query) return { primaryName: '', cardTypes: [], numbers: [], originalQuery: '', queryLower: '' };
@@ -30,17 +43,22 @@ export function parseQuery(query) {
     // Check if it's a card type keyword
     if (CARD_TYPE_KEYWORDS.includes(word)) {
       cardTypes.push(word);
-      break; // Stop collecting primary name after card type
+      // Continue processing to capture any trailing numbers (e.g., "Mewtwo ex 231")
+      continue;
     }
     
-    // Check if it's a number (card number or set number)
-    if (!isNaN(word) && word.length <= 4) {
+    // Check if it's a number or alphanumeric code (SWSH121, SM123, GG69, etc.)
+    if (isCardNumberLike(word)) {
       numbers.push(word);
-      break; // Stop collecting primary name after number
+      // Continue processing - don't add numbers to name
+      continue;
     }
     
-    // Otherwise, add to primary name
-    primaryName += (primaryName ? ' ' : '') + word;
+    // Otherwise, add to primary name (only if we haven't hit a card type yet)
+    // This prevents "231" from being added to name after "ex"
+    if (cardTypes.length === 0 && numbers.length === 0) {
+      primaryName += (primaryName ? ' ' : '') + word;
+    }
   }
   
   return {
@@ -54,12 +72,15 @@ export function parseQuery(query) {
 
 /**
  * Filter results to only include truly relevant cards
- * CRITICAL: Requires primary Pokemon name to be in card name
  * Normalizes apostrophes for consistent matching
+ * Enhanced to handle number-only searches (like SWSH121)
  */
 export function filterByRelevance(results, query) {
   const parsed = parseQuery(query);
   const { primaryName, cardTypes, numbers } = parsed;
+  
+  // If query is ONLY a number/code (no name), don't filter by name at all
+  const isNumberOnlySearch = numbers.length > 0 && !primaryName;
   
   return results.filter(card => {
     // Normalize card name for comparison (handles apostrophe variations)
@@ -67,7 +88,8 @@ export function filterByRelevance(results, query) {
     const numberLower = String(card.number || '').toLowerCase();
     
     // RULE 1: If query has a primary Pokemon name (>2 chars), REQUIRE it in card name
-    if (primaryName && primaryName.length > 2) {
+    // Skip this rule for number-only searches
+    if (!isNumberOnlySearch && primaryName && primaryName.length > 2) {
       // primaryName is already normalized via parseQuery
       if (!nameLower.includes(primaryName)) {
         return false; // Skip this card - wrong Pokemon
@@ -82,19 +104,25 @@ export function filterByRelevance(results, query) {
       }
     }
     
-    // RULE 3: If query has a number, require match (with normalization for leading zeros)
+    // RULE 3: If query has a number, require match (with normalization)
     if (numbers.length > 0) {
       const queryNumber = numbers[0];
       const normalizedQueryNumber = normalizeCardNumber(queryNumber);
       const normalizedCardNumber = normalizeCardNumber(numberLower);
       
-      // Check for match (normalized or raw)
-      const hasMatch = 
+      // For number-only searches, be more flexible with matching
+      // Check card number field AND card name/id for the number
+      const hasNumberMatch = 
         numberLower.includes(queryNumber) || 
         normalizedCardNumber === normalizedQueryNumber ||
-        normalizedCardNumber.includes(normalizedQueryNumber);
+        normalizedCardNumber.includes(normalizedQueryNumber) ||
+        numberLower === queryNumber;
       
-      if (!hasMatch) {
+      // Also check if the number appears in the card's ID or name (for promo cards)
+      const cardId = String(card.id || '').toLowerCase();
+      const hasIdMatch = cardId.includes(queryNumber) || cardId.includes(normalizedQueryNumber);
+      
+      if (!hasNumberMatch && !hasIdMatch) {
         return false; // Skip this card - wrong number
       }
     }
