@@ -138,6 +138,9 @@ export const CollectionProvider = ({ children }) => {
         overridePriceCurrency: options.customPrice ? (userProfile?.currency || "USD") : null,
         prices: card.prices || {},
         links: card.links || {},
+        notes: options.notes || card.notes || null,
+        manualPrice: options.manualPrice || card.manualPrice || null,
+        isManualEntry: options.isManualEntry || card.isManualEntry || false,
       };
 
       // Calculate suggested price

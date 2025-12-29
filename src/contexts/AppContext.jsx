@@ -251,7 +251,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       tags: options.tags || [],
       overridePrice: options.customPrice || null,
       overridePriceCurrency: options.customPrice ? currency : null, // Store currency at time of override
-      notes: options.notes || null,
+      notes: options.notes || card.notes || null,
       
       // v2.1: Variant support
       variant: options.variant || null,
@@ -266,7 +266,10 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       // v2.1: Language and Japanese support
       language: options.language || 'English',
       isJapanese: options.isJapanese || false,
-      manualPrice: options.manualPrice || null,
+      manualPrice: options.manualPrice || card.manualPrice || null,
+      
+      // Manual entry support - preserve custom image
+      isManualEntry: options.isManualEntry || card.isManualEntry || false,
       
       // Vendor-specific fields
       buyPrice: options.buyPrice || null,
