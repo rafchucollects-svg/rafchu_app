@@ -1,12 +1,361 @@
 /**
  * Search Helper Utilities
  * Provides relevance filtering, scoring, and ranking for card search
+ * Includes query preprocessing for typo correction and set expansion
  */
 
 import { normalizeApostrophes, normalizeCardNumber } from './cardHelpers';
 
 // Card type keywords that might appear in queries
 const CARD_TYPE_KEYWORDS = ['ex', 'gx', 'v', 'vmax', 'vstar', 'break', 'prism', 'star', 'lv.x', 'lvx'];
+
+// =============================================================================
+// QUERY PREPROCESSING - Typo Correction & Set Expansion
+// =============================================================================
+
+/**
+ * Common Pokemon name misspellings and their corrections
+ * Only includes frequently misspelled names to avoid false positives
+ */
+const POKEMON_TYPO_CORRECTIONS = {
+  // Common typos
+  'pkachu': 'pikachu',
+  'pikacu': 'pikachu',
+  'pikchu': 'pikachu',
+  'pickachu': 'pikachu',
+  'pikachuu': 'pikachu',
+  'charzard': 'charizard',
+  'charzird': 'charizard',
+  'charazard': 'charizard',
+  'charziard': 'charizard',
+  'charizrd': 'charizard',
+  'charizar': 'charizard',
+  'mewtoo': 'mewtwo',
+  'mewto': 'mewtwo',
+  'mewtew': 'mewtwo',
+  'mew2': 'mewtwo',
+  'gyrados': 'gyarados',
+  'gyradose': 'gyarados',
+  'gyardos': 'gyarados',
+  'blastois': 'blastoise',
+  'blastose': 'blastoise',
+  'blastiose': 'blastoise',
+  'venasaur': 'venusaur',
+  'venosaur': 'venusaur',
+  'venusuar': 'venusaur',
+  'dragonite': 'dragonite',
+  'dragonit': 'dragonite',
+  'alakazm': 'alakazam',
+  'alakzam': 'alakazam',
+  'gengar': 'gengar',
+  'genger': 'gengar',
+  'machamp': 'machamp',
+  'machomp': 'machamp',
+  'snorlx': 'snorlax',
+  'snolax': 'snorlax',
+  'luiga': 'lugia',
+  'lugai': 'lugia',
+  'rayquza': 'rayquaza',
+  'rayquasa': 'rayquaza',
+  'rayqaza': 'rayquaza',
+  'groudn': 'groudon',
+  'groundon': 'groudon',
+  'kyogr': 'kyogre',
+  'kyorge': 'kyogre',
+  'arceaus': 'arceus',
+  'arcues': 'arceus',
+  'giratna': 'giratina',
+  'giritina': 'giratina',
+  'dialga': 'dialga',
+  'diagla': 'dialga',
+  'palkia': 'palkia',
+  'palika': 'palkia',
+  'umbreon': 'umbreon',
+  'umbrean': 'umbreon',
+  'espeon': 'espeon',
+  'espean': 'espeon',
+  'sylveon': 'sylveon',
+  'sylvean': 'sylveon',
+  'eeve': 'eevee',
+  'evee': 'eevee',
+  'eevie': 'eevee',
+  'lucario': 'lucario',
+  'lucairo': 'lucario',
+  'gardevoir': 'gardevoir',
+  'gardavoir': 'gardevoir',
+  'gardevior': 'gardevoir',
+  'greninja': 'greninja',
+  'grenjina': 'greninja',
+  'zoroark': 'zoroark',
+  'zoroak': 'zoroark',
+  'darkrai': 'darkrai',
+  'darkri': 'darkrai',
+  // Team Rocket's Pokemon - common with apostrophe issues
+  "rocket's": "rocket's",
+  'rockets': "rocket's",
+  "giovanni's": "giovanni's",
+  'giovannis': "giovanni's",
+  "surge's": "surge's",
+  'surges': "surge's",
+  "sabrina's": "sabrina's",
+  'sabrinas': "sabrina's",
+  "blaine's": "blaine's",
+  'blaines': "blaine's",
+  "koga's": "koga's",
+  'kogas': "koga's",
+  "erika's": "erika's",
+  'erikas': "erika's",
+  "misty's": "misty's",
+  'mistys': "misty's",
+  "brock's": "brock's",
+  'brocks': "brock's",
+};
+
+/**
+ * Set abbreviation expansions
+ * Maps common abbreviations to full set names for better API matching
+ */
+const SET_ABBREVIATIONS = {
+  // Scarlet & Violet era
+  'sv': 'Scarlet Violet',
+  's&v': 'Scarlet Violet',
+  'scarlet violet': 'Scarlet Violet',
+  'paldea': 'Paldea Evolved',
+  'obsidian': 'Obsidian Flames',
+  'paradox': 'Paradox Rift',
+  'paldean': 'Paldean Fates',
+  'temporal': 'Temporal Forces',
+  'twilight': 'Twilight Masquerade',
+  'shrouded': 'Shrouded Fable',
+  'stellar': 'Stellar Crown',
+  'surging': 'Surging Sparks',
+  'prismatic': 'Prismatic Evolutions',
+  
+  // Sword & Shield era
+  'swsh': 'Sword Shield',
+  'sw&sh': 'Sword Shield',
+  'sword shield': 'Sword Shield',
+  'vivid': 'Vivid Voltage',
+  'vivid voltage': 'Vivid Voltage',
+  'darkness': 'Darkness Ablaze',
+  'darkness ablaze': 'Darkness Ablaze',
+  'rebel': 'Rebel Clash',
+  'rebel clash': 'Rebel Clash',
+  'champions': 'Champion\'s Path',
+  'champion\'s path': 'Champion\'s Path',
+  'shining': 'Shining Fates',
+  'shining fates': 'Shining Fates',
+  'battle': 'Battle Styles',
+  'battle styles': 'Battle Styles',
+  'chilling': 'Chilling Reign',
+  'chilling reign': 'Chilling Reign',
+  'evolving': 'Evolving Skies',
+  'evolving skies': 'Evolving Skies',
+  'fusion': 'Fusion Strike',
+  'fusion strike': 'Fusion Strike',
+  'brilliant': 'Brilliant Stars',
+  'brilliant stars': 'Brilliant Stars',
+  'astral': 'Astral Radiance',
+  'astral radiance': 'Astral Radiance',
+  'pokemon go': 'Pokemon GO',
+  'lost': 'Lost Origin',
+  'lost origin': 'Lost Origin',
+  'silver': 'Silver Tempest',
+  'silver tempest': 'Silver Tempest',
+  'crown': 'Crown Zenith',
+  'crown zenith': 'Crown Zenith',
+  
+  // Sun & Moon era
+  'sm': 'Sun Moon',
+  's&m': 'Sun Moon',
+  'sun moon': 'Sun Moon',
+  'guardians': 'Guardians Rising',
+  'burning': 'Burning Shadows',
+  'crimson': 'Crimson Invasion',
+  'ultra': 'Ultra Prism',
+  'forbidden': 'Forbidden Light',
+  'celestial': 'Celestial Storm',
+  'dragon': 'Dragon Majesty',
+  'team up': 'Team Up',
+  'unbroken': 'Unbroken Bonds',
+  'unified': 'Unified Minds',
+  'hidden': 'Hidden Fates',
+  'cosmic': 'Cosmic Eclipse',
+  
+  // XY era
+  'xy': 'XY',
+  'flashfire': 'Flashfire',
+  'furious': 'Furious Fists',
+  'phantom': 'Phantom Forces',
+  'primal': 'Primal Clash',
+  'roaring': 'Roaring Skies',
+  'ancient': 'Ancient Origins',
+  'breakthrough': 'BREAKthrough',
+  'breakpoint': 'BREAKpoint',
+  'generations': 'Generations',
+  'fates': 'Fates Collide',
+  'steam': 'Steam Siege',
+  'evolutions': 'Evolutions',
+  
+  // Classic sets
+  'base': 'Base Set',
+  'base set': 'Base Set',
+  'jungle': 'Jungle',
+  'fossil': 'Fossil',
+  'rocket': 'Team Rocket',
+  'team rocket': 'Team Rocket',
+  'gym heroes': 'Gym Heroes',
+  'gym challenge': 'Gym Challenge',
+  'neo genesis': 'Neo Genesis',
+  'neo discovery': 'Neo Discovery',
+  'neo revelation': 'Neo Revelation',
+  'neo destiny': 'Neo Destiny',
+  
+  // Special sets
+  '151': 'Pokemon 151',
+  'pokemon 151': 'Pokemon 151',
+  'celebrations': 'Celebrations',
+  'special delivery': 'Special Delivery',
+};
+
+/**
+ * Correct common typos in a search query
+ * @param {string} query - Original query
+ * @returns {string} - Query with typos corrected
+ */
+export function correctTypos(query) {
+  if (!query) return '';
+  
+  const words = query.toLowerCase().split(/\s+/);
+  const corrected = words.map(word => {
+    // Check if this word has a known correction
+    const correction = POKEMON_TYPO_CORRECTIONS[word];
+    if (correction) {
+      console.log(`📝 Typo corrected: "${word}" → "${correction}"`);
+      return correction;
+    }
+    return word;
+  });
+  
+  return corrected.join(' ');
+}
+
+/**
+ * Expand set abbreviations in a search query
+ * Prioritizes longer matches first to avoid partial replacements
+ * @param {string} query - Original query  
+ * @returns {string} - Query with set names expanded
+ */
+export function expandSetAbbreviations(query) {
+  if (!query) return '';
+  
+  const queryLower = query.toLowerCase();
+  
+  // Sort abbreviations by length (longest first) to match "crown zenith" before "crown"
+  const sortedAbbrevs = Object.entries(SET_ABBREVIATIONS)
+    .sort((a, b) => b[0].length - a[0].length);
+  
+  for (const [abbrev, fullName] of sortedAbbrevs) {
+    // Skip if the full name is already in the query (avoid double expansion)
+    if (queryLower.includes(fullName.toLowerCase())) {
+      continue;
+    }
+    
+    // Match abbreviation as a word boundary (not part of another word)
+    const regex = new RegExp(`\\b${escapeRegex(abbrev)}\\b`, 'gi');
+    if (regex.test(queryLower)) {
+      // Don't expand if it's part of a card code like SWSH121
+      const codePattern = new RegExp(`${escapeRegex(abbrev)}\\d+`, 'gi');
+      if (!codePattern.test(queryLower)) {
+        const expanded = query.replace(regex, fullName);
+        console.log(`📦 Set expanded: "${query}" → "${expanded}"`);
+        return expanded;
+      }
+    }
+  }
+  
+  return query;
+}
+
+/**
+ * Escape special regex characters in a string
+ */
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Format query for better API matching
+ * - Adds # before standalone numbers for card number searches
+ * - Normalizes spacing
+ * @param {string} query - Original query
+ * @returns {string} - Formatted query
+ */
+export function formatQueryForApi(query) {
+  if (!query) return '';
+  
+  // Normalize multiple spaces
+  let formatted = query.replace(/\s+/g, ' ').trim();
+  
+  // Don't modify queries that are just card codes (SWSH121, etc.)
+  if (/^[a-z]{1,6}\d+$/i.test(formatted)) {
+    return formatted;
+  }
+  
+  return formatted;
+}
+
+/**
+ * Main query preprocessor - applies all transformations
+ * @param {string} query - Original search query
+ * @param {object} options - Preprocessing options
+ * @returns {object} - { original, processed, corrections }
+ */
+export function preprocessQuery(query, options = {}) {
+  const {
+    correctTypos: shouldCorrectTypos = true,
+    expandSets: shouldExpandSets = true,
+    formatForApi: shouldFormat = true,
+  } = options;
+  
+  if (!query?.trim()) {
+    return { original: '', processed: '', corrections: [] };
+  }
+  
+  const corrections = [];
+  let processed = normalizeApostrophes(query.trim());
+  const original = processed;
+  
+  // Step 1: Correct typos
+  if (shouldCorrectTypos) {
+    const beforeTypo = processed;
+    processed = correctTypos(processed);
+    if (processed !== beforeTypo.toLowerCase()) {
+      corrections.push({ type: 'typo', before: beforeTypo, after: processed });
+    }
+  }
+  
+  // Step 2: Expand set abbreviations
+  if (shouldExpandSets) {
+    const beforeExpand = processed;
+    processed = expandSetAbbreviations(processed);
+    if (processed.toLowerCase() !== beforeExpand.toLowerCase()) {
+      corrections.push({ type: 'set', before: beforeExpand, after: processed });
+    }
+  }
+  
+  // Step 3: Format for API
+  if (shouldFormat) {
+    processed = formatQueryForApi(processed);
+  }
+  
+  return {
+    original,
+    processed,
+    corrections,
+    wasModified: corrections.length > 0,
+  };
+}
 
 // Regex to detect card number patterns (pure numbers or alphanumeric codes)
 const CARD_NUMBER_PATTERN = /^([a-z]{1,6}\d{1,4}|\d{1,4}(\/\d{1,4})?)$/i;

@@ -9,7 +9,7 @@
 import { normalizeApiCard } from './cardHelpers';
 
 // Import improved search helpers (ranking is done ONCE via improveSearchResults)
-import { improveSearchResults } from './searchHelpers';
+import { improveSearchResults, preprocessQuery } from './searchHelpers';
 
 // Cloud Functions base URL (secure - no API keys exposed)
 const CLOUD_FUNCTIONS_BASE = 'https://us-central1-rafchu-tcg-app.cloudfunctions.net';
@@ -478,6 +478,8 @@ export async function apiFetchMarketPrices(card) {
  * - PriceCharting: PRIMARY search for card data (NO PRICES in search results)
  * - CardMarket: Image enrichment during search
  * - Prices: Fetched ON-DEMAND via apiFetchMarketPrices when user interacts with card
+ * 
+ * Now includes query preprocessing for typo correction and set expansion!
  */
 export async function apiSearchCardsHybrid(query, options = {}) {
   const { 
@@ -488,7 +490,18 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   
   if (!query?.trim()) return [];
   
-  // Check cache first
+  // STEP 0: Preprocess query (typo correction, set expansion)
+  const { processed: processedQuery, wasModified, corrections } = preprocessQuery(query);
+  
+  if (wasModified) {
+    console.log(`🔧 Query preprocessed: "${query}" → "${processedQuery}"`);
+    corrections.forEach(c => console.log(`   ${c.type}: ${c.before} → ${c.after}`));
+  }
+  
+  // Use processed query for search, but cache under original for user experience
+  const searchQuery = processedQuery || query;
+  
+  // Check cache first (using original query for cache key)
   const canonical = canonicalizeQuery(query);
   if (useCache) {
     const cached = getSearchCacheEntry(canonical);
@@ -500,7 +513,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   }
   
   // Search BOTH APIs in parallel for comprehensive results
-  console.log('🔍 Searching both PriceCharting and CardMarket...');
+  console.log(`🔍 Searching both PriceCharting and CardMarket for: "${searchQuery}"`);
   
   // Add timeout to prevent hanging (8s for CardMarket, 10s for PriceCharting)
   const timeout = (ms) => new Promise((_, reject) => 
@@ -509,7 +522,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   
   const [priceChartingResults, cardMarketResults] = await Promise.all([
     Promise.race([
-      apiSearchPriceCharting(query, { limit: maxResults }),
+      apiSearchPriceCharting(searchQuery, { limit: maxResults }),
       timeout(10000)
     ]).catch(err => {
       console.error('PriceCharting search error:', err.message);
@@ -517,7 +530,8 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     }),
     Promise.race([
       // Use skipRanking to avoid duplicate ranking - we'll rank once at the end
-      apiSearchCards(query, { useCache: false, maxResults: maxResults, skipRanking: true }),
+      // Pass original query for internal caching, but searchQuery for API
+      apiSearchCards(searchQuery, { useCache: false, maxResults: maxResults, skipRanking: true }),
       timeout(8000)
     ]).catch(err => {
       console.error('CardMarket search error:', err.message);
@@ -597,12 +611,13 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   
   console.log(`📥 Before improvements: ${finalResults.length} results`);
   
-  // Apply comprehensive search improvements (NEW!)
+  // Apply comprehensive search improvements
   // - Filters out irrelevant cards (e.g., non-Charizard cards when searching "charizard 199")
   // - Deduplicates and merges duplicate entries
   // - Ranks by relevance score
   // - Limits to top results
-  finalResults = improveSearchResults(finalResults, query, {
+  // Use PROCESSED query for ranking (matches what we searched for)
+  finalResults = improveSearchResults(finalResults, searchQuery, {
     maxResults: maxResults,
     enableDeduplication: true,
     enableFiltering: true,
