@@ -524,22 +524,25 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     // Query preprocessed (typos/sets corrected)
   }
   
-  // STEP 0.5: Smart query for API - if query has name + number, search just by name
-  // This is because APIs don't search across number fields well
-  // We'll filter by number client-side after getting results
+  // STEP 0.5: Smart query for API - simplify query for better API results
+  // APIs don't search well across number fields, set names, or card types
+  // We search by just the Pokemon name and filter client-side for everything else
   const parsed = parseQuery(processedQuery || query);
   let searchQuery = processedQuery || query;
   
-  // If we have both a Pokemon name AND a card number, search by just the name
-  // This ensures we get results that we can then filter by number
-  if (parsed.primaryName && parsed.primaryName.length >= 2 && parsed.numbers.length > 0) {
-    // Build search query with just name + card types (no numbers)
-    const nameParts = [parsed.primaryName];
-    if (parsed.cardTypes.length > 0) {
-      nameParts.push(...parsed.cardTypes);
-    }
-    searchQuery = nameParts.join(' ');
-    console.log(`🔧 Smart search: "${query}" → API query "${searchQuery}" (will filter by #${parsed.numbers.join(', #')})`);
+  // If we have a Pokemon name AND any specific filters (numbers, card types, or set words)
+  // search by just the name to get maximum results, then filter client-side
+  const hasFilters = parsed.numbers.length > 0 || parsed.setWords.length > 0 || parsed.cardTypes.length > 0;
+  
+  if (parsed.primaryName && parsed.primaryName.length >= 2 && hasFilters) {
+    // Search by just the Pokemon name - client-side filtering handles the rest
+    searchQuery = parsed.primaryName;
+    
+    const filterDesc = [];
+    if (parsed.cardTypes.length > 0) filterDesc.push(`type:${parsed.cardTypes.join(',')}`);
+    if (parsed.numbers.length > 0) filterDesc.push(`#${parsed.numbers.join(', #')}`);
+    if (parsed.setWords.length > 0) filterDesc.push(`set:${parsed.setWords.join(' ')}`);
+    console.log(`🔧 Smart search: "${query}" → API query "${searchQuery}" (will filter by ${filterDesc.join(', ')})`);
   }
   
   // Check cache first (using original query for cache key)

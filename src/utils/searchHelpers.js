@@ -504,9 +504,19 @@ export function filterByRelevance(results, query) {
       }
     }
     
-    // RULE 2: If query has a card type (ex, gx, v), require it in name
+    // RULE 2: If query has a card type (ex, gx, v), check name OR type fields
+    // Some APIs store "ex" in the name, others in supertype/product_type
     if (cardTypes.length > 0) {
-      const hasAnyType = cardTypes.some(type => nameLower.includes(type));
+      const supertype = (card.supertype || '').toLowerCase();
+      const productType = (card.product_type || '').toLowerCase();
+      const rarity = (card.rarity || '').toLowerCase();
+      
+      const hasAnyType = cardTypes.some(type => 
+        nameLower.includes(type) || 
+        supertype.includes(type) || 
+        productType.includes(type) ||
+        rarity.includes(type)
+      );
       if (!hasAnyType) {
         return false;
       }
@@ -635,7 +645,16 @@ export function scoreRelevance(card, query) {
   
   // 7. CARD TYPE MATCH (10 points)
   if (cardTypes.length > 0) {
-    const hasType = cardTypes.some(type => nameLower.includes(type));
+    const supertype = (card.supertype || '').toLowerCase();
+    const productType = (card.product_type || '').toLowerCase();
+    const rarity = (card.rarity || '').toLowerCase();
+    
+    const hasType = cardTypes.some(type => 
+      nameLower.includes(type) || 
+      supertype.includes(type) || 
+      productType.includes(type) ||
+      rarity.includes(type)
+    );
     if (hasType) {
       score += 10;
     }
