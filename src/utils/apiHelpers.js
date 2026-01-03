@@ -529,7 +529,15 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Solution: When set is specified, search BOTH the Pokemon name AND just the set name, then merge.
   const parsed = parseQuery(processedQuery || query);
   let searchQuery = processedQuery || query;
-  let setOnlyQuery = null; // Secondary query for set-specific search
+  let setOnlyQueries = []; // Secondary queries for set-specific search
+  
+  // Set aliases: some sets are subsets and need parent set search to find cards
+  // e.g., "Classic Collection" is within "Celebrations" - API only finds it via "celebrations"
+  const SET_PARENT_ALIASES = {
+    'classic': 'celebrations',
+    'classic collection': 'celebrations',
+    'collection': null, // Don't expand "collection" alone - too generic
+  };
   
   // If we have a Pokemon name AND any specific filters
   const hasFilters = parsed.numbers.length > 0 || parsed.setWords.length > 0 || parsed.cardTypes.length > 0;
@@ -538,17 +546,25 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     // Search by just the Pokemon name (APIs don't understand set names in combined queries)
     searchQuery = parsed.primaryName;
     
-    // If set words are present, also do a separate search for just the set name
-    // This ensures we get cards FROM that set, even if the combined query fails
+    // If set words are present, also do separate searches for set names
     if (parsed.setWords.length > 0) {
-      setOnlyQuery = parsed.setWords.join(' ');
+      const setQuery = parsed.setWords.join(' ').toLowerCase();
+      setOnlyQueries.push(setQuery);
+      
+      // Check if this set has a parent alias we should also search
+      // e.g., "classic" → also search "celebrations"
+      for (const [alias, parent] of Object.entries(SET_PARENT_ALIASES)) {
+        if (setQuery.includes(alias) && parent && !setOnlyQueries.includes(parent)) {
+          setOnlyQueries.push(parent);
+        }
+      }
     }
     
     const filterDesc = [];
     if (parsed.cardTypes.length > 0) filterDesc.push(`type:${parsed.cardTypes.join(',')}`);
     if (parsed.numbers.length > 0) filterDesc.push(`#${parsed.numbers.join(', #')}`);
     if (parsed.setWords.length > 0) filterDesc.push(`set:${parsed.setWords.join(' ')}`);
-    console.log(`🔧 Smart search: "${query}" → API queries "${searchQuery}"${setOnlyQuery ? ` + "${setOnlyQuery}"` : ''} (will filter by ${filterDesc.join(', ')})`);
+    console.log(`🔧 Smart search: "${query}" → API queries "${searchQuery}"${setOnlyQueries.length ? ` + [${setOnlyQueries.join(', ')}]` : ''} (will filter by ${filterDesc.join(', ')})`);
   }
   
   // Check cache first (using original query for cache key)
@@ -587,24 +603,25 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     })
   ];
   
-  // Add set-only search if applicable (to find cards FROM that set)
-  if (setOnlyQuery) {
+  // Add set-only searches if applicable (to find cards FROM those sets)
+  // This handles cases like "classic collection" which needs to also search "celebrations"
+  for (const setQuery of setOnlyQueries) {
     searchPromises.push(
       Promise.race([
-        apiSearchCards(setOnlyQuery, { useCache: false, maxResults: 50, skipRanking: true }),
+        apiSearchCards(setQuery, { useCache: false, maxResults: 50, skipRanking: true }),
         timeout(8000)
       ]).catch(err => {
-        console.error('Set-only search error:', err.message);
+        console.error(`Set search "${setQuery}" error:`, err.message);
         return [];
       })
     );
   }
   
   const searchResults = await Promise.all(searchPromises);
-  const [priceChartingResults, cardMarketResults, setOnlyResults = []] = searchResults;
+  const [priceChartingResults, cardMarketResults, ...setSearchResults] = searchResults;
   
-  // Merge set-only results into cardMarket results (they're from the same source type)
-  const combinedCardMarketResults = [...cardMarketResults, ...setOnlyResults];
+  // Merge all set search results into cardMarket results
+  const combinedCardMarketResults = [...cardMarketResults, ...setSearchResults.flat()];
   
   // Results received from both APIs
   
