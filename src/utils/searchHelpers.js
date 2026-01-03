@@ -522,26 +522,50 @@ export function filterByRelevance(results, query) {
       }
     }
     
-    // RULE 3: If query has numbers/codes, require ALL of them to match
+    // RULE 3: If query has numbers/codes, require ALL of them to match PRECISELY
     // This handles queries like "SM-P 325" where both parts should match "325/SM-P"
+    // IMPORTANT: "24" should match "24" or "24/203" but NOT "247" or "124"
     if (numbers.length > 0) {
       const cardId = String(card.id || '').toLowerCase();
       const normalizedCardNumber = normalizeCardNumber(numberLower);
+      
+      // Helper: Check if queryNum matches as a complete number (not substring)
+      const matchesAsWholeNumber = (cardNum, queryNum) => {
+        // Exact match
+        if (cardNum === queryNum) return true;
+        
+        // Match with word boundaries (handles "24/203", "024", etc.)
+        // Split by common separators and check if any part matches
+        const cardParts = cardNum.split(/[\/\-_\s]+/);
+        if (cardParts.some(part => part === queryNum || normalizeCardNumber(part) === normalizeCardNumber(queryNum))) {
+          return true;
+        }
+        
+        // Check if query is at start or end with separator (e.g., "24/" or "/24")
+        const separatorPattern = new RegExp(`(^|[^0-9])${queryNum}([^0-9]|$)`);
+        if (separatorPattern.test(cardNum)) return true;
+        
+        return false;
+      };
       
       // Check that ALL number parts match somewhere in the card number or ID
       const allNumbersMatch = numbers.every(queryNumber => {
         const normalizedQueryNumber = normalizeCardNumber(queryNumber);
         
-        const hasNumberMatch = 
-          numberLower.includes(queryNumber) || 
-          normalizedCardNumber === normalizedQueryNumber ||
-          normalizedCardNumber.includes(normalizedQueryNumber) ||
-          numberLower === queryNumber ||
-          // Also check if query number appears in cardId (handles various formats)
-          cardId.includes(queryNumber) || 
-          cardId.includes(normalizedQueryNumber);
+        // For alphanumeric codes like "SWSH121", use includes (they're unique)
+        const isAlphanumericCode = /[a-z]/i.test(queryNumber);
         
-        return hasNumberMatch;
+        if (isAlphanumericCode) {
+          // Alphanumeric codes can use substring matching (SWSH121 is unique enough)
+          return numberLower.includes(queryNumber) || 
+                 cardId.includes(queryNumber) ||
+                 normalizedCardNumber.includes(normalizedQueryNumber);
+        } else {
+          // Pure numbers need precise matching (24 should NOT match 247)
+          return matchesAsWholeNumber(numberLower, queryNumber) ||
+                 matchesAsWholeNumber(normalizedCardNumber, normalizedQueryNumber) ||
+                 matchesAsWholeNumber(cardId, queryNumber);
+        }
       });
       
       if (!allNumbersMatch) {
