@@ -2,7 +2,8 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X } from "lucide-react";
+import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus } from "lucide-react";
+import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
@@ -53,6 +54,9 @@ export function TradeCalculator() {
   const [shareLoading, setShareLoading] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  
+  // Manual card entry state
+  const [showManualEntry, setShowManualEntry] = useState(false);
 
   // Load default percentage from user profile
   useEffect(() => {
@@ -554,6 +558,38 @@ export function TradeCalculator() {
     triggerQuickAddFeedback("Pending deal deleted");
   };
 
+  // Handle manual card entry
+  const handleManualCardAdd = useCallback((manualCard) => {
+    // Add the manual card to the trade calculator
+    const tradeItem = {
+      id: `${manualCard.id}-trade-${Date.now()}`,
+      baseId: manualCard.id,
+      name: manualCard.name,
+      set: manualCard.set,
+      number: manualCard.number,
+      rarity: manualCard.rarity,
+      image: manualCard.image,
+      condition: 'NM',
+      tradePct: tradeDefaultPct,
+      addedAt: Date.now(),
+      isManualEntry: true,
+      // Manual price handling
+      manualPrice: manualCard.manualPrice,
+      manualPriceCurrency: manualCard.manualPriceCurrency,
+      // Graded card fields
+      isGraded: manualCard.isGraded,
+      gradingCompany: manualCard.gradingCompany,
+      grade: manualCard.grade,
+      gradedPrice: manualCard.gradedPrice,
+      gradedPriceCurrency: manualCard.gradedPriceCurrency,
+      notes: manualCard.notes,
+    };
+    
+    setTradeItems(prev => [...prev, tradeItem]);
+    setShowManualEntry(false);
+    triggerQuickAddFeedback(`"${manualCard.name}" added to trade calculator`);
+  }, [tradeDefaultPct, setTradeItems, triggerQuickAddFeedback]);
+
   // Generate text summary for sharing
   const generateTextSummary = useCallback(() => {
     const selectedItems = tradeItems.filter(it => selectedIds.has(it.id));
@@ -758,14 +794,23 @@ export function TradeCalculator() {
             <p className="text-muted-foreground">Vendor Toolkit</p>
           </div>
         </div>
-        <Button
-          variant="outline"
-          onClick={() => setShowPendingModal(true)}
-          disabled={pendingDeals.length === 0}
-        >
-          <FolderOpen className="h-4 w-4 mr-2" />
-          Pending Deals ({pendingDeals.length})
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowManualEntry(true)}
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Manual Add
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setShowPendingModal(true)}
+            disabled={pendingDeals.length === 0}
+          >
+            <FolderOpen className="h-4 w-4 mr-2" />
+            Pending Deals ({pendingDeals.length})
+          </Button>
+        </div>
       </div>
 
       <Card className="rounded-2xl p-4 shadow mb-4">
@@ -985,6 +1030,21 @@ export function TradeCalculator() {
           );
         })}
       </div>
+
+      {/* Manual Card Entry Modal */}
+      {showManualEntry && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <CardContent className="p-6">
+              <ManualCardEntry
+                onAddCard={handleManualCardAdd}
+                onCancel={() => setShowManualEntry(false)}
+                mode="vendor"
+              />
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Pending Deals Modal */}
       {showPendingModal && (
