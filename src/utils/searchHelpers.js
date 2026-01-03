@@ -218,6 +218,9 @@ const SET_ABBREVIATIONS = {
   '151': 'Pokemon 151',
   'pokemon 151': 'Pokemon 151',
   'celebrations': 'Celebrations',
+  'classic': 'Classic Collection',
+  'classic collection': 'Classic Collection',
+  'celebrations classic': 'Classic Collection',
   'special delivery': 'Special Delivery',
 };
 
@@ -397,7 +400,7 @@ const SET_RELATED_WORDS = new Set([
   'unbroken', 'bonds', 'unified', 'minds', 'hidden', 'cosmic', 'eclipse',
   'flashfire', 'furious', 'fists', 'phantom', 'primal', 'roaring', 'ancient',
   'origins', 'breakthrough', 'breakpoint', 'generations', 'collide', 'steam', 'siege',
-  'celebrations', 'pokemon', 'go', '151', 'special', 'delivery', 'rivals', 'dri',
+  'celebrations', 'classic', 'collection', 'pokemon', 'go', '151', 'special', 'delivery', 'rivals', 'dri',
 ]);
 
 /**
