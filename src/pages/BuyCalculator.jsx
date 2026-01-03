@@ -180,13 +180,26 @@ export function BuyCalculator() {
     const qty = item.quantity || 1;
     const pct = (item.buyPct ?? buyDefaultPct) / 100;
     
-    // For graded cards, use graded price (stored in USD, need to convert)
+    // For graded cards, use graded price
     if (item.isGraded && item.gradedPrice) {
-      const gradedPriceInCurrency = convertCurrency(parseFloat(item.gradedPrice), currency);
+      // gradedPriceCurrency tells us what currency the price was entered in
+      // API-fetched graded prices are in USD, manual entries use user's currency
+      const sourceCurrency = item.gradedPriceCurrency || 'USD';
+      const gradedPriceInCurrency = convertCurrency(parseFloat(item.gradedPrice), currency, sourceCurrency);
       const gradedValue = gradedPriceInCurrency * pct;
       const finalUnit = item.overrideValue ?? gradedValue;
       const finalTotal = finalUnit * qty;
       return { graded: gradedValue, finalUnit, finalTotal, qty, isGraded: true };
+    }
+    
+    // For manual cards with manual price (not graded), use that price
+    if (item.isManualEntry && item.manualPrice) {
+      const sourceCurrency = item.manualPriceCurrency || 'USD';
+      const manualPriceInCurrency = convertCurrency(parseFloat(item.manualPrice), currency, sourceCurrency);
+      const manualValue = manualPriceInCurrency * pct;
+      const finalUnit = item.overrideValue ?? manualValue;
+      const finalTotal = finalUnit * qty;
+      return { tcg: manualValue, cmAvg: manualValue, cmLowest: manualValue, suggested: manualValue, finalUnit, finalTotal, qty, isGraded: false };
     }
     
     // For ungraded cards, use market prices
