@@ -166,6 +166,12 @@ service cloud.firestore {
         request.auth.uid == resource.data.vendorId;
     }
 
+    // Pending Deals - Synced across devices for trade/buy calculators
+    match /pendingDeals/{userId} {
+      // Only owner can read/write their pending deals
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
     // Card Database Cache - Public read, Cloud Functions write
     match /card_database/{cardKey} {
       // Public read for all authenticated users (for instant search)

@@ -6,7 +6,7 @@ import { ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Cop
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
-import { collection, addDoc, doc, setDoc } from "firebase/firestore";
+import { collection, addDoc, doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
 
 /**
  * Buy Calculator Page (Vendor Toolkit)
@@ -52,17 +52,54 @@ export function BuyCalculator() {
     }
   }, [userProfile?.defaultBuyPct]);
 
-  // Load pending deals from localStorage
-  useEffect(() => {
+  // Helper function to save pending deals to Firestore
+  const savePendingDealsToFirestore = useCallback(async (deals) => {
+    if (!user?.uid || !db) return;
     try {
-      const saved = localStorage.getItem(`buy_pending_${user?.uid}`);
-      if (saved) {
-        setPendingDeals(JSON.parse(saved));
-      }
+      const docRef = doc(db, "pendingDeals", user.uid);
+      // First get current doc to preserve tradeDeals
+      const snapshot = await getDoc(docRef);
+      const currentData = snapshot.exists() ? snapshot.data() : {};
+      await setDoc(docRef, {
+        ...currentData,
+        buyDeals: deals
+      });
     } catch (error) {
-      console.error("Failed to load pending deals:", error);
+      console.error("Failed to save pending deals to Firestore:", error);
+      // Fallback to localStorage
+      localStorage.setItem(`buy_pending_${user.uid}`, JSON.stringify(deals));
     }
-  }, [user]);
+  }, [user, db]);
+
+  // Load pending deals from Firestore (real-time sync across devices)
+  useEffect(() => {
+    if (!user?.uid || !db) return;
+
+    const docRef = doc(db, "pendingDeals", user.uid);
+    
+    // Use onSnapshot for real-time sync across devices
+    const unsubscribe = onSnapshot(docRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setPendingDeals(data.buyDeals || []);
+      } else {
+        setPendingDeals([]);
+      }
+    }, (error) => {
+      console.error("Failed to load pending deals:", error);
+      // Fallback to localStorage if Firestore fails
+      try {
+        const saved = localStorage.getItem(`buy_pending_${user.uid}`);
+        if (saved) {
+          setPendingDeals(JSON.parse(saved));
+        }
+      } catch (e) {
+        console.error("localStorage fallback also failed:", e);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user, db]);
 
   const removeFromBuy = (entryId) => {
     setBuyItems((prev) => prev.filter((item) => item.entryId !== entryId));
@@ -360,7 +397,7 @@ export function BuyCalculator() {
 
     const updated = [...pendingDeals, newDeal];
     setPendingDeals(updated);
-    localStorage.setItem(`buy_pending_${user.uid}`, JSON.stringify(updated));
+    savePendingDealsToFirestore(updated);
 
     // Remove saved items from current list
     setBuyItems(prev => prev.filter(it => !selectedIds.has(it.entryId)));
@@ -378,7 +415,7 @@ export function BuyCalculator() {
   const handleDeletePending = (dealId) => {
     const updated = pendingDeals.filter(d => d.id !== dealId);
     setPendingDeals(updated);
-    localStorage.setItem(`buy_pending_${user.uid}`, JSON.stringify(updated));
+    savePendingDealsToFirestore(updated);
     triggerQuickAddFeedback("Pending deal deleted");
   };
 
