@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Package, Clock, User, AlertCircle, MessageCircle } from "lucide-react";
+import { Package, Clock, User, AlertCircle } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { formatCurrency, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { getDoc, doc } from "firebase/firestore";
@@ -244,16 +244,6 @@ export function SharedTradeOffer() {
         </CardContent>
       </Card>
 
-      {/* Contact CTA */}
-      <Card className="rounded-2xl mt-4 border-blue-200 bg-blue-50">
-        <CardContent className="p-4 text-center">
-          <MessageCircle className="h-8 w-8 text-blue-600 mx-auto mb-2" />
-          <p className="font-semibold text-blue-800">Interested in this trade?</p>
-          <p className="text-sm text-blue-700">
-            Contact {offer.vendorName} to discuss the details!
-          </p>
-        </CardContent>
-      </Card>
     </div>
   );
 }

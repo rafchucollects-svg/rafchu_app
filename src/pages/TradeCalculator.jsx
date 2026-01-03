@@ -603,7 +603,7 @@ export function TradeCalculator() {
         totalValue: selectedTotals.finalValue,
         currency: currency,
         createdAt: Date.now(),
-        expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 days expiry
+        expiresAt: Date.now() + (24 * 60 * 60 * 1000), // 24 hours expiry
       };
       
       const docRef = await addDoc(collection(db, "tradeOffers"), tradeOffer);
@@ -1304,7 +1304,7 @@ export function TradeCalculator() {
                     Generate Share Link
                   </h4>
                   <p className="text-sm text-muted-foreground mb-3">
-                    Create a link that shows your trade offer with card images. Link expires in 7 days.
+                    Create a link that shows your trade offer with card images. Link expires in 24 hours.
                   </p>
                   
                   {!shareLink ? (
