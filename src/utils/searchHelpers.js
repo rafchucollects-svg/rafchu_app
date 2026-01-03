@@ -318,16 +318,25 @@ function escapeRegex(str) {
 
 /**
  * Format query for better API matching
- * - Adds # before standalone numbers for card number searches
  * - Normalizes spacing
+ * - Removes ampersands and "and" conjunctions (for Tag Team cards)
+ *   e.g., "Reshiram & Charizard" → "Reshiram Charizard"
  * @param {string} query - Original query
  * @returns {string} - Formatted query
  */
 export function formatQueryForApi(query) {
   if (!query) return '';
   
+  let formatted = query;
+  
+  // Remove ampersands and normalize "and" in card names (for Tag Team searches)
+  // "Reshiram & Charizard GX" → "Reshiram Charizard GX"
+  // "Pikachu and Zekrom GX" → "Pikachu Zekrom GX"
+  formatted = formatted.replace(/\s*&\s*/g, ' ');
+  formatted = formatted.replace(/\s+and\s+/gi, ' ');
+  
   // Normalize multiple spaces
-  let formatted = query.replace(/\s+/g, ' ').trim();
+  formatted = formatted.replace(/\s+/g, ' ').trim();
   
   // Don't modify queries that are just card codes (SWSH121, etc.)
   if (/^[a-z]{1,6}\d+$/i.test(formatted)) {
@@ -496,6 +505,7 @@ export function parseQuery(query) {
 /**
  * Normalize card name for flexible matching
  * Handles variations like "M Charizard-EX" vs "Mega Charizard X EX"
+ * Also handles Tag Team cards: "Reshiram & Charizard-GX" vs "Reshiram Charizard GX"
  */
 function normalizeCardName(name) {
   if (!name) return '';
@@ -503,6 +513,10 @@ function normalizeCardName(name) {
   
   // Expand "M " prefix to "mega " for matching (M Charizard → Mega Charizard)
   normalized = normalized.replace(/^m\s+/i, 'mega ');
+  
+  // Normalize ampersands to spaces (for Tag Team cards)
+  // "Reshiram & Charizard-GX" → "Reshiram Charizard-GX"
+  normalized = normalized.replace(/\s*&\s*/g, ' ');
   
   // Remove hyphens between name and type (Charizard-EX → Charizard EX)
   normalized = normalized.replace(/-(?=ex|gx|v|vmax|vstar)\b/gi, ' ');

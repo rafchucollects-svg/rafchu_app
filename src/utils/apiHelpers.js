@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v3.1-promo-search';
+const CACHE_VERSION = 'v3.2-tag-team-search';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -547,6 +547,27 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   if (parsed.primaryName && parsed.primaryName.length >= 2 && hasFilters) {
     // Search by just the Pokemon name (APIs don't understand set names in combined queries)
     searchQuery = parsed.primaryName;
+    
+    // TAG TEAM DETECTION: If we have multiple words in primaryName AND card type is GX,
+    // this could be a Tag Team card (e.g., "Reshiram Charizard GX" → "Reshiram & Charizard-GX")
+    // The API doesn't find Tag Team cards when searching both names together,
+    // but DOES find them when searching just the first Pokemon name.
+    const primaryNameWords = parsed.primaryName.split(/\s+/);
+    const isLikelyTagTeam = primaryNameWords.length >= 2 && 
+                           parsed.cardTypes.includes('gx') &&
+                           !parsed.setWords.length; // No set specified
+    
+    if (isLikelyTagTeam) {
+      // Search by just the first Pokemon name (API will return Tag Team cards)
+      // e.g., "Reshiram Charizard GX" → search "Reshiram" to find "Reshiram & Charizard-GX"
+      searchQuery = primaryNameWords[0];
+      // Also search for the second Pokemon name to ensure we cover both directions
+      // e.g., "Pikachu Zekrom GX" - searching "Pikachu" AND "Zekrom" separately
+      if (primaryNameWords.length >= 2) {
+        setOnlyQueries.push(primaryNameWords[1]);
+      }
+      console.log(`🏷️ Tag Team detection: "${parsed.primaryName}" → searching "${searchQuery}" and "${primaryNameWords[1]}"`);
+    }
     
     // If set words are present, also do separate searches for set names
     if (parsed.setWords.length > 0) {
