@@ -152,6 +152,20 @@ service cloud.firestore {
         request.auth.token.email == 'rafchucollects@gmail.com';
     }
 
+    // Trade Offers - Shareable trade offer links
+    match /tradeOffers/{offerId} {
+      // Public read so shared links work for anyone
+      allow read: if true;
+      
+      // Authenticated users can create their own offers
+      allow create: if request.auth != null && 
+        request.auth.uid == request.resource.data.vendorId;
+      
+      // Owners can update/delete their offers
+      allow update, delete: if request.auth != null && 
+        request.auth.uid == resource.data.vendorId;
+    }
+
     // Card Database Cache - Public read, Cloud Functions write
     match /card_database/{cardKey} {
       // Public read for all authenticated users (for instant search)
