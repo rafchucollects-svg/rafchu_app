@@ -580,10 +580,21 @@ export function filterByRelevance(results, query) {
   };
   
   // Helper to check set match
+  // Also matches parent sets (e.g., "classic" also matches "celebrations" since Classic Collection is within Celebrations)
+  const SET_FILTER_EXPANSIONS = {
+    'classic': ['classic', 'celebrations'], // Classic Collection is within Celebrations
+    'collection': ['collection'], // Don't expand generic "collection"
+  };
+  
   const matchesSet = (card) => {
     if (setWords.length === 0) return true;
     const setLower = normalizeApostrophes((card.set || '').toLowerCase());
-    return setWords.some(setWord => setLower.includes(setWord));
+    
+    // For each setWord, check if the card's set matches it OR any of its parent/related sets
+    return setWords.some(setWord => {
+      const expansions = SET_FILTER_EXPANSIONS[setWord] || [setWord];
+      return expansions.some(term => setLower.includes(term));
+    });
   };
   
   // First pass: Apply ALL filters including set words
