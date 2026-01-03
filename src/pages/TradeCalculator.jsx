@@ -979,13 +979,13 @@ export function TradeCalculator() {
                   <div className="truncate text-xs text-muted-foreground">
                     {it.set} • {it.rarity} • #{it.number}
                   </div>
-                  {values.isGraded ? (
+                  {it.isGraded ? (
                     <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                      <div className="col-span-2 text-purple-600">
-                        {it.gradingCompany} {it.grade}
+                      <div className="col-span-2 text-purple-600 font-semibold">
+                        🏆 {it.gradingCompany} {it.grade}
                       </div>
                       <div className="font-semibold col-span-2">
-                        Graded Price ({it.tradePct ?? tradeDefaultPct}%): {formatPrice(values.graded)}
+                        Graded Value ({it.tradePct ?? tradeDefaultPct}%): {formatPrice(values.isGraded ? values.graded : values.suggested)}
                       </div>
                     </div>
                   ) : (
@@ -1018,7 +1018,7 @@ export function TradeCalculator() {
                   </div>
                 </div>
                 <div className="flex flex-col gap-2">
-                  {!values.isGraded && (
+                  {!it.isGraded && (
                     <ConditionSelect
                       value={it.condition}
                       onChange={(v) => updateTradeCondition(it.id, v)}
