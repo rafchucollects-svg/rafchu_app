@@ -524,29 +524,31 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     // Query preprocessed (typos/sets corrected)
   }
   
-  // STEP 0.5: Smart query for API - simplify query for better API results
-  // APIs don't search well across number fields, but DO search set names reasonably well
-  // We remove numbers and card types, but KEEP set names in the API query
+  // STEP 0.5: Smart query for API - handle set names specially
+  // APIs search card NAMES, not set names. So "pikachu celebrations" won't find Pikachu FROM Celebrations.
+  // Solution: When set is specified, search BOTH the Pokemon name AND just the set name, then merge.
   const parsed = parseQuery(processedQuery || query);
   let searchQuery = processedQuery || query;
+  let setOnlyQuery = null; // Secondary query for set-specific search
   
   // If we have a Pokemon name AND any specific filters
   const hasFilters = parsed.numbers.length > 0 || parsed.setWords.length > 0 || parsed.cardTypes.length > 0;
   
   if (parsed.primaryName && parsed.primaryName.length >= 2 && hasFilters) {
-    // Build smart query: Pokemon name + set name (if present)
-    // Keep set name to narrow down results from APIs (important for common names like "Pikachu")
-    // Remove numbers and card types - client-side filtering handles those
-    const queryParts = [parsed.primaryName];
+    // Search by just the Pokemon name (APIs don't understand set names in combined queries)
+    searchQuery = parsed.primaryName;
+    
+    // If set words are present, also do a separate search for just the set name
+    // This ensures we get cards FROM that set, even if the combined query fails
     if (parsed.setWords.length > 0) {
-      queryParts.push(parsed.setWords.join(' '));
+      setOnlyQuery = parsed.setWords.join(' ');
     }
-    searchQuery = queryParts.join(' ');
     
     const filterDesc = [];
     if (parsed.cardTypes.length > 0) filterDesc.push(`type:${parsed.cardTypes.join(',')}`);
     if (parsed.numbers.length > 0) filterDesc.push(`#${parsed.numbers.join(', #')}`);
-    console.log(`🔧 Smart search: "${query}" → API query "${searchQuery}" (will filter by ${filterDesc.join(', ')})`);
+    if (parsed.setWords.length > 0) filterDesc.push(`set:${parsed.setWords.join(' ')}`);
+    console.log(`🔧 Smart search: "${query}" → API queries "${searchQuery}"${setOnlyQuery ? ` + "${setOnlyQuery}"` : ''} (will filter by ${filterDesc.join(', ')})`);
   }
   
   // Check cache first (using original query for cache key)
@@ -561,14 +563,14 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   }
   
   // Search BOTH APIs in parallel for comprehensive results
-  // Searching both APIs in parallel
-  
   // Add timeout to prevent hanging (8s for CardMarket, 10s for PriceCharting)
   const timeout = (ms) => new Promise((_, reject) => 
     setTimeout(() => reject(new Error('Search timeout')), ms)
   );
   
-  const [priceChartingResults, cardMarketResults] = await Promise.all([
+  // Build search promises - include set-only search if we have set words
+  const searchPromises = [
+    // Primary search: Pokemon name
     Promise.race([
       apiSearchPriceCharting(searchQuery, { limit: maxResults }),
       timeout(10000)
@@ -577,15 +579,32 @@ export async function apiSearchCardsHybrid(query, options = {}) {
       return [];
     }),
     Promise.race([
-      // Use skipRanking to avoid duplicate ranking - we'll rank once at the end
-      // Pass original query for internal caching, but searchQuery for API
       apiSearchCards(searchQuery, { useCache: false, maxResults: maxResults, skipRanking: true }),
       timeout(8000)
     ]).catch(err => {
       console.error('CardMarket search error:', err.message);
       return [];
     })
-  ]);
+  ];
+  
+  // Add set-only search if applicable (to find cards FROM that set)
+  if (setOnlyQuery) {
+    searchPromises.push(
+      Promise.race([
+        apiSearchCards(setOnlyQuery, { useCache: false, maxResults: 50, skipRanking: true }),
+        timeout(8000)
+      ]).catch(err => {
+        console.error('Set-only search error:', err.message);
+        return [];
+      })
+    );
+  }
+  
+  const searchResults = await Promise.all(searchPromises);
+  const [priceChartingResults, cardMarketResults, setOnlyResults = []] = searchResults;
+  
+  // Merge set-only results into cardMarket results (they're from the same source type)
+  const combinedCardMarketResults = [...cardMarketResults, ...setOnlyResults];
   
   // Results received from both APIs
   
@@ -614,7 +633,8 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   const positionScores = new Map();
   
   // Add CardMarket results (they have better images and set data)
-  cardMarketResults.forEach((cmCard, index) => {
+  // Use combined results which includes set-only search results
+  combinedCardMarketResults.forEach((cmCard, index) => {
     const key = createCardKey(cmCard);
     cardMap.set(key, {
       ...cmCard,
