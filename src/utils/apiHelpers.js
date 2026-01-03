@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v3.2-tag-team-search';
+const CACHE_VERSION = 'v3.3-number-search';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -586,11 +586,22 @@ export async function apiSearchCardsHybrid(query, options = {}) {
       }
     }
     
-    // If searching with a number but no explicit set, also try "[name] promo" search
-    // This helps find promo variants of cards (e.g., "Mega Charizard X EX 23" → XY Promo)
-    if (parsed.numbers.length > 0 && parsed.setWords.length === 0) {
-      // Add a promo search to catch promo versions
-      setOnlyQueries.push(`${parsed.primaryName} promo`);
+    // If searching with a number, also search for just the number
+    // This catches cards that might be ranked low in name searches but high in number searches
+    // e.g., "Reshiram Charizard GX 217" - searching "Reshiram" might not return #217, but searching "217" will
+    if (parsed.numbers.length > 0) {
+      // Add direct number search
+      for (const num of parsed.numbers) {
+        // Only add if it's a reasonable card number (not too short to be meaningful)
+        if (num.length >= 2 || parseInt(num) >= 10) {
+          setOnlyQueries.push(num);
+        }
+      }
+      
+      // If no explicit set, also try "[name] promo" search for promo variants
+      if (parsed.setWords.length === 0) {
+        setOnlyQueries.push(`${parsed.primaryName} promo`);
+      }
     }
     
     const filterDesc = [];
