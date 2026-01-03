@@ -135,6 +135,9 @@ export function TradeCalculator() {
     );
   };
 
+  // Format price helper - defined early so it can be used by other functions
+  const formatPrice = (amount) => formatCurrency(amount, currency);
+
   const calculateItemValue = (item) => {
     const pct = (item.tradePct ?? tradeDefaultPct) / 100;
     
@@ -547,7 +550,7 @@ export function TradeCalculator() {
     summary += `Interested? Contact ${vendorName} to discuss!`;
     
     return summary;
-  }, [tradeItems, selectedIds, selectedTotals, userProfile, calculateItemValue, formatPrice]);
+  }, [tradeItems, selectedIds, selectedTotals, userProfile, currency]);
 
   // Copy text summary to clipboard
   const handleCopyTextSummary = async () => {
@@ -695,8 +698,6 @@ export function TradeCalculator() {
              grade.includes(query);
     });
   }, [collectionItems, inventorySearchQuery]);
-
-  const formatPrice = (amount) => formatCurrency(amount, currency);
 
   if (!user) {
     return (
