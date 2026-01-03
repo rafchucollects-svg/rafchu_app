@@ -222,6 +222,20 @@ const SET_ABBREVIATIONS = {
   'classic collection': 'Classic Collection',
   'celebrations classic': 'Classic Collection',
   'special delivery': 'Special Delivery',
+  
+  // Promo sets - don't expand these, just recognize them
+  'promo': 'Promo',
+  'promos': 'Promo',
+  'xy promo': 'XY Promos',
+  'xy promos': 'XY Promos',
+  'swsh promo': 'SWSH Promos',
+  'swsh promos': 'SWSH Promos',
+  'sm promo': 'SM Promos',
+  'sm promos': 'SM Promos',
+  'bw promo': 'BW Promos',
+  'bw promos': 'BW Promos',
+  'sv promo': 'SV Promos',
+  'sv promos': 'SV Promos',
 };
 
 /**
@@ -401,6 +415,8 @@ const SET_RELATED_WORDS = new Set([
   'flashfire', 'furious', 'fists', 'phantom', 'primal', 'roaring', 'ancient',
   'origins', 'breakthrough', 'breakpoint', 'generations', 'collide', 'steam', 'siege',
   'celebrations', 'classic', 'collection', 'pokemon', 'go', '151', 'special', 'delivery', 'rivals', 'dri',
+  // Promo-related words
+  'promo', 'promos', 'promotional',
 ]);
 
 /**
@@ -478,6 +494,56 @@ export function parseQuery(query) {
 }
 
 /**
+ * Normalize card name for flexible matching
+ * Handles variations like "M Charizard-EX" vs "Mega Charizard X EX"
+ */
+function normalizeCardName(name) {
+  if (!name) return '';
+  let normalized = normalizeApostrophes(name.toLowerCase());
+  
+  // Expand "M " prefix to "mega " for matching (M Charizard → Mega Charizard)
+  normalized = normalized.replace(/^m\s+/i, 'mega ');
+  
+  // Remove hyphens between name and type (Charizard-EX → Charizard EX)
+  normalized = normalized.replace(/-(?=ex|gx|v|vmax|vstar)\b/gi, ' ');
+  
+  // Normalize multiple spaces to single space
+  normalized = normalized.replace(/\s+/g, ' ').trim();
+  
+  return normalized;
+}
+
+/**
+ * Check if query name matches card name with flexible matching
+ * Handles abbreviations (M=Mega), hyphens, and spacing variations
+ */
+function nameMatchesFlexibly(cardName, queryName) {
+  // Direct inclusion check
+  if (cardName.includes(queryName)) return true;
+  
+  // Normalize both and check again
+  const normalizedCard = normalizeCardName(cardName);
+  const normalizedQuery = normalizeCardName(queryName);
+  
+  if (normalizedCard.includes(normalizedQuery)) return true;
+  
+  // For queries like "charizard x", also match "charizard-x" or "charizardx"
+  const queryNoSpaces = normalizedQuery.replace(/\s+/g, '');
+  const cardNoSpaces = normalizedCard.replace(/\s+/g, '');
+  if (cardNoSpaces.includes(queryNoSpaces)) return true;
+  
+  // Check if all significant words from query appear in card name
+  const queryWords = normalizedQuery.split(' ').filter(w => w.length > 1);
+  const cardWords = normalizedCard.split(' ');
+  const allWordsMatch = queryWords.every(qWord => 
+    cardWords.some(cWord => cWord.includes(qWord) || qWord.includes(cWord))
+  );
+  if (allWordsMatch && queryWords.length >= 2) return true;
+  
+  return false;
+}
+
+/**
  * Filter results to only include truly relevant cards
  * Normalizes apostrophes for consistent matching
  * Enhanced to handle number-only searches and set-based searches
@@ -501,8 +567,9 @@ export function filterByRelevance(results, query) {
     const numberLower = String(card.number || '').toLowerCase();
     
     // RULE 1: If query has a primary Pokemon name (>2 chars), REQUIRE it in card name
+    // Use flexible matching to handle variations like "M Charizard-EX" vs "Mega Charizard X EX"
     if (!isNumberOnlySearch && !isSetOnlySearch && primaryName && primaryName.length > 2) {
-      if (!nameLower.includes(primaryName)) {
+      if (!nameMatchesFlexibly(nameLower, primaryName)) {
         return false;
       }
     }
@@ -584,6 +651,9 @@ export function filterByRelevance(results, query) {
   const SET_FILTER_EXPANSIONS = {
     'classic': ['classic', 'celebrations'], // Classic Collection is within Celebrations
     'collection': ['collection'], // Don't expand generic "collection"
+    'promo': ['promo'], // Match any promo set (XY Promos, SWSH Promos, etc.)
+    'promos': ['promo'],
+    'promotional': ['promo'],
   };
   
   const matchesSet = (card) => {

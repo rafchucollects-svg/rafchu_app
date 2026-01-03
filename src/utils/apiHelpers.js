@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v3.0-promo-codes';
+const CACHE_VERSION = 'v3.1-promo-search';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -537,6 +537,8 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     'classic': 'celebrations',
     'classic collection': 'celebrations',
     'collection': null, // Don't expand "collection" alone - too generic
+    'promo': null, // "promo" is a filter, not a search term
+    'promos': null,
   };
   
   // If we have a Pokemon name AND any specific filters
@@ -549,7 +551,10 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     // If set words are present, also do separate searches for set names
     if (parsed.setWords.length > 0) {
       const setQuery = parsed.setWords.join(' ').toLowerCase();
-      setOnlyQueries.push(setQuery);
+      // Only add if it's not a generic term like "promo"
+      if (!['promo', 'promos', 'promotional'].includes(setQuery)) {
+        setOnlyQueries.push(setQuery);
+      }
       
       // Check if this set has a parent alias we should also search
       // e.g., "classic" → also search "celebrations"
@@ -558,6 +563,13 @@ export async function apiSearchCardsHybrid(query, options = {}) {
           setOnlyQueries.push(parent);
         }
       }
+    }
+    
+    // If searching with a number but no explicit set, also try "[name] promo" search
+    // This helps find promo variants of cards (e.g., "Mega Charizard X EX 23" → XY Promo)
+    if (parsed.numbers.length > 0 && parsed.setWords.length === 0) {
+      // Add a promo search to catch promo versions
+      setOnlyQueries.push(`${parsed.primaryName} promo`);
     }
     
     const filterDesc = [];
