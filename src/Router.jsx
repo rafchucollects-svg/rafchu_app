@@ -21,6 +21,7 @@ import { TradeCalculator } from "./pages/TradeCalculator";
 import { BuyCalculator } from "./pages/BuyCalculator";
 import { TransactionLog } from "./pages/TransactionLog";
 import { TransactionSummary } from "./pages/TransactionSummary";
+import { SharedTradeOffer } from "./pages/SharedTradeOffer";
 
 /**
  * Application Router Configuration
@@ -49,6 +50,11 @@ export function createAppRouter(authHandlers) {
         {
           path: "home",
           element: <HomeWrapper />,
+        },
+        // Shared Trade Offer (public view)
+        {
+          path: "trade-offer",
+          element: <SharedTradeOffer />,
         },
         // My User Routes
         {

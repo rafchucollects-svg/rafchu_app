@@ -1,11 +1,11 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen } from "lucide-react";
+import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
-import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, computeItemMetrics, convertCurrency } from "@/utils/cardHelpers";
+import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { collection, addDoc, doc, setDoc } from "firebase/firestore";
 
 /**
@@ -46,6 +46,13 @@ export function TradeCalculator() {
   const [tradeCurrency, setTradeCurrency] = useState(currency); // Currency for trade input
   const [cashAmount, setCashAmount] = useState(""); // Cash amount in trade
   const [cashDirection, setCashDirection] = useState("in"); // "in" = receiving cash, "out" = paying cash
+  
+  // Share trade offer state
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareLink, setShareLink] = useState("");
+  const [shareLoading, setShareLoading] = useState(false);
+  const [copiedText, setCopiedText] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Load default percentage from user profile
   useEffect(() => {
@@ -507,6 +514,131 @@ export function TradeCalculator() {
     triggerQuickAddFeedback("Pending deal deleted");
   };
 
+  // Generate text summary for sharing
+  const generateTextSummary = useCallback(() => {
+    const selectedItems = tradeItems.filter(it => selectedIds.has(it.id));
+    if (selectedItems.length === 0) return "";
+    
+    const vendorName = userProfile?.username || userProfile?.displayName || "Vendor";
+    let summary = `🔄 Trade Offer from ${vendorName}\n`;
+    summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    summary += `📦 Cards in this offer (${selectedItems.length}):\n\n`;
+    
+    selectedItems.forEach((item, index) => {
+      const values = calculateItemValue(item);
+      const conditionLabel = getConditionDisplayLabel(item.condition || "NM");
+      
+      if (item.isGraded) {
+        summary += `${index + 1}. ${item.name}\n`;
+        summary += `   ${item.set} #${item.number}\n`;
+        summary += `   🏆 ${item.gradingCompany} ${item.grade}\n`;
+        summary += `   💰 Trade Value: ${formatPrice(values.finalValue)}\n\n`;
+      } else {
+        summary += `${index + 1}. ${item.name}\n`;
+        summary += `   ${item.set} #${item.number}\n`;
+        summary += `   📋 Condition: ${conditionLabel}\n`;
+        summary += `   💰 Trade Value: ${formatPrice(values.finalValue)}\n\n`;
+      }
+    });
+    
+    summary += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+    summary += `💵 Total Offer Value: ${formatPrice(selectedTotals.finalValue)}\n`;
+    summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    summary += `Interested? Contact ${vendorName} to discuss!`;
+    
+    return summary;
+  }, [tradeItems, selectedIds, selectedTotals, userProfile, calculateItemValue, formatPrice]);
+
+  // Copy text summary to clipboard
+  const handleCopyTextSummary = async () => {
+    const summary = generateTextSummary();
+    try {
+      await navigator.clipboard.writeText(summary);
+      setCopiedText(true);
+      setTimeout(() => setCopiedText(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+      alert("Failed to copy to clipboard");
+    }
+  };
+
+  // Generate shareable link by saving to Firestore
+  const handleGenerateShareLink = async () => {
+    if (!user || !db) {
+      alert("Please sign in to generate a share link.");
+      return;
+    }
+    
+    setShareLoading(true);
+    try {
+      const selectedItems = tradeItems.filter(it => selectedIds.has(it.id));
+      
+      // Prepare items for storage (remove unnecessary data)
+      const shareItems = selectedItems.map(item => {
+        const values = calculateItemValue(item);
+        return {
+          name: item.name,
+          set: item.set,
+          number: item.number,
+          rarity: item.rarity,
+          condition: item.condition,
+          image: item.image || item.imageUrl || null,
+          tradeValue: values.finalValue,
+          tradePct: item.tradePct ?? tradeDefaultPct,
+          isGraded: item.isGraded || false,
+          gradingCompany: item.gradingCompany || null,
+          grade: item.grade || null,
+        };
+      });
+      
+      // Save to Firestore
+      const tradeOffer = {
+        vendorId: user.uid,
+        vendorName: userProfile?.username || userProfile?.displayName || "Vendor",
+        vendorAvatar: userProfile?.photoURL || null,
+        items: shareItems,
+        totalValue: selectedTotals.finalValue,
+        currency: currency,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 days expiry
+      };
+      
+      const docRef = await addDoc(collection(db, "tradeOffers"), tradeOffer);
+      const link = `${window.location.origin}/trade-offer?id=${docRef.id}`;
+      setShareLink(link);
+      
+    } catch (err) {
+      console.error("Failed to generate share link:", err);
+      alert("Failed to generate share link. Please try again.");
+    } finally {
+      setShareLoading(false);
+    }
+  };
+
+  // Copy share link to clipboard
+  const handleCopyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareLink);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+      alert("Failed to copy to clipboard");
+    }
+  };
+
+  // Open share modal
+  const handleOpenShareModal = () => {
+    if (selectedIds.size === 0) {
+      alert("Please select cards to share.");
+      return;
+    }
+    setShareLink(""); // Reset link
+    setCopiedText(false);
+    setCopiedLink(false);
+    setShowShareModal(true);
+  };
+
   const toggleInventorySelection = (entryId) => {
     setSelectedInventoryIds(prev => {
       const updated = new Set(prev);
@@ -692,6 +824,16 @@ export function TradeCalculator() {
               >
                 <Save className="h-4 w-4 mr-2" />
                 Save as Pending ({selectedIds.size})
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleOpenShareModal}
+                disabled={selectedIds.size === 0}
+                className="border-blue-300 text-blue-700 hover:bg-blue-50"
+              >
+                <Share2 className="h-4 w-4 mr-2" />
+                Share Offer ({selectedIds.size})
               </Button>
               <Button
                 size="sm"
@@ -1063,6 +1205,164 @@ export function TradeCalculator() {
             </p>
           </CardContent>
         </Card>
+      )}
+
+      {/* Share Trade Offer Modal */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div 
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setShowShareModal(false)}
+          />
+          <Card className="relative z-10 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto rounded-2xl">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Share2 className="h-6 w-6 text-blue-600" />
+                  <h2 className="text-xl font-bold">Share Trade Offer</h2>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowShareModal(false)}
+                >
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+
+              {/* Preview of cards being shared */}
+              <div className="mb-6">
+                <h3 className="font-semibold mb-3">Cards in this offer ({selectedIds.size})</h3>
+                <div className="space-y-2 max-h-60 overflow-y-auto border rounded-lg p-3 bg-gray-50">
+                  {tradeItems.filter(it => selectedIds.has(it.id)).map(item => {
+                    const values = calculateItemValue(item);
+                    return (
+                      <div key={item.id} className="flex items-center gap-3 p-2 bg-white rounded-lg">
+                        {item.image && (
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            className="h-12 w-9 rounded object-cover"
+                          />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm truncate">{item.name}</div>
+                          <div className="text-xs text-muted-foreground truncate">
+                            {item.set} #{item.number}
+                            {item.isGraded && ` • ${item.gradingCompany} ${item.grade}`}
+                          </div>
+                        </div>
+                        <div className="text-sm font-semibold text-green-600">
+                          {formatPrice(values.finalValue)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="text-lg font-bold text-green-700">
+                    Total Offer: {formatPrice(selectedTotals.finalValue)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Share Options */}
+              <div className="space-y-4">
+                {/* Copy Text Summary */}
+                <div className="p-4 border rounded-lg">
+                  <h4 className="font-semibold mb-2 flex items-center gap-2">
+                    <Copy className="h-4 w-4" />
+                    Copy Text Summary
+                  </h4>
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Copy a formatted text summary to paste in messages, social media, or anywhere else.
+                  </p>
+                  <Button
+                    onClick={handleCopyTextSummary}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    {copiedText ? (
+                      <>
+                        <Check className="h-4 w-4 mr-2 text-green-600" />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-4 w-4 mr-2" />
+                        Copy to Clipboard
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Generate Share Link */}
+                <div className="p-4 border rounded-lg">
+                  <h4 className="font-semibold mb-2 flex items-center gap-2">
+                    <Link className="h-4 w-4" />
+                    Generate Share Link
+                  </h4>
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Create a link that shows your trade offer with card images. Link expires in 7 days.
+                  </p>
+                  
+                  {!shareLink ? (
+                    <Button
+                      onClick={handleGenerateShareLink}
+                      disabled={shareLoading}
+                      className="w-full bg-blue-600 hover:bg-blue-700"
+                    >
+                      {shareLoading ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <Link className="h-4 w-4 mr-2" />
+                          Generate Link
+                        </>
+                      )}
+                    </Button>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <Input
+                          value={shareLink}
+                          readOnly
+                          className="bg-gray-50 text-sm"
+                        />
+                        <Button
+                          onClick={handleCopyShareLink}
+                          variant="outline"
+                          className="flex-shrink-0"
+                        >
+                          {copiedLink ? (
+                            <Check className="h-4 w-4 text-green-600" />
+                          ) : (
+                            <Copy className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                      {copiedLink && (
+                        <p className="text-sm text-green-600">Link copied to clipboard!</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowShareModal(false)}
+                >
+                  Close
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );
