@@ -525,23 +525,27 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   }
   
   // STEP 0.5: Smart query for API - simplify query for better API results
-  // APIs don't search well across number fields, set names, or card types
-  // We search by just the Pokemon name and filter client-side for everything else
+  // APIs don't search well across number fields, but DO search set names reasonably well
+  // We remove numbers and card types, but KEEP set names in the API query
   const parsed = parseQuery(processedQuery || query);
   let searchQuery = processedQuery || query;
   
-  // If we have a Pokemon name AND any specific filters (numbers, card types, or set words)
-  // search by just the name to get maximum results, then filter client-side
+  // If we have a Pokemon name AND any specific filters
   const hasFilters = parsed.numbers.length > 0 || parsed.setWords.length > 0 || parsed.cardTypes.length > 0;
   
   if (parsed.primaryName && parsed.primaryName.length >= 2 && hasFilters) {
-    // Search by just the Pokemon name - client-side filtering handles the rest
-    searchQuery = parsed.primaryName;
+    // Build smart query: Pokemon name + set name (if present)
+    // Keep set name to narrow down results from APIs (important for common names like "Pikachu")
+    // Remove numbers and card types - client-side filtering handles those
+    const queryParts = [parsed.primaryName];
+    if (parsed.setWords.length > 0) {
+      queryParts.push(parsed.setWords.join(' '));
+    }
+    searchQuery = queryParts.join(' ');
     
     const filterDesc = [];
     if (parsed.cardTypes.length > 0) filterDesc.push(`type:${parsed.cardTypes.join(',')}`);
     if (parsed.numbers.length > 0) filterDesc.push(`#${parsed.numbers.join(', #')}`);
-    if (parsed.setWords.length > 0) filterDesc.push(`set:${parsed.setWords.join(' ')}`);
     console.log(`🔧 Smart search: "${query}" → API query "${searchQuery}" (will filter by ${filterDesc.join(', ')})`);
   }
   
