@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v3.3-number-search';
+const CACHE_VERSION = 'v4.0-full-cardmarket';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {

@@ -2592,11 +2592,13 @@ exports.searchCardMarket = functions.runWith({
     return;
   }
   
-  console.log(`🔍 CardMarket search proxy: "${query}"`);
+  console.log(`🔍 CardMarket FULL search: "${query}"`);
   
   try {
     // IMPORTANT: Use /pokemon/cards (full CardMarket database) NOT /pokemon/cards/search (limited TCG Pocket data)
-    const searchUrl = `https://${RAPIDAPI_HOST}/pokemon/cards?search=${encodeURIComponent(query)}&sort=episode_newest&perPage=${maxResults}`;
+    // Changed 2024-01-04: /pokemon/cards has complete sets, /cards/search only has TCG Pocket subset
+    // NOTE: Do NOT use sort=episode_newest - it prioritizes TCG Pocket sets over classic sets like Evolutions
+    const searchUrl = `https://${RAPIDAPI_HOST}/pokemon/cards?search=${encodeURIComponent(query)}&perPage=${maxResults}`;
     
     const response = await fetch(searchUrl, {
       headers: {
