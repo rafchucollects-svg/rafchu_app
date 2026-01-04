@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v4.0-full-cardmarket';
+const CACHE_VERSION = 'v4.1-field-normalization';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -681,9 +681,10 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   
   // Helper to create deduplication key
   const createCardKey = (card) => {
-    const normalizedSet = normalizeSetName(card.set);
-    const normalizedName = card.name.toLowerCase().replace(/\s+/g, '');
-    const number = (card.number || '').toString().toLowerCase();
+    const normalizedSet = normalizeSetName(card.set || card.episode?.name || '');
+    const normalizedName = (card.name || '').toLowerCase().replace(/\s+/g, '');
+    // Handle both card.number and card.card_number (API inconsistency)
+    const number = (card.number || card.card_number || '').toString().toLowerCase();
     return `${normalizedName}-${normalizedSet}-${number}`;
   };
   
@@ -697,8 +698,11 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Use combined results which includes set-only search results
   combinedCardMarketResults.forEach((cmCard, index) => {
     const key = createCardKey(cmCard);
+    // Normalize field names (API returns card_number, we use number)
     cardMap.set(key, {
       ...cmCard,
+      number: cmCard.number || cmCard.card_number, // Normalize card number field
+      set: cmCard.set || cmCard.episode?.name, // Normalize set field
       source: 'cardmarket',
       // CardMarket cards need priceChartingId for graded lookups
       priceChartingId: null,

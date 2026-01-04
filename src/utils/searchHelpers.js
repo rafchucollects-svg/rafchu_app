@@ -578,7 +578,8 @@ export function filterByRelevance(results, query) {
   // Helper function to apply core filters (name, type, number) - NOT set
   const applyCoreFilters = (card) => {
     const nameLower = normalizeApostrophes((card.name || '').toLowerCase());
-    const numberLower = String(card.number || '').toLowerCase();
+    // Handle both card.number and card.card_number (API returns card_number, we normalize to number)
+    const numberLower = String(card.number || card.card_number || '').toLowerCase();
     
     // RULE 1: If query has a primary Pokemon name (>2 chars), REQUIRE it in card name
     // Use flexible matching to handle variations like "M Charizard-EX" vs "Mega Charizard X EX"
