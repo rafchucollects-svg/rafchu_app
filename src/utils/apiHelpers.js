@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v4.1-field-normalization';
+const CACHE_VERSION = 'v4.5-stable';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -545,8 +545,20 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   const hasFilters = parsed.numbers.length > 0 || parsed.setWords.length > 0 || parsed.cardTypes.length > 0;
   
   if (parsed.primaryName && parsed.primaryName.length >= 2 && hasFilters) {
-    // Search by just the Pokemon name (APIs don't understand set names in combined queries)
+    // Start with the Pokemon name
     searchQuery = parsed.primaryName;
+    
+    // IMPORTANT: Include card type AND number in search query
+    // The API returns MUCH better results with the full query:
+    // - "charizard v" → returns "Charizard", "Charizard VSTAR" (wrong!)
+    // - "charizard v 154" → returns "Charizard V #154" (correct!)
+    if (parsed.cardTypes.length > 0) {
+      searchQuery = `${parsed.primaryName} ${parsed.cardTypes.join(' ')}`;
+    }
+    // Also include numbers in the search query - API uses them for better matching
+    if (parsed.numbers.length > 0) {
+      searchQuery = `${searchQuery} ${parsed.numbers.join(' ')}`;
+    }
     
     // TAG TEAM DETECTION: If we have multiple words in primaryName AND card type is GX,
     // this could be a Tag Team card (e.g., "Reshiram Charizard GX" → "Reshiram & Charizard-GX")
@@ -566,7 +578,6 @@ export async function apiSearchCardsHybrid(query, options = {}) {
       if (primaryNameWords.length >= 2) {
         setOnlyQueries.push(primaryNameWords[1]);
       }
-      console.log(`🏷️ Tag Team detection: "${parsed.primaryName}" → searching "${searchQuery}" and "${primaryNameWords[1]}"`);
     }
     
     // If set words are present, also do separate searches for set names
@@ -604,11 +615,6 @@ export async function apiSearchCardsHybrid(query, options = {}) {
       }
     }
     
-    const filterDesc = [];
-    if (parsed.cardTypes.length > 0) filterDesc.push(`type:${parsed.cardTypes.join(',')}`);
-    if (parsed.numbers.length > 0) filterDesc.push(`#${parsed.numbers.join(', #')}`);
-    if (parsed.setWords.length > 0) filterDesc.push(`set:${parsed.setWords.join(' ')}`);
-    console.log(`🔧 Smart search: "${query}" → API queries "${searchQuery}"${setOnlyQueries.length ? ` + [${setOnlyQueries.join(', ')}]` : ''} (will filter by ${filterDesc.join(', ')})`);
   }
   
   // Check cache first (using original query for cache key)

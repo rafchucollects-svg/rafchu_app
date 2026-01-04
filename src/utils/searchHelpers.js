@@ -566,9 +566,6 @@ export function filterByRelevance(results, query) {
   const parsed = parseQuery(query);
   const { primaryName, cardTypes, numbers, setWords } = parsed;
   
-  // Debug: uncomment to trace filtering issues
-  // console.log(`🔎 filterByRelevance: "${query}" → name="${primaryName}", sets=[${setWords}], nums=[${numbers}]`);
-  
   // If query is ONLY a number/code (no name), don't filter by name at all
   const isNumberOnlySearch = numbers.length > 0 && !primaryName && setWords.length === 0;
   
@@ -691,11 +688,6 @@ export function filterByRelevance(results, query) {
     // Set words matched no cards - fall back to name-only search
     filtered = results.filter(card => applyCoreFilters(card));
   }
-  
-  // Debug: uncomment to trace zero-result issues
-  // if (filtered.length === 0 && results?.length > 0) {
-  //   console.log(`⚠️ Filter removed all ${results.length} results for "${query}"`);
-  // }
   
   return filtered;
 }
