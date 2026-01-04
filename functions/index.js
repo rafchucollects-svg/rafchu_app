@@ -2595,7 +2595,8 @@ exports.searchCardMarket = functions.runWith({
   console.log(`🔍 CardMarket search proxy: "${query}"`);
   
   try {
-    const searchUrl = `https://${RAPIDAPI_HOST}/pokemon/cards/search?search=${encodeURIComponent(query)}&sort=episode_newest&perPage=${maxResults}`;
+    // IMPORTANT: Use /pokemon/cards (full CardMarket database) NOT /pokemon/cards/search (limited TCG Pocket data)
+    const searchUrl = `https://${RAPIDAPI_HOST}/pokemon/cards?search=${encodeURIComponent(query)}&sort=episode_newest&perPage=${maxResults}`;
     
     const response = await fetch(searchUrl, {
       headers: {
