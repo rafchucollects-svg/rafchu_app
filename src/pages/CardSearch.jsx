@@ -1124,6 +1124,8 @@ export function CardSearch({ mode = "collector" }) {
                             <option value="BGS">BGS</option>
                             <option value="CGC">CGC</option>
                             <option value="SGC">SGC</option>
+                            <option value="ACE">ACE</option>
+                            <option value="Other">Other</option>
                           </select>
                         </div>
                         <div>

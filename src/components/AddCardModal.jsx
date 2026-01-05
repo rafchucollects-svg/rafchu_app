@@ -35,6 +35,8 @@ const GRADING_COMPANIES = [
   { value: 'BGS', label: 'BGS (Beckett)' },
   { value: 'CGC', label: 'CGC' },
   { value: 'SGC', label: 'SGC' },
+  { value: 'ACE', label: 'ACE' },
+  { value: 'Other', label: 'Other' },
 ];
 
 const GRADES = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6', '5', '4', '3', '2', '1'];

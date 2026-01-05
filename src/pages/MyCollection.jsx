@@ -8,6 +8,7 @@ import { useApp } from "@/contexts/AppContext";
 import { computeInventoryTotals, formatCurrency, saveCollection, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, exportToCSV, getConditionColorClass, convertCurrency } from "@/utils/cardHelpers";
 import { ConditionSelect, PriceRow } from "@/components/CardComponents";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
+import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { needsImage } from "@/utils/imageHelpers";
 
@@ -899,9 +900,7 @@ export function MyCollection() {
                   
                   {/* Condition or Graded Badge */}
                   {item.isGraded ? (
-                    <span className="text-xs font-semibold px-2 py-1 rounded bg-yellow-100 text-yellow-800 border border-yellow-300 whitespace-nowrap">
-                      🏆 {item.gradingCompany} {item.grade}
-                    </span>
+                    <GradingBadge company={item.gradingCompany} grade={item.grade} />
                   ) : (
                     <span className={`text-xs font-semibold px-2 py-1 rounded border whitespace-nowrap ${getConditionColorClass(item.condition)}`}>
                       {item.condition || "NM"}
@@ -1248,6 +1247,8 @@ export function MyCollection() {
                                 <option value="BGS">BGS</option>
                                 <option value="CGC">CGC</option>
                                 <option value="SGC">SGC</option>
+                                <option value="ACE">ACE</option>
+                                <option value="Other">Other</option>
                               </Select>
                               <Select
                                 value={editGrade}

@@ -389,7 +389,7 @@ export function ManualCardEntry({
               }}
               className="h-4 w-4 rounded border-gray-300"
             />
-            <span className="text-sm font-medium">🏆 This is a graded card</span>
+            <span className="text-sm font-medium">📦 This is a graded card</span>
           </label>
           
           {isGraded && (

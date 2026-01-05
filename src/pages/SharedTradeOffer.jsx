@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Package, Clock, User, AlertCircle, ShoppingCart } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { formatCurrency, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
+import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { getDoc, doc } from "firebase/firestore";
 
 /**
@@ -246,9 +247,7 @@ export function SharedTradeOffer() {
                     
                     {item.isGraded ? (
                       <div className="mt-1">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gradient-to-r from-yellow-100 to-amber-100 text-yellow-800 border border-yellow-300">
-                          🏆 {item.gradingCompany} {item.grade}
-                        </span>
+                        <GradingBadge company={item.gradingCompany} grade={item.grade} />
                       </div>
                     ) : (
                       <div className="mt-1">

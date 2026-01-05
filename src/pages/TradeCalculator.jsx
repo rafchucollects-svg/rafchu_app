@@ -6,6 +6,7 @@ import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy,
 import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
+import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { collection, addDoc, doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
 
@@ -619,7 +620,7 @@ export function TradeCalculator() {
       if (item.isGraded) {
         summary += `${index + 1}. ${item.name}\n`;
         summary += `   ${item.set} #${item.number}\n`;
-        summary += `   🏆 ${item.gradingCompany} ${item.grade}\n`;
+        summary += `   [${item.gradingCompany} ${item.grade}]\n`;
         summary += `   💰 Trade Value: ${formatPrice(values.finalValue)}\n\n`;
       } else {
         summary += `${index + 1}. ${item.name}\n`;
@@ -981,8 +982,8 @@ export function TradeCalculator() {
                   </div>
                   {it.isGraded ? (
                     <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                      <div className="col-span-2 text-purple-600 font-semibold">
-                        🏆 {it.gradingCompany} {it.grade}
+                      <div className="col-span-2">
+                        <GradingBadge company={it.gradingCompany} grade={it.grade} />
                       </div>
                       <div className="font-semibold col-span-2">
                         Graded Value ({it.tradePct ?? tradeDefaultPct}%): {formatPrice(values.isGraded ? values.graded : values.suggested)}
