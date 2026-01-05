@@ -3,7 +3,7 @@ import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 import { X } from "lucide-react";
 
-const GRADING_COMPANIES = ["PSA", "BGS", "CGC", "SGC"];
+const GRADING_COMPANIES = ["PSA", "BGS", "CGC", "SGC", "ACE", "Other"];
 const GRADES = ["10", "9.5", "9", "8.5", "8", "7.5", "7", "6.5", "6", "5.5", "5", "4", "3", "2", "1"];
 
 /**
