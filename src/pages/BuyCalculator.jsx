@@ -347,26 +347,43 @@ export function BuyCalculator() {
       selectedItems.forEach(item => {
         const qty = item.quantity || 1;
         for (let i = 0; i < qty; i++) {
-          inventoryItems.push({
+          const inventoryItem = {
             entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            id: item.id,
-            name: item.name,
-            set: item.set,
-            number: item.number,
-            rarity: item.rarity,
-            image: item.image,
-            condition: item.condition,
+            id: item.id || item.baseId || "",
+            name: item.name || "",
+            set: item.set || "",
+            number: item.number || "",
+            rarity: item.rarity || "",
+            image: item.image || "",
+            condition: item.condition || "NM",
             quantity: 1,
-            prices: item.prices,
-            addedAt: Date.now(),
-            // Preserve graded card information
-            ...(item.isGraded && {
-              isGraded: true,
-              gradingCompany: item.gradingCompany,
-              grade: item.grade,
-              gradedPrice: item.gradedPrice // Stored in USD
-            })
-          });
+            prices: item.prices || {},
+            addedAt: Date.now()
+          };
+          
+          // Preserve manual entry information
+          if (item.isManualEntry) {
+            inventoryItem.isManualEntry = true;
+            inventoryItem.manualPrice = item.manualPrice;
+            inventoryItem.manualPriceCurrency = item.manualPriceCurrency;
+            inventoryItem.notes = item.notes || "";
+          }
+          
+          // Preserve graded card information
+          if (item.isGraded) {
+            inventoryItem.isGraded = true;
+            inventoryItem.gradingCompany = item.gradingCompany || "";
+            inventoryItem.grade = item.grade || "";
+            inventoryItem.gradedPrice = item.gradedPrice || 0;
+            inventoryItem.gradedPriceCurrency = item.gradedPriceCurrency || "USD";
+          }
+          
+          // Filter out undefined values before saving to Firestore
+          inventoryItems.push(
+            Object.fromEntries(
+              Object.entries(inventoryItem).filter(([_, value]) => value !== undefined)
+            )
+          );
         }
       });
 

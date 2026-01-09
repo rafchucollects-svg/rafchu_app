@@ -469,12 +469,21 @@ export function TradeCalculator() {
           addedAt: Date.now()
         };
         
+        // Preserve manual entry information
+        if (item.isManualEntry) {
+          inventoryItem.isManualEntry = true;
+          inventoryItem.manualPrice = item.manualPrice;
+          inventoryItem.manualPriceCurrency = item.manualPriceCurrency;
+          inventoryItem.notes = item.notes || "";
+        }
+        
         // Preserve graded card information
         if (item.isGraded) {
           inventoryItem.isGraded = true;
           inventoryItem.gradingCompany = item.gradingCompany || "";
           inventoryItem.grade = item.grade || "";
           inventoryItem.gradedPrice = item.gradedPrice || 0; // Stored in USD
+          inventoryItem.gradedPriceCurrency = item.gradedPriceCurrency || "USD";
         }
         
         // Filter out undefined values

@@ -3340,4 +3340,3 @@ exports.triggerJapaneseSync = functions.runWith({
     });
   }
 });
-
