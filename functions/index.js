@@ -2897,6 +2897,250 @@ exports.checkInventoryPriceFreshness = functions.https.onRequest(async (req, res
   }
 });
 
+// TCG Pocket set names that need to be migrated to proper API data
+const TCG_POCKET_SETS = [
+  'Mega Evolution',
+  'Phantasmal Flames', 
+  'Genetic Apex',
+  'Mythical Island',
+  'Space-Time Smackdown',
+  'Triumphant Light',
+  'Promo-A',
+  'PROMO-A',
+  'Gem Pack',
+  'SV8: Super Electric Breaker' // This might be pocket too
+];
+
+/**
+ * Migrate TCG Pocket cards to proper CardMarket API data
+ * Finds cards with TCG Pocket set names and re-fetches from real API
+ * 
+ * Query params:
+ *   - userId: the user's Firebase UID (required)
+ *   - dryRun: if 'true', just report what would be changed without saving
+ */
+exports.migrateTcgPocketCards = functions.runWith({
+  timeoutSeconds: 300,
+  memory: '1GB'
+}).https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  const userId = req.query.userId;
+  const dryRun = req.query.dryRun === 'true';
+  
+  if (!userId) {
+    res.status(400).json({ success: false, error: 'userId is required' });
+    return;
+  }
+  
+  console.log(`🔄 Starting TCG Pocket migration for user ${userId} (dryRun: ${dryRun})`);
+  
+  try {
+    const db = admin.firestore();
+    const doc = await db.collection('collections').doc(userId).get();
+    
+    if (!doc.exists) {
+      res.status(404).json({ success: false, error: 'Inventory not found' });
+      return;
+    }
+    
+    const data = doc.data();
+    const items = data.items || [];
+    
+    // Find TCG Pocket cards
+    const pocketCards = items.filter(item => {
+      const setName = (item.set || '').toLowerCase();
+      return TCG_POCKET_SETS.some(pocketSet => 
+        setName.includes(pocketSet.toLowerCase())
+      );
+    });
+    
+    console.log(`Found ${pocketCards.length} TCG Pocket cards to migrate`);
+    
+    const results = {
+      found: pocketCards.length,
+      migrated: 0,
+      failed: 0,
+      skipped: 0,
+      details: []
+    };
+    
+    // Process each pocket card
+    for (const card of pocketCards) {
+      try {
+        // Extract Pokemon name (remove set-specific suffixes)
+        let searchName = card.name || '';
+        // Remove number suffix like "- 132/106"
+        searchName = searchName.replace(/\s*-\s*\d+\/\d+$/, '').trim();
+        // Remove "ex" suffix for search (will add back if needed)
+        const hasEx = searchName.toLowerCase().includes(' ex');
+        
+        console.log(`Searching for: ${searchName}`);
+        
+        // Search CardMarket API
+        const searchUrl = `https://cardmarket-api-tcg.p.rapidapi.com/pokemon/cards?name=${encodeURIComponent(searchName)}&page=1`;
+        
+        const response = await fetch(searchUrl, {
+          method: 'GET',
+          headers: {
+            'x-rapidapi-host': 'cardmarket-api-tcg.p.rapidapi.com',
+            'x-rapidapi-key': '3f1d6d1f79mshd8247af36109787p17ad74jsn078c111f9c8e'
+          }
+        });
+        
+        if (!response.ok) {
+          console.error(`API error for ${searchName}: ${response.status}`);
+          results.failed++;
+          results.details.push({
+            name: card.name,
+            oldSet: card.set,
+            status: 'api_error',
+            error: `HTTP ${response.status}`
+          });
+          continue;
+        }
+        
+        const apiData = await response.json();
+        const apiCards = apiData.data || apiData || [];
+        
+        if (!Array.isArray(apiCards) || apiCards.length === 0) {
+          console.log(`No results for ${searchName}`);
+          results.skipped++;
+          results.details.push({
+            name: card.name,
+            oldSet: card.set,
+            status: 'not_found'
+          });
+          continue;
+        }
+        
+        // Filter out TCG Pocket cards first
+        const realCards = apiCards.filter(c => {
+          const setName = c.episode?.name || c.set_name || c.set || '';
+          return !TCG_POCKET_SETS.some(ps => setName.toLowerCase().includes(ps.toLowerCase()));
+        });
+        
+        // If no real cards found, this might be a Pocket-exclusive card
+        if (realCards.length === 0) {
+          console.log(`No non-Pocket results for ${searchName} - might be Pocket-exclusive`);
+          results.skipped++;
+          results.details.push({
+            name: card.name,
+            oldSet: card.set,
+            status: 'pocket_exclusive',
+            note: 'Card only exists in TCG Pocket'
+          });
+          continue;
+        }
+        
+        // Find best match from real cards
+        let bestMatch = realCards[0];
+        
+        // Look for a better match if the card has a number
+        if (card.number) {
+          const numberMatch = realCards.find(c => 
+            String(c.card_number || c.number || '').toLowerCase() === String(card.number).toLowerCase()
+          );
+          if (numberMatch) {
+            bestMatch = numberMatch;
+          }
+        }
+        
+        // Get set name from episode object (CardMarket API structure)
+        const matchSet = bestMatch.episode?.name || bestMatch.set_name || bestMatch.set || '';
+        
+        // Skip if the match is also a TCG Pocket card or no set found
+        if (!matchSet || TCG_POCKET_SETS.some(ps => matchSet.toLowerCase().includes(ps.toLowerCase()))) {
+          console.log(`Match is also TCG Pocket or empty: ${matchSet}`);
+          results.skipped++;
+          results.details.push({
+            name: card.name,
+            oldSet: card.set,
+            status: 'no_real_match',
+            matchedSet: matchSet || 'unknown'
+          });
+          continue;
+        }
+        
+        const newNumber = bestMatch.card_number || bestMatch.number || card.number;
+        const newImage = bestMatch.image || bestMatch.image_url || card.image;
+        const newId = bestMatch.id || bestMatch.card_id || card.id;
+        const newRarity = bestMatch.rarity || card.rarity;
+        const newPrices = bestMatch.prices || {};
+        
+        results.details.push({
+          name: card.name,
+          oldSet: card.set,
+          newSet: matchSet,
+          newNumber: newNumber,
+          newRarity: newRarity,
+          status: 'migrated'
+        });
+        
+        if (!dryRun) {
+          // Update the card in the items array
+          const itemIndex = items.findIndex(i => i.entryId === card.entryId);
+          if (itemIndex !== -1) {
+            items[itemIndex] = {
+              ...items[itemIndex],
+              set: matchSet,
+              number: newNumber,
+              rarity: newRarity,
+              image: newImage,
+              id: newId,
+              prices: newPrices,
+              // Mark as migrated
+              migratedFromPocket: true,
+              migratedAt: new Date().toISOString()
+            };
+          }
+        }
+        
+        results.migrated++;
+        
+        // Rate limit - wait 200ms between API calls
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+      } catch (cardError) {
+        console.error(`Error processing ${card.name}:`, cardError);
+        results.failed++;
+        results.details.push({
+          name: card.name,
+          oldSet: card.set,
+          status: 'error',
+          error: cardError.message
+        });
+      }
+    }
+    
+    // Save updated inventory
+    if (!dryRun && results.migrated > 0) {
+      await db.collection('collections').doc(userId).set(
+        { items: items },
+        { merge: true }
+      );
+      console.log(`Saved ${results.migrated} migrated cards`);
+    }
+    
+    res.status(200).json({
+      success: true,
+      dryRun: dryRun,
+      results: results
+    });
+    
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 /**
  * Force update ALL cards in the card_database collection
  * This updates every card regardless of whether it's in any user's collection

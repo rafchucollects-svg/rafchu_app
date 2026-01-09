@@ -229,10 +229,10 @@ export function MyInventory() {
     return items;
   }, [filteredItems, collectionSortBy, collectionSortDir]);
 
-  // Calculate totals
+  // Calculate totals based on filtered items (respects All/Graded/Ungraded filter)
   const totals = useMemo(() => {
-    return computeInventoryTotals(collectionItems, currency);
-  }, [collectionItems, currency]);
+    return computeInventoryTotals(filteredItems, currency);
+  }, [filteredItems, currency]);
 
   // Format price with rounding and selected currency
   const formatPrice = (value) => formatCurrency(roundUpPrices ? Math.ceil(Number(value ?? 0)) : Number(value ?? 0), currency);
@@ -1165,8 +1165,15 @@ export function MyInventory() {
       <Card className="rounded-2xl p-4 shadow mb-4">
         <CardContent className="p-0">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm font-semibold">
-              Total Cards: {totals.count}
+            <div className="text-sm font-semibold flex items-center gap-2">
+              <span>
+                {filterGraded === "graded" ? "Graded Cards" : filterGraded === "ungraded" ? "Ungraded Cards" : "Total Cards"}: {totals.count}
+              </span>
+              {filterGraded !== "all" && (
+                <span className="text-xs text-muted-foreground">
+                  (of {collectionItems.length} total)
+                </span>
+              )}
             </div>
             <div className="flex flex-wrap gap-4 text-sm font-semibold">
               <div>TCG: {formatPrice(totals.tcg)}</div>
