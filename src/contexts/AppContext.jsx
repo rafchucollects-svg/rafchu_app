@@ -47,6 +47,9 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   const [selectedCollectionIds, setSelectedCollectionIds] = useState([]);
   const [viewingUid, setViewingUid] = useState(null);
   
+  // Cash balance state (vendor toolkit)
+  const [cashData, setCashData] = useState({ physical: [], digital: [] });
+  
   // Wishlist state
   const [wishlistItems, setWishlistItems] = useState([]);
   
@@ -209,8 +212,18 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
           if (typeof data.secondaryCurrency === "string") {
             setSecondaryCurrency(data.secondaryCurrency);
           }
+          // Load cash data
+          if (data.cashData && typeof data.cashData === "object") {
+            setCashData({
+              physical: Array.isArray(data.cashData.physical) ? data.cashData.physical : [],
+              digital: Array.isArray(data.cashData.digital) ? data.cashData.digital : []
+            });
+          } else {
+            setCashData({ physical: [], digital: [] });
+          }
         } else {
           setCollectionItems([]);
+          setCashData({ physical: [], digital: [] });
         }
       },
       (error) => {
@@ -333,6 +346,23 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       prev.map(item => (item.entryId === entryId ? { ...item, ...updates } : item))
     );
   }, []);
+
+  // Update cash data and save to Firestore
+  const updateCashData = useCallback(async (newCashData) => {
+    if (!user || !db) {
+      console.error("Cannot update cash data - not logged in");
+      return;
+    }
+    
+    setCashData(newCashData);
+    
+    try {
+      const ref = doc(db, "collections", user.uid);
+      await setDoc(ref, { cashData: newCashData }, { merge: true });
+    } catch (error) {
+      console.error("Failed to save cash data:", error);
+    }
+  }, [user, db]);
 
   const addToWishlist = useCallback(async (card) => {
     if (!user || !db) {
@@ -462,6 +492,10 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     addToCollection,
     removeFromCollection,
     updateCollectionItem,
+    
+    // Cash balance
+    cashData,
+    updateCashData,
     
     // Wishlist
     wishlistItems,

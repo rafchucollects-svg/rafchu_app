@@ -2777,6 +2777,127 @@ exports.getUpdateLogs = functions.https.onRequest(async (req, res) => {
 });
 
 /**
+ * Check inventory price freshness for a specific user
+ * Analyzes when prices were last updated for items in their inventory
+ * 
+ * Query params:
+ *   - userId: the user's Firebase UID (required)
+ *   - collection: 'vendor' or 'collector' (default: 'vendor')
+ */
+exports.checkInventoryPriceFreshness = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  const userId = req.query.userId;
+  const collectionType = req.query.collection || 'vendor';
+  
+  if (!userId) {
+    res.status(400).json({ success: false, error: 'userId is required' });
+    return;
+  }
+  
+  try {
+    const db = admin.firestore();
+    const collectionName = collectionType === 'collector' ? 'collector_collections' : 'collections';
+    
+    const doc = await db.collection(collectionName).doc(userId).get();
+    
+    if (!doc.exists) {
+      res.status(404).json({ success: false, error: 'Inventory not found' });
+      return;
+    }
+    
+    const data = doc.data();
+    const items = data.items || [];
+    
+    const now = Date.now();
+    const oneDayAgo = now - (24 * 60 * 60 * 1000);
+    const threeDaysAgo = now - (3 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
+    
+    const stats = {
+      totalItems: items.length,
+      updatedLast24h: 0,
+      updatedLast3Days: 0,
+      updatedLast7Days: 0,
+      neverUpdated: 0,
+      manualPriceItems: 0,
+      gradedItems: 0,
+      manualEntryItems: 0,
+      sampleItems: [],
+      neverUpdatedItems: []
+    };
+    
+    items.forEach((item, index) => {
+      if (item.overridePrice != null) stats.manualPriceItems++;
+      if (item.isGraded) stats.gradedItems++;
+      if (item.isManualEntry) stats.manualEntryItems++;
+      
+      const lastUpdated = item.pricesLastUpdated ? Date.parse(item.pricesLastUpdated) : null;
+      
+      if (!lastUpdated) {
+        stats.neverUpdated++;
+        stats.neverUpdatedItems.push({
+          name: item.name,
+          set: item.set,
+          number: item.number,
+          isManualEntry: item.isManualEntry || false,
+          isGraded: item.isGraded || false
+        });
+      } else if (lastUpdated >= oneDayAgo) {
+        stats.updatedLast24h++;
+      } else if (lastUpdated >= threeDaysAgo) {
+        stats.updatedLast3Days++;
+      } else if (lastUpdated >= sevenDaysAgo) {
+        stats.updatedLast7Days++;
+      }
+      
+      if (index < 10) {
+        const tcgPrice = item.prices?.tcgplayer?.market_price || item.prices?.tcgplayer?.mid_price || 0;
+        const cmPrice = item.prices?.cardmarket?.avg_price || item.prices?.cardmarket?.avg || 0;
+        
+        stats.sampleItems.push({
+          name: item.name,
+          set: item.set,
+          number: item.number,
+          condition: item.condition,
+          isGraded: item.isGraded || false,
+          gradingCompany: item.gradingCompany || null,
+          grade: item.grade || null,
+          hasManualPrice: item.overridePrice != null,
+          isManualEntry: item.isManualEntry || false,
+          pricesLastUpdated: item.pricesLastUpdated || 'Never',
+          tcgPrice: tcgPrice,
+          cardmarketPrice: cmPrice,
+          suggestedPrice: item.calculatedSuggestedPrice || Math.min(tcgPrice, cmPrice) || 0
+        });
+      }
+    });
+    
+    res.status(200).json({
+      success: true,
+      userId: userId,
+      collectionType: collectionType,
+      stats: stats,
+      summary: {
+        freshPrices: stats.updatedLast24h + " items updated in last 24h",
+        staleBreakdown: "3d: " + stats.updatedLast3Days + ", 7d: " + stats.updatedLast7Days + ", never: " + stats.neverUpdated,
+        specialItems: stats.manualPriceItems + " manual prices, " + stats.gradedItems + " graded, " + stats.manualEntryItems + " manual entries"
+      }
+    });
+  } catch (error) {
+    console.error('Error checking inventory freshness:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * Force update ALL cards in the card_database collection
  * This updates every card regardless of whether it's in any user's collection
  * 

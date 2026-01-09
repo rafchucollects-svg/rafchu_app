@@ -10,6 +10,7 @@ import { ConditionSelect, CardPrices, ExternalLinks } from "@/components/CardCom
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
+import { CashManager } from "@/components/CashManager";
 import { needsImage } from "@/utils/imageHelpers";
 import { apiFetchMarketPrices } from "@/utils/apiHelpers";
 import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc } from "firebase/firestore";
@@ -39,6 +40,8 @@ export function MyInventory() {
     communityImages,
     getImageForCard,
     refreshCommunityImages,
+    cashData,
+    updateCashData,
   } = useApp();
 
   const [editingPriceId, setEditingPriceId] = useState(null);
@@ -1149,6 +1152,14 @@ export function MyInventory() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Cash Balance Manager */}
+      <CashManager
+        cashData={cashData}
+        onUpdate={updateCashData}
+        primaryCurrency={currency}
+        isCollapsed={true}
+      />
 
       {/* Totals */}
       <Card className="rounded-2xl p-4 shadow mb-4">
