@@ -593,9 +593,29 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // The API should search for the rarity phrase directly to find matching cards
   if (!parsed.primaryName && (parsed.rarityFilters || []).length > 0) {
     searchQuery = parsed.rarityFilters.join(' ');
-    // Also include any Pokemon name or type words that were parsed
     if (parsed.cardTypes.length > 0) {
       searchQuery = `${searchQuery} ${parsed.cardTypes.join(' ')}`;
+    }
+    
+    // GOLD STAR SPECIAL HANDLING:
+    // The CardMarket API searches by card name, but Gold Star cards are named
+    // "Pikachu ★", "Charizard ★ δ" etc. The API strips the ★ symbol from queries,
+    // so "gold star" returns irrelevant results like "Gold Potion".
+    // Solution: fire targeted secondary queries using "cardNumber setKeyword"
+    // patterns that we've verified return actual Gold Star cards.
+    // Limited to ~8 iconic cards to avoid hitting RapidAPI rate limits.
+    if (parsed.rarityFilters.includes('gold star')) {
+      const GOLD_STAR_QUERIES = [
+        '104 holon',         // Pikachu ★ — Holon Phantoms
+        '103 holon',         // Mewtwo ★ — Holon Phantoms
+        '100 frontiers',     // Charizard ★ δ — Dragon Frontiers
+        '101 frontiers',     // Mew ★ δ — Dragon Frontiers
+        '107 deoxys',        // Rayquaza ★ — Deoxys
+        '113 unseen',        // Entei ★ — Unseen Forces
+        '114 unseen',        // Raikou ★ — Unseen Forces
+        '115 unseen',        // Suicune ★ — Unseen Forces
+      ];
+      setOnlyQueries.push(...GOLD_STAR_QUERIES);
     }
   }
   
@@ -613,6 +633,35 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     // Include rarity phrases in the search query (e.g., "pikachu gold star")
     if ((parsed.rarityFilters || []).length > 0) {
       searchQuery = `${searchQuery} ${parsed.rarityFilters.join(' ')}`;
+      
+      // GOLD STAR + POKEMON NAME: Add targeted secondary search
+      // e.g., "pikachu gold star" → also search "104 holon" to find Pikachu ★
+      if (parsed.rarityFilters.includes('gold star')) {
+        const GOLD_STAR_BY_POKEMON = {
+          'pikachu':   '104 holon',
+          'mewtwo':    '103 holon',
+          'gyarados':  '102 holon',
+          'charizard': '100 frontiers',
+          'mew':       '101 frontiers',
+          'rayquaza':  '107 deoxys',
+          'latias':    '105 latias deoxys',
+          'latios':    '106 latios deoxys',
+          'entei':     '113 unseen',
+          'raikou':    '114 unseen',
+          'suicune':   '115 unseen',
+          'groudon':   '111 groudon legend',
+          'kyogre':    '112 kyogre legend',
+          'alakazam':  '99 alakazam crystal',
+          'celebi':    '100 celebi crystal',
+          'mudkip':    '107 mudkip rocket',
+          'torchic':   '108 torchic rocket',
+          'treecko':   '109 treecko rocket',
+        };
+        const targetedQuery = GOLD_STAR_BY_POKEMON[parsed.primaryName.toLowerCase()];
+        if (targetedQuery) {
+          setOnlyQueries.push(targetedQuery);
+        }
+      }
     }
     // Also include numbers in the search query - API uses them for better matching
     if (parsed.numbers.length > 0) {
@@ -717,10 +766,13 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   
   // Add set-only searches if applicable (to find cards FROM those sets)
   // This handles cases like "classic collection" which needs to also search "celebrations"
+  // For rarity searches (Gold Star), use smaller result limit since we only need 1-3 per query
+  const isRaritySearch = (parsed.rarityFilters || []).length > 0;
+  const secondaryMaxResults = isRaritySearch ? 5 : 50;
   for (const setQuery of setOnlyQueries) {
     searchPromises.push(
       Promise.race([
-        apiSearchCards(setQuery, { useCache: false, maxResults: 50, skipRanking: true }),
+        apiSearchCards(setQuery, { useCache: false, maxResults: secondaryMaxResults, skipRanking: true }),
         timeout(8000)
       ]).catch(err => {
         console.error(`Set search "${setQuery}" error:`, err.message);
