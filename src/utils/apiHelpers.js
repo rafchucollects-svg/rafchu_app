@@ -587,7 +587,17 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   };
   
   // If we have a Pokemon name AND any specific filters
-  const hasFilters = parsed.numbers.length > 0 || parsed.setWords.length > 0 || parsed.cardTypes.length > 0;
+  const hasFilters = parsed.numbers.length > 0 || parsed.setWords.length > 0 || parsed.cardTypes.length > 0 || (parsed.rarityFilters || []).length > 0;
+  
+  // Handle rarity-only searches (e.g., "gold star" with no Pokemon name)
+  // The API should search for the rarity phrase directly to find matching cards
+  if (!parsed.primaryName && (parsed.rarityFilters || []).length > 0) {
+    searchQuery = parsed.rarityFilters.join(' ');
+    // Also include any Pokemon name or type words that were parsed
+    if (parsed.cardTypes.length > 0) {
+      searchQuery = `${searchQuery} ${parsed.cardTypes.join(' ')}`;
+    }
+  }
   
   if (parsed.primaryName && parsed.primaryName.length >= 2 && hasFilters) {
     // Start with the Pokemon name
@@ -599,6 +609,10 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     // - "charizard v 154" → returns "Charizard V #154" (correct!)
     if (parsed.cardTypes.length > 0) {
       searchQuery = `${parsed.primaryName} ${parsed.cardTypes.join(' ')}`;
+    }
+    // Include rarity phrases in the search query (e.g., "pikachu gold star")
+    if ((parsed.rarityFilters || []).length > 0) {
+      searchQuery = `${searchQuery} ${parsed.rarityFilters.join(' ')}`;
     }
     // Also include numbers in the search query - API uses them for better matching
     if (parsed.numbers.length > 0) {

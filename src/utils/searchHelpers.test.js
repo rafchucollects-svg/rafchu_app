@@ -211,6 +211,27 @@ describe("parseQuery", () => {
     expect(result.setWords).toContain("set");
   });
 
+  it("extracts 'gold star' as a rarity filter, not name + card type", () => {
+    const result = parseQuery("gold star");
+    expect(result.primaryName).toBe("");
+    expect(result.cardTypes).toEqual([]);
+    expect(result.rarityFilters).toContain("gold star");
+  });
+
+  it("extracts 'gold star' with a Pokemon name", () => {
+    const result = parseQuery("pikachu gold star");
+    expect(result.primaryName).toBe("pikachu");
+    expect(result.rarityFilters).toContain("gold star");
+    expect(result.cardTypes).toEqual([]);
+  });
+
+  it("extracts 'gold star' with a Pokemon name and number", () => {
+    const result = parseQuery("charizard gold star 100");
+    expect(result.primaryName).toBe("charizard");
+    expect(result.rarityFilters).toContain("gold star");
+    expect(result.numbers).toContain("100");
+  });
+
   it("returns empty for null/empty", () => {
     const result = parseQuery("");
     expect(result.primaryName).toBe("");
@@ -255,6 +276,31 @@ describe("filterByRelevance", () => {
   it("returns all cards for number-only search", () => {
     const filtered = filterByRelevance(cards, "25");
     expect(filtered.some((c) => c.number === "25")).toBe(true);
+  });
+
+  it("filters by rarity (gold star)", () => {
+    const cards = [
+      { name: "Pikachu ★", rarity: "Rare Holo Star" },
+      { name: "Pikachu Gold Star", rarity: "Gold Star" },
+      { name: "Pikachu", rarity: "Common" },
+      { name: "Charizard", rarity: "Rare Holo" },
+    ];
+    const filtered = filterByRelevance(cards, "gold star");
+    expect(filtered.length).toBeGreaterThanOrEqual(2);
+    // Should include Gold Star cards, not regular ones
+    expect(filtered.some(c => c.name.includes("★") || c.name.includes("Gold Star"))).toBe(true);
+    expect(filtered.some(c => c.name === "Charizard")).toBe(false);
+  });
+
+  it("filters by name + rarity (pikachu gold star)", () => {
+    const cards = [
+      { name: "Pikachu ★", rarity: "Rare Holo Star" },
+      { name: "Charizard ★", rarity: "Rare Holo Star" },
+      { name: "Pikachu", rarity: "Common" },
+    ];
+    const filtered = filterByRelevance(cards, "pikachu gold star");
+    expect(filtered.length).toBe(1);
+    expect(filtered[0].name).toBe("Pikachu ★");
   });
 
   it("filters by set words", () => {

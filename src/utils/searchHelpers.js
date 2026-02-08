@@ -7,7 +7,16 @@
 import { normalizeApostrophes, normalizeCardNumber } from './cardHelpers';
 
 // Card type keywords that might appear in queries
-const CARD_TYPE_KEYWORDS = ['ex', 'gx', 'v', 'vmax', 'vstar', 'break', 'prism', 'star', 'lv.x', 'lvx'];
+// NOTE: "star" was removed - it's not a standalone card type like EX/GX/V.
+// "Gold Star" is a rarity, and VSTAR is already handled as "vstar".
+const CARD_TYPE_KEYWORDS = ['ex', 'gx', 'v', 'vmax', 'vstar', 'break', 'prism', 'lv.x', 'lvx'];
+
+// Multi-word rarity terms that should be treated as rarity filters, not name words.
+// These are checked as compound phrases BEFORE individual word classification.
+const RARITY_PHRASES = [
+  { phrase: 'gold star', rarity: 'gold star' },
+  { phrase: 'radiant', rarity: 'radiant' },
+];
 
 // =============================================================================
 // QUERY PREPROCESSING - Typo Correction & Set Expansion
@@ -452,17 +461,29 @@ function isSetRelatedWord(word) {
  * Now separates set-related words from Pokemon names for better filtering
  */
 export function parseQuery(query) {
-  if (!query) return { primaryName: '', cardTypes: [], numbers: [], setWords: [], originalQuery: '', queryLower: '' };
+  if (!query) return { primaryName: '', cardTypes: [], numbers: [], setWords: [], rarityFilters: [], originalQuery: '', queryLower: '' };
   
   // Normalize apostrophes first (convert curly to straight, etc.)
   const normalized = normalizeApostrophes(query);
-  const queryLower = normalized.toLowerCase().trim();
-  const queryWords = queryLower.split(/\s+/);
+  let queryLower = normalized.toLowerCase().trim();
   
   const nameWords = [];
   const cardTypes = [];
   const numbers = [];
   const setWords = [];
+  const rarityFilters = [];
+  
+  // Phase 1: Extract multi-word rarity phrases BEFORE splitting into words
+  // This prevents "gold star" from being split into "gold" (name) + "star" (type)
+  for (const { phrase, rarity } of RARITY_PHRASES) {
+    if (queryLower.includes(phrase)) {
+      rarityFilters.push(rarity);
+      queryLower = queryLower.replace(phrase, ' ').replace(/\s+/g, ' ').trim();
+    }
+  }
+  
+  // Phase 2: Classify remaining individual words
+  const queryWords = queryLower.split(/\s+/).filter(Boolean);
   
   for (let i = 0; i < queryWords.length; i++) {
     const word = queryWords[i];
@@ -494,8 +515,9 @@ export function parseQuery(query) {
     cardTypes,
     numbers,
     setWords,
+    rarityFilters,
     originalQuery: query,
-    queryLower
+    queryLower: normalized.toLowerCase().trim(), // Keep original queryLower (before phrase extraction)
   };
 }
 
@@ -561,13 +583,16 @@ function nameMatchesFlexibly(cardName, queryName) {
  */
 export function filterByRelevance(results, query) {
   const parsed = parseQuery(query);
-  const { primaryName, cardTypes, numbers, setWords } = parsed;
+  const { primaryName, cardTypes, numbers, setWords, rarityFilters } = parsed;
   
   // If query is ONLY a number/code (no name), don't filter by name at all
   const isNumberOnlySearch = numbers.length > 0 && !primaryName && setWords.length === 0;
   
   // If query is ONLY set words (no Pokemon name), don't filter by name
   const isSetOnlySearch = setWords.length > 0 && !primaryName;
+  
+  // If query is ONLY a rarity phrase (e.g., "gold star"), don't filter by name
+  const isRarityOnlySearch = rarityFilters.length > 0 && !primaryName && cardTypes.length === 0 && numbers.length === 0;
   
   // Helper function to apply core filters (name, type, number) - NOT set
   const applyCoreFilters = (card) => {
@@ -577,7 +602,7 @@ export function filterByRelevance(results, query) {
     
     // RULE 1: If query has a primary Pokemon name (>2 chars), REQUIRE it in card name
     // Use flexible matching to handle variations like "M Charizard-EX" vs "Mega Charizard X EX"
-    if (!isNumberOnlySearch && !isSetOnlySearch && primaryName && primaryName.length > 2) {
+    if (!isNumberOnlySearch && !isSetOnlySearch && !isRarityOnlySearch && primaryName && primaryName.length > 2) {
       if (!nameMatchesFlexibly(nameLower, primaryName)) {
         return false;
       }
@@ -597,6 +622,21 @@ export function filterByRelevance(results, query) {
         rarity.includes(type)
       );
       if (!hasAnyType) {
+        return false;
+      }
+    }
+    
+    // RULE 2b: If query has rarity filters (e.g., "gold star"), check card name AND rarity
+    // Gold Star cards can appear as "Pikachu ★", "Pikachu Gold Star", or rarity: "Rare Holo Star"
+    if (rarityFilters.length > 0) {
+      const rarity = (card.rarity || '').toLowerCase();
+      const hasRarityMatch = rarityFilters.some(rf => 
+        nameLower.includes(rf) ||
+        nameLower.includes('★') ||
+        rarity.includes(rf) ||
+        rarity.includes('star')
+      );
+      if (!hasRarityMatch) {
         return false;
       }
     }
@@ -700,7 +740,7 @@ export function scoreRelevance(card, query) {
   const setLower = normalizeApostrophes((card.set || '').toLowerCase());
   const numberLower = String(card.number || '').toLowerCase();
   const parsed = parseQuery(query); // parseQuery already normalizes
-  const { queryLower, primaryName, cardTypes, numbers, setWords } = parsed;
+  const { queryLower, primaryName, cardTypes, numbers, setWords, rarityFilters } = parsed;
   
   const queryWords = queryLower.split(/\s+/);
   
@@ -781,7 +821,16 @@ export function scoreRelevance(card, query) {
     score += 5;
   }
   
-  // 9. DATA COMPLETENESS BONUS (up to 7 points)
+  // 9. RARITY FILTER BONUS (up to 20 points)
+  if (rarityFilters.length > 0) {
+    const rarityLower = (card.rarity || '').toLowerCase();
+    for (const rf of rarityFilters) {
+      if (nameLower.includes(rf) || nameLower.includes('★')) score += 20;
+      else if (rarityLower.includes(rf) || rarityLower.includes('star')) score += 15;
+    }
+  }
+  
+  // 10. DATA COMPLETENESS BONUS (up to 7 points)
   if (card.image) score += 5;
   if (card.prices) score += 2;
   
