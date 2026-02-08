@@ -3705,3 +3705,205 @@ exports.triggerJapaneseSync = functions.runWith({
     });
   }
 });
+
+// ================================================================================
+// SET CATALOG SYNC (Auto-update set abbreviations from CardMarket API)
+// ================================================================================
+
+/**
+ * Words that should NOT be auto-generated as single-word abbreviations
+ * because they collide with Pokemon names or common search terms.
+ */
+const SET_WORD_BLOCKLIST = new Set([
+  'dark', 'light', 'fire', 'water', 'dragon', 'steel', 'poison', 'ice',
+  'grass', 'electric', 'psychic', 'fighting', 'ghost', 'fairy', 'normal',
+  'flying', 'ground', 'rock', 'bug', 'energy', 'trainer', 'supporter',
+  'item', 'tool', 'stadium', 'ex', 'gx', 'vmax', 'vstar', 'v',
+  'mega', 'break', 'legend', 'prime', 'lv', 'tag', 'ultra',
+  'sun', 'moon', 'star', 'gold', 'silver', 'crystal',
+]);
+
+/**
+ * Core logic for syncing the set catalog from CardMarket API to Firestore.
+ * Paginates through /pokemon/episodes, generates abbreviations + related words,
+ * and writes the result to system/set_catalog.
+ */
+async function syncSetCatalogCore() {
+  const db = admin.firestore();
+  const allSets = [];
+  let page = 1;
+  let hasMore = true;
+
+  console.log('📚 Starting set catalog sync from CardMarket API...');
+
+  // Paginate through all episodes (sets)
+  while (hasMore) {
+    const url = `https://${RAPIDAPI_HOST}/pokemon/episodes?page=${page}`;
+    console.log(`  Fetching page ${page}: ${url}`);
+
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'X-RapidAPI-Key': RAPIDAPI_KEY,
+        'X-RapidAPI-Host': RAPIDAPI_HOST,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`CardMarket API error on page ${page}: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const items = data?.data || data || [];
+
+    if (!Array.isArray(items) || items.length === 0) {
+      hasMore = false;
+      break;
+    }
+
+    for (const item of items) {
+      allSets.push({
+        name: item.name || '',
+        code: item.code || '',
+        slug: item.slug || '',
+        releasedAt: item.released_at || '',
+        series: item.series?.name || '',
+      });
+    }
+
+    console.log(`  Page ${page}: fetched ${items.length} sets (total so far: ${allSets.length})`);
+
+    // CardMarket returns 20 per page; fewer means last page
+    if (items.length < 20) {
+      hasMore = false;
+    } else {
+      page++;
+    }
+
+    // Safety: never fetch more than 20 pages
+    if (page > 20) {
+      console.warn('  ⚠️ Safety limit reached (20 pages), stopping pagination');
+      hasMore = false;
+    }
+  }
+
+  console.log(`📦 Total sets fetched: ${allSets.length}`);
+
+  // Generate abbreviations and related words
+  const abbreviations = {};
+  const relatedWordsSet = new Set();
+
+  for (const set of allSets) {
+    const name = set.name;
+    if (!name) continue;
+
+    const nameLower = name.toLowerCase().trim();
+    const words = nameLower.split(/\s+/).filter(w => w.length > 0);
+
+    // Full name as abbreviation (e.g., 'ascended heroes' -> 'Ascended Heroes')
+    abbreviations[nameLower] = name;
+
+    // First word as abbreviation, if not blocked and not too short
+    if (words.length > 1 && words[0].length >= 3 && !SET_WORD_BLOCKLIST.has(words[0])) {
+      // Only add if it doesn't overwrite an existing (more specific) mapping
+      if (!abbreviations[words[0]]) {
+        abbreviations[words[0]] = name;
+      }
+    }
+
+    // Set code as abbreviation (e.g., 'ASC' -> 'Ascended Heroes')
+    if (set.code && set.code.length >= 2) {
+      const codeLower = set.code.toLowerCase();
+      if (!abbreviations[codeLower]) {
+        abbreviations[codeLower] = name;
+      }
+    }
+
+    // Add individual words to related words set (skip blocked words)
+    for (const word of words) {
+      if (word.length >= 2 && !SET_WORD_BLOCKLIST.has(word)) {
+        relatedWordsSet.add(word);
+      }
+    }
+
+    // Also add series words as related words
+    if (set.series) {
+      const seriesWords = set.series.toLowerCase().split(/\s+/);
+      for (const w of seriesWords) {
+        if (w.length >= 2 && !SET_WORD_BLOCKLIST.has(w)) {
+          relatedWordsSet.add(w);
+        }
+      }
+    }
+  }
+
+  const relatedWords = Array.from(relatedWordsSet).sort();
+
+  console.log(`🔤 Generated ${Object.keys(abbreviations).length} abbreviations and ${relatedWords.length} related words`);
+
+  // Write to Firestore
+  const catalog = {
+    abbreviations,
+    relatedWords,
+    sets: allSets,
+    lastSync: admin.firestore.FieldValue.serverTimestamp(),
+    totalSets: allSets.length,
+  };
+
+  await db.collection('system').doc('set_catalog').set(catalog);
+  console.log('✅ Set catalog written to Firestore: system/set_catalog');
+
+  return {
+    totalSets: allSets.length,
+    abbreviationsCount: Object.keys(abbreviations).length,
+    relatedWordsCount: relatedWords.length,
+  };
+}
+
+/**
+ * Scheduled function to sync set catalog weekly (Sunday 3AM UTC)
+ */
+exports.syncSetCatalog = functions.runWith({
+  timeoutSeconds: 120,
+  memory: '256MB',
+}).pubsub
+  .schedule('0 3 * * 0')
+  .timeZone('UTC')
+  .onRun(async (context) => {
+    return await syncSetCatalogCore();
+  });
+
+/**
+ * Manual trigger endpoint for set catalog sync
+ * Usage: GET /triggerSetCatalogSync
+ */
+exports.triggerSetCatalogSync = functions.runWith({
+  timeoutSeconds: 120,
+  memory: '256MB',
+}).https.onRequest(async (req, res) => {
+  // Enable CORS
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+
+  try {
+    console.log('🚀 Manual set catalog sync triggered');
+    const result = await syncSetCatalogCore();
+    res.status(200).json({
+      success: true,
+      message: 'Set catalog synced successfully',
+      result,
+    });
+  } catch (error) {
+    console.error('❌ Set catalog sync failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});

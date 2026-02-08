@@ -5,6 +5,7 @@
  */
 
 import { normalizeApostrophes, normalizeCardNumber } from './cardHelpers';
+import { getDoc, doc } from 'firebase/firestore';
 
 // Card type keywords that might appear in queries
 // NOTE: "star" was removed - it's not a standalone card type like EX/GX/V.
@@ -142,6 +143,23 @@ const SET_ABBREVIATIONS = {
   'destined': 'Destined Rivals',
   'destined rivals': 'Destined Rivals',
   'dri': 'Destined Rivals',
+  'journey': 'Journey Together',
+  'journey together': 'Journey Together',
+  'jtg': 'Journey Together',
+  'black bolt': 'Black Bolt',
+  'blk': 'Black Bolt',
+  'white flare': 'White Flare',
+  'wht': 'White Flare',
+  
+  // Mega Evolution era (2025+)
+  'mega evolution': 'Mega Evolution',
+  'meg': 'Mega Evolution',
+  'phantasmal': 'Phantasmal Flames',
+  'phantasmal flames': 'Phantasmal Flames',
+  'pfl': 'Phantasmal Flames',
+  'ascended': 'Ascended Heroes',
+  'ascended heroes': 'Ascended Heroes',
+  'asc': 'Ascended Heroes',
   
   // Sword & Shield era
   'swsh': 'Sword Shield',
@@ -433,6 +451,9 @@ const SET_RELATED_WORDS = new Set([
   'flashfire', 'furious', 'fists', 'phantom', 'primal', 'roaring', 'ancient',
   'origins', 'breakthrough', 'breakpoint', 'generations', 'collide', 'steam', 'siege',
   'celebrations', 'classic', 'collection', 'pokemon', 'go', '151', 'special', 'delivery', 'rivals', 'dri',
+  // Mega Evolution era + newer SV sets
+  'journey', 'together', 'jtg', 'bolt', 'flare', 'wht', 'blk',
+  'mega', 'evolution', 'meg', 'phantasmal', 'pfl', 'ascended', 'asc',
   // Promo-related words
   'promo', 'promos', 'promotional',
 ]);
@@ -1155,5 +1176,64 @@ export function improveSearchResults(results, query, options = {}) {
   }
   
   return improved;
+}
+
+// ================================================================================
+// Dynamic Set Catalog Loader
+// ================================================================================
+
+let _catalogLoaded = false;
+
+/**
+ * Load the set catalog from Firestore and merge into module-level
+ * SET_ABBREVIATIONS and SET_RELATED_WORDS.
+ * Hardcoded entries take priority (they act as manual overrides).
+ * This is safe to call multiple times -- subsequent calls are no-ops.
+ *
+ * @param {import('firebase/firestore').Firestore} db - Firestore instance
+ */
+export async function initSetCatalog(db) {
+  if (_catalogLoaded) return;
+
+  try {
+    const snap = await getDoc(doc(db, 'system', 'set_catalog'));
+    if (!snap.exists()) {
+      if (import.meta.env.DEV) {
+        console.log('[initSetCatalog] No system/set_catalog document found -- using hardcoded fallbacks only.');
+      }
+      return;
+    }
+
+    const data = snap.data();
+
+    // Merge abbreviations (hardcoded values take priority)
+    if (data.abbreviations && typeof data.abbreviations === 'object') {
+      for (const [key, value] of Object.entries(data.abbreviations)) {
+        if (!SET_ABBREVIATIONS[key]) {
+          SET_ABBREVIATIONS[key] = value;
+        }
+      }
+    }
+
+    // Merge related words
+    if (Array.isArray(data.relatedWords)) {
+      for (const word of data.relatedWords) {
+        SET_RELATED_WORDS.add(word);
+      }
+    }
+
+    _catalogLoaded = true;
+
+    if (import.meta.env.DEV) {
+      console.log(
+        `[initSetCatalog] Merged ${Object.keys(data.abbreviations || {}).length} API abbreviations ` +
+        `and ${(data.relatedWords || []).length} related words. ` +
+        `Totals: ${Object.keys(SET_ABBREVIATIONS).length} abbreviations, ${SET_RELATED_WORDS.size} related words.`
+      );
+    }
+  } catch (error) {
+    // Non-fatal: hardcoded lists still work
+    console.warn('[initSetCatalog] Failed to load set catalog from Firestore:', error.message);
+  }
 }
 

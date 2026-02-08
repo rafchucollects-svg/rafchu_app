@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef } f
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, onSnapshot, getDoc, setDoc } from "firebase/firestore";
 import { useCommunityImages } from "@/hooks/useCommunityImages";
+import { initSetCatalog } from "@/utils/searchHelpers";
 
 /**
  * AppContext provides shared state and functions across all pages
@@ -128,6 +129,12 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     });
     return () => unsubscribe();
   }, [auth, db]);
+
+  // Load dynamic set catalog from Firestore (non-blocking)
+  useEffect(() => {
+    if (!db) return;
+    initSetCatalog(db);
+  }, [db]);
 
   // Listen to route changes
   useEffect(() => {
