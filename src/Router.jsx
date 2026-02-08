@@ -1,5 +1,6 @@
 import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { VendorAccessGuard } from "./components/VendorAccessGuard";
 import { HomeWrapper } from "./pages/HomeWrapper";
 import { UserProfile } from "./pages/UserProfile";
@@ -41,6 +42,7 @@ export function createAppRouter(authHandlers) {
         onPasswordReset={onPasswordReset}
         onLogout={onLogout} 
       />,
+      errorElement: <ErrorBoundary><div className="min-h-screen flex items-center justify-center"><p>Something went wrong. Please try refreshing the page.</p></div></ErrorBoundary>,
       children: [
         {
           index: true,

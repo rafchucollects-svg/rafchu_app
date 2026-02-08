@@ -15,6 +15,7 @@ import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getAnalytics } from "firebase/analytics";
 import { AppProvider } from "./contexts/AppContext";
 import { AppRouter } from "./Router";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 /**
  * AppWrapper - Main application wrapper
@@ -156,15 +157,17 @@ export function AppWrapper() {
   }), [handleGoogleLogin, handleEmailSignUp, handleEmailLogin, handlePasswordReset, handleLogout]);
 
   return (
-    <AppProvider auth={auth} db={db} authHandlers={authHandlers}>
-      <AppRouter 
-        onGoogleLogin={handleGoogleLogin}
-        onEmailSignUp={handleEmailSignUp}
-        onEmailLogin={handleEmailLogin}
-        onPasswordReset={handlePasswordReset}
-        onLogout={handleLogout} 
-      />
-    </AppProvider>
+    <ErrorBoundary>
+      <AppProvider auth={auth} db={db} authHandlers={authHandlers}>
+        <AppRouter 
+          onGoogleLogin={handleGoogleLogin}
+          onEmailSignUp={handleEmailSignUp}
+          onEmailLogin={handleEmailLogin}
+          onPasswordReset={handlePasswordReset}
+          onLogout={handleLogout} 
+        />
+      </AppProvider>
+    </ErrorBoundary>
   );
 }
 
