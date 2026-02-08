@@ -696,6 +696,12 @@ export async function apiSearchCardsHybrid(query, options = {}) {
         setOnlyQueries.push(setQuery);
       }
       
+      // IMPORTANT: Also search the COMBINED "name + set" query.
+      // The API often returns much better results for combined queries:
+      // "celebrations charizard" → Charizard from Celebrations (correct!)
+      // vs. separate "charizard" + "celebrations" → miss the right card.
+      setOnlyQueries.push(`${setQuery} ${parsed.primaryName}`);
+      
       // Check if this set has a parent alias we should also search
       // e.g., "classic" → also search "celebrations"
       for (const [alias, parent] of Object.entries(SET_PARENT_ALIASES)) {
