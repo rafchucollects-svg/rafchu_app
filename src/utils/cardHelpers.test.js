@@ -19,11 +19,11 @@ import {
   normalizeCardNumber,
   extractNumberPieces,
   splitQuery,
-  rankByRelevance,
   cloneForFirestore,
   buildHistoryEntry,
   CONDITION_MULTIPLIER,
 } from "./cardHelpers";
+import { rankByRelevance } from "./searchHelpers";
 
 // ==============================
 // Condition Helpers
@@ -484,13 +484,16 @@ describe("rankByRelevance", () => {
     expect(names).toContain("Pikachu V");
   });
 
-  it("returns empty for no matches", () => {
+  it("returns all cards sorted (filtering is done separately by filterByRelevance)", () => {
     const ranked = rankByRelevance(cards, "Mewtwo");
-    expect(ranked).toEqual([]);
+    // rankByRelevance sorts by score but doesn't filter out zero-score cards
+    // filterByRelevance handles removal of irrelevant cards
+    expect(ranked.length).toBe(cards.length);
   });
 
   it("handles null/empty gracefully", () => {
     expect(rankByRelevance(null, "test")).toEqual([]);
+    expect(rankByRelevance([], "test")).toEqual([]);
     expect(rankByRelevance(cards, "")).toEqual(cards);
   });
 });

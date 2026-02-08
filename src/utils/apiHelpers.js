@@ -312,6 +312,50 @@ export async function apiFetchCardDetails(card) {
 }
 
 /**
+ * Enrich a card object with market prices from the apiFetchMarketPrices response.
+ * Mutates and returns the card. Handles US (TCGPlayer) and EU (CardMarket) prices.
+ * 
+ * @param {object} card - The card object to enrich (will be mutated)
+ * @param {object} marketPrices - Response from apiFetchMarketPrices()
+ * @returns {object} The enriched card
+ */
+export function enrichCardWithMarketPrices(card, marketPrices) {
+  if (!card || !marketPrices) return card;
+
+  card.prices = card.prices || {};
+  card.isFallbackPrice = false;
+
+  // US / TCGPlayer prices
+  if (marketPrices.us?.found) {
+    card.prices.tcgplayer = {
+      market_price: marketPrices.us.market,
+      low_price: marketPrices.us.low,
+      mid_price: marketPrices.us.mid,
+      high_price: marketPrices.us.high,
+    };
+    card.priceSource = marketPrices.us.fallback ? 'PriceCharting' : 'TCGPlayer';
+    if (marketPrices.us.fallback === true) {
+      card.isFallbackPrice = true;
+      card.prices.pricecharting = marketPrices.us.market;
+    }
+  }
+
+  // EU / CardMarket prices
+  if (marketPrices.eu?.found) {
+    card.prices.cardmarket = {
+      avg30: marketPrices.eu.avg,
+      avg7: marketPrices.eu.trend,
+      lowest_near_mint: marketPrices.eu.low,
+      averageSellPrice: marketPrices.eu.avg,
+      lowPrice: marketPrices.eu.low,
+      trendPrice: marketPrices.eu.trend,
+    };
+  }
+
+  return card;
+}
+
+/**
  * Format search results for display
  */
 export function formatSearchResults(results, query, limit) {
@@ -512,7 +556,8 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   const { 
     useCache = true, 
     allowExpired = false, 
-    maxResults = SEARCH_CACHE_RESULT_LIMIT 
+    maxResults = SEARCH_CACHE_RESULT_LIMIT,
+    signal = null,
   } = options;
   
   if (!query?.trim()) return [];
@@ -628,6 +673,9 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     }
   }
   
+  // Bail early if already aborted
+  if (signal?.aborted) return [];
+  
   // Search BOTH APIs in parallel for comprehensive results
   // Add timeout to prevent hanging (8s for CardMarket, 10s for PriceCharting)
   const timeout = (ms) => new Promise((_, reject) => 
@@ -668,6 +716,10 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   }
   
   const searchResults = await Promise.all(searchPromises);
+  
+  // Bail if aborted while waiting for API responses
+  if (signal?.aborted) return [];
+  
   const [priceChartingResults, cardMarketResults, ...setSearchResults] = searchResults;
   
   // Merge all set search results into cardMarket results
@@ -775,7 +827,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Clean summary log (not verbose debug)
   const cmCount = finalResults.filter(c => c.source === 'cardmarket').length;
   const pcCount = finalResults.filter(c => c.source === 'pricecharting').length;
-  console.log(`✅ Search "${query}" → ${finalResults.length} results (${cmCount} CM, ${pcCount} PC)`);
+  if (import.meta.env.DEV) console.log(`✅ Search "${query}" → ${finalResults.length} results (${cmCount} CM, ${pcCount} PC)`);
   
   return finalResults;
 }

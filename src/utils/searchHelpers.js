@@ -459,7 +459,7 @@ export function parseQuery(query) {
   const queryLower = normalized.toLowerCase().trim();
   const queryWords = queryLower.split(/\s+/);
   
-  let primaryName = '';
+  const nameWords = [];
   const cardTypes = [];
   const numbers = [];
   const setWords = [];
@@ -485,18 +485,15 @@ export function parseQuery(query) {
       continue;
     }
     
-    // Otherwise, add to primary name (only if we haven't hit card type/number/set words)
-    // This ensures only actual Pokemon names go into primaryName
-    if (cardTypes.length === 0 && numbers.length === 0 && setWords.length === 0) {
-    primaryName += (primaryName ? ' ' : '') + word;
-    }
+    // Otherwise, it's part of the Pokemon name (regardless of position)
+    nameWords.push(word);
   }
   
   return {
-    primaryName: primaryName.trim(),
+    primaryName: nameWords.join(' ').trim(),
     cardTypes,
     numbers,
-    setWords, // NEW: Set-related words for set matching
+    setWords,
     originalQuery: query,
     queryLower
   };
@@ -704,38 +701,34 @@ export function scoreRelevance(card, query) {
   const numberLower = String(card.number || '').toLowerCase();
   const parsed = parseQuery(query); // parseQuery already normalizes
   const { queryLower, primaryName, cardTypes, numbers, setWords } = parsed;
+  
   const queryWords = queryLower.split(/\s+/);
+  
+  // Use primaryName for name-based scoring when available, fall back to full query
+  // This prevents queries like "pikachu 25" from losing the exact-match bonus
+  // because "pikachu 25" !== "pikachu", but primaryName "pikachu" === "pikachu"
+  const nameQuery = primaryName || queryLower;
   
   let score = 0;
   
   // 1. EXACT NAME MATCH (100 points) - highest priority
-  if (nameLower === queryLower) {
+  if (nameLower === nameQuery) {
     score += 100;
   }
   
-  // 2. NAME STARTS WITH FULL QUERY (50 points)
-  else if (nameLower.startsWith(queryLower)) {
+  // 2. NAME STARTS WITH query name (50 points)
+  else if (nameLower.startsWith(nameQuery)) {
     score += 50;
   }
   
-  // 3. NAME CONTAINS FULL QUERY (30 points)
-  else if (nameLower.includes(queryLower)) {
+  // 3. NAME CONTAINS query name (30 points)
+  else if (nameLower.includes(nameQuery)) {
     score += 30;
   }
   
-  // 4. ALL QUERY WORDS PRESENT IN NAME (20 points)
-  else if (queryWords.every(w => nameLower.includes(w))) {
+  // 4. ALL name query words present in card name (20 points)
+  else if (nameQuery.split(/\s+/).every(w => nameLower.includes(w))) {
     score += 20;
-  }
-  
-  // 5. PRIMARY NAME MATCH (15 points)
-  if (primaryName && nameLower.includes(primaryName)) {
-    // Bonus if primary name is at start
-    if (nameLower.startsWith(primaryName)) {
-      score += 15;
-    } else {
-      score += 10;
-    }
   }
   
   // 6. EXACT NUMBER MATCH (15 points) - with normalization
@@ -799,6 +792,9 @@ export function scoreRelevance(card, query) {
  * Rank search results by relevance score
  */
 export function rankByRelevance(results, query) {
+  if (!results?.length) return results || [];
+  if (!query) return results;
+  
   // Score each result
   const scored = results.map(card => ({
     card,

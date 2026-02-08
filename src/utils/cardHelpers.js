@@ -273,7 +273,7 @@ async function fetchFXRates() {
       return FX_RATES; // Use cached rates
     }
 
-    console.log('🌐 Fetching live FX rates...');
+    if (import.meta.env.DEV) console.log('🌐 Fetching live FX rates...');
     const response = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
     const data = await response.json();
     
@@ -287,7 +287,7 @@ async function fetchFXRates() {
         ISK: data.rates.ISK || 138.0,
       };
       FX_LAST_FETCH = now;
-      console.log('✅ FX rates updated:', FX_RATES);
+      if (import.meta.env.DEV) console.log('✅ FX rates updated:', FX_RATES);
     }
   } catch (error) {
     console.warn('⚠️ Failed to fetch FX rates, using cached/fallback rates:', error);
@@ -314,7 +314,7 @@ export function convertCurrency(amount, targetCurrency = 'USD', sourceCurrency =
   const targetRate = FX_RATES[targetCurrency] || 1.0;
   const converted = amountInUSD * targetRate;
   
-  console.log(`💱 Converting ${amount} ${sourceCurrency} to ${targetCurrency}: ${converted} (via USD: ${amountInUSD})`);
+  if (import.meta.env.DEV) console.log(`💱 Converting ${amount} ${sourceCurrency} to ${targetCurrency}: ${converted} (via USD: ${amountInUSD})`);
   
   return converted;
 }
@@ -696,63 +696,8 @@ export function splitQuery(q) {
   };
 }
 
-export function rankByRelevance(items, q) {
-  if (!q || !items?.length) return items || [];
-  
-  const normalizedQuery = normalizeApostrophes(q.toLowerCase());
-  const tokens = tokenize(q);
-  const nums = extractNumberPieces(q);
-  
-  return items
-    .map((card) => {
-      let score = 0;
-      // Normalize card name for comparison (handles apostrophe variations)
-      const name = normalizeApostrophes((card.name || "").toLowerCase());
-      const nameNumbered = normalizeApostrophes((card.nameNumbered || "").toLowerCase());
-      const cardNumber = ((card.number || "") + "").toLowerCase();
-      const normalizedCardNumber = normalizeCardNumber(cardNumber);
-      
-      // Exact name match (after normalization)
-      if (name === normalizedQuery) score += 100;
-      
-      // Name contains full query
-      if (name.includes(normalizedQuery)) score += 50;
-      
-      // Name token matches
-      tokens.forEach((t) => {
-        const normalizedToken = normalizeApostrophes(t);
-        if (name.includes(normalizedToken)) score += 5;
-        if (nameNumbered.includes(normalizedToken)) score += 2;
-      });
-      
-      // Number matches - enhanced with normalization
-      nums.forEach((n) => {
-        const normalizedN = normalizeCardNumber(n);
-        
-        // Exact match (normalized)
-        if (normalizedCardNumber === normalizedN) {
-          score += 15; // Increased from 10 for exact number match
-        }
-        // Raw match
-        else if (cardNumber === n) {
-          score += 12;
-        }
-        // Partial match
-        else if (cardNumber.includes(n) || normalizedCardNumber.includes(normalizedN)) {
-          score += 5;
-        }
-        // Check in nameNumbered
-        else if (nameNumbered.includes(n)) {
-          score += 3;
-        }
-      });
-      
-      return { card, score };
-    })
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .map((x) => x.card);
-}
+// NOTE: rankByRelevance has been consolidated into searchHelpers.js
+// Import from there: import { rankByRelevance } from './searchHelpers';
 
 // =============================
 // CSV Export Helper

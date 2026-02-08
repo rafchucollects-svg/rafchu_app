@@ -13,6 +13,7 @@ import {
   apiFetchCardDetails,
   apiFetchMarketPrices,
   apiFetchGradedPrices,
+  enrichCardWithMarketPrices,
   formatSearchResults,
   canonicalizeQuery,
   getSearchCacheEntry,
@@ -146,7 +147,7 @@ export function CardSearch({ mode = "collector" }) {
 
   // Search effect
   useEffect(() => {
-    let cancelled = false;
+    const abortController = new AbortController();
     setError("");
     setShowAllSuggestions(false);
 
@@ -156,9 +157,7 @@ export function CardSearch({ mode = "collector" }) {
       setLoading(false);
       lastFetchedCanonicalRef.current = "";
       activeSearchTokenRef.current = null;
-      return () => {
-        cancelled = true;
-      };
+      return () => abortController.abort();
     }
 
     const cached = getSearchCacheEntry(canonical);
@@ -173,9 +172,7 @@ export function CardSearch({ mode = "collector" }) {
       if (!cached.expired) {
         setLoading(false);
         activeSearchTokenRef.current = null;
-        return () => {
-          cancelled = true;
-        };
+        return () => abortController.abort();
       }
     } else {
       setSuggestions([]);
@@ -187,12 +184,12 @@ export function CardSearch({ mode = "collector" }) {
 
     (async () => {
       try {
-        // Use hybrid search for comprehensive pricing from PriceCharting + CardMarket
         const results = await apiSearchCardsHybrid(debounced, {
           useCache: false,
           maxResults: MAX_SUGGESTION_LIMIT,
+          signal: abortController.signal,
         });
-        if (cancelled || activeSearchTokenRef.current !== token) return;
+        if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
         const prepared = formatSearchResults(
           results,
           debounced,
@@ -204,12 +201,8 @@ export function CardSearch({ mode = "collector" }) {
         const cardsWithoutImages = prepared.filter(card => !card.image);
         
         if (cardsWithoutImages.length > 0) {
-          // Cards without images exist
           if (!communityImages && refreshCommunityImages) {
-            // Lazy load community images on first need
-            console.log('📸 Lazy loading community images for search results...');
             refreshCommunityImages().then(() => {
-              // After loading, re-apply images to current suggestions
               setSuggestions(prev => prev.map(card => {
                 if (!card.image) {
                   const image = getImageForCard(card);
@@ -219,7 +212,6 @@ export function CardSearch({ mode = "collector" }) {
               }));
             });
           } else if (communityImages) {
-            // We have community images - apply them
             enrichedResults = prepared.map(card => {
               if (!card.image) {
                 const image = getImageForCard(card);
@@ -233,21 +225,19 @@ export function CardSearch({ mode = "collector" }) {
         setSuggestions(enrichedResults);
         lastFetchedCanonicalRef.current = canonical;
       } catch (err) {
-        if (!cancelled) {
+        if (!abortController.signal.aborted) {
           console.error("Search failed", err);
           setError("Search failed. Check API key and endpoint.");
         }
       } finally {
-        if (!cancelled && activeSearchTokenRef.current === token) {
+        if (!abortController.signal.aborted && activeSearchTokenRef.current === token) {
           setLoading(false);
           activeSearchTokenRef.current = null;
         }
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => abortController.abort();
   }, [debounced, setError, setShowAllSuggestions, setSuggestions, setLoading]);
 
   // Pick card handler
@@ -307,45 +297,7 @@ export function CardSearch({ mode = "collector" }) {
       
       // Add market prices if available (only if not in graded mode)
       if (!isGradedFilter && marketPrices) {
-        console.log('💰 Market prices response:', marketPrices);
-        enrichedCard.prices = enrichedCard.prices || {};
-        enrichedCard.isFallbackPrice = false; // Reset fallback flag
-        
-        // Add US/TCGPlayer prices
-        if (marketPrices.us?.found) {
-          console.log('🇺🇸 US prices found:', marketPrices.us);
-          enrichedCard.prices.tcgplayer = {
-            market_price: marketPrices.us.market,
-            low_price: marketPrices.us.low,
-            mid_price: marketPrices.us.mid,
-            high_price: marketPrices.us.high,
-          };
-          enrichedCard.priceSource = marketPrices.us.fallback ? 'PriceCharting' : 'TCGPlayer';
-          // Only set fallback flag if it's actually a fallback
-          if (marketPrices.us.fallback === true) {
-            console.log('🔔 PriceCharting fallback active!');
-            enrichedCard.isFallbackPrice = true;
-            // Store PriceCharting price separately for calculators
-            enrichedCard.prices.pricecharting = marketPrices.us.market;
-          }
-        } else {
-          console.log('⚠️ No US prices found');
-        }
-        
-        // Add EU/CardMarket prices
-        if (marketPrices.eu?.found) {
-          console.log('🇪🇺 EU prices found:', marketPrices.eu);
-          enrichedCard.prices.cardmarket = {
-            avg30: marketPrices.eu.avg,           // 30d average
-            avg7: marketPrices.eu.trend,          // 7d average (trend)
-            lowest_near_mint: marketPrices.eu.low, // Lowest NM listing
-            averageSellPrice: marketPrices.eu.avg, // Legacy field
-            lowPrice: marketPrices.eu.low,         // Legacy field
-            trendPrice: marketPrices.eu.trend,     // Legacy field
-          };
-        } else {
-          console.log('⚠️ No EU prices found');
-        }
+        enrichCardWithMarketPrices(enrichedCard, marketPrices);
       }
       
       setActiveCard((current) => {
@@ -377,39 +329,8 @@ export function CardSearch({ mode = "collector" }) {
     } else {
       // Direct add with selected condition
       try {
-        // Fetch market prices before adding (to ensure price data is available)
-        console.log('💰 Quick add: Fetching market prices for:', card.name);
         const marketPrices = await apiFetchMarketPrices(card);
-        
-        // Enrich card with market prices
-        const enrichedCard = { ...card };
-        enrichedCard.prices = enrichedCard.prices || {};
-        
-        if (marketPrices.us?.found) {
-          enrichedCard.prices.tcgplayer = {
-            market_price: marketPrices.us.market,
-            low_price: marketPrices.us.low,
-            mid_price: marketPrices.us.mid,
-            high_price: marketPrices.us.high,
-          };
-          // Store PriceCharting separately for calculators if it's a fallback
-          if (marketPrices.us.fallback === true) {
-            enrichedCard.prices.pricecharting = marketPrices.us.market;
-          }
-        }
-        
-        if (marketPrices.eu?.found) {
-          enrichedCard.prices.cardmarket = {
-            avg30: marketPrices.eu.avg,
-            avg7: marketPrices.eu.trend,
-            lowest_near_mint: marketPrices.eu.low,
-            averageSellPrice: marketPrices.eu.avg,
-            lowPrice: marketPrices.eu.low,
-            trendPrice: marketPrices.eu.trend,
-          };
-        }
-        
-        console.log('✅ Quick add: Prices fetched and card enriched', enrichedCard.prices);
+        const enrichedCard = enrichCardWithMarketPrices({ ...card }, marketPrices);
         
         const newItem = await addToCollection(enrichedCard, {
           condition: defaultCondition,
@@ -440,39 +361,9 @@ export function CardSearch({ mode = "collector" }) {
     let cardWithPrices = card;
     if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket && !card.prices.pricecharting)) {
       try {
-        console.log('💰 Quick add trade: Fetching market prices for:', card.name);
         const marketPrices = await apiFetchMarketPrices(card);
         if (marketPrices) {
-          const prices = {};
-          
-          // Format US prices correctly
-          if (marketPrices.us?.found) {
-            prices.tcgplayer = {
-              market_price: marketPrices.us.market,
-              low_price: marketPrices.us.low,
-              mid_price: marketPrices.us.mid,
-              high_price: marketPrices.us.high,
-            };
-            // Store PriceCharting separately if it's a fallback
-            if (marketPrices.us.fallback === true) {
-              prices.pricecharting = marketPrices.us.market;
-            }
-          }
-          
-          // Format EU prices correctly
-          if (marketPrices.eu?.found) {
-            prices.cardmarket = {
-              avg30: marketPrices.eu.avg,
-              avg7: marketPrices.eu.trend,
-              lowest_near_mint: marketPrices.eu.low,
-              averageSellPrice: marketPrices.eu.avg,
-              lowPrice: marketPrices.eu.low,
-              trendPrice: marketPrices.eu.trend,
-            };
-          }
-          
-          cardWithPrices = { ...card, prices };
-          console.log('✅ Quick add trade: Prices fetched and formatted', prices);
+          cardWithPrices = enrichCardWithMarketPrices({ ...card }, marketPrices);
         }
       } catch (error) {
         console.error("Failed to fetch prices for trade:", error);
@@ -516,39 +407,9 @@ export function CardSearch({ mode = "collector" }) {
     let cardWithPrices = card;
     if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket && !card.prices.pricecharting)) {
       try {
-        console.log('💰 Quick add buy: Fetching market prices for:', card.name);
         const marketPrices = await apiFetchMarketPrices(card);
         if (marketPrices) {
-          const prices = {};
-          
-          // Format US prices correctly
-          if (marketPrices.us?.found) {
-            prices.tcgplayer = {
-              market_price: marketPrices.us.market,
-              low_price: marketPrices.us.low,
-              mid_price: marketPrices.us.mid,
-              high_price: marketPrices.us.high,
-            };
-            // Store PriceCharting separately if it's a fallback
-            if (marketPrices.us.fallback === true) {
-              prices.pricecharting = marketPrices.us.market;
-            }
-          }
-          
-          // Format EU prices correctly
-          if (marketPrices.eu?.found) {
-            prices.cardmarket = {
-              avg30: marketPrices.eu.avg,
-              avg7: marketPrices.eu.trend,
-              lowest_near_mint: marketPrices.eu.low,
-              averageSellPrice: marketPrices.eu.avg,
-              lowPrice: marketPrices.eu.low,
-              trendPrice: marketPrices.eu.trend,
-            };
-          }
-          
-          cardWithPrices = { ...card, prices };
-          console.log('✅ Quick add buy: Prices fetched and formatted', prices);
+          cardWithPrices = enrichCardWithMarketPrices({ ...card }, marketPrices);
         }
       } catch (error) {
         console.error("Failed to fetch prices for buy list:", error);

@@ -192,6 +192,25 @@ describe("parseQuery", () => {
     expect(result.primaryName).toContain("rocket's");
   });
 
+  it("collects name words regardless of position (set before name)", () => {
+    const result = parseQuery("Celebrations Charizard");
+    expect(result.primaryName).toBe("charizard");
+    expect(result.setWords).toContain("celebrations");
+  });
+
+  it("collects name words regardless of position (number before name)", () => {
+    const result = parseQuery("25 Pikachu");
+    expect(result.primaryName).toBe("pikachu");
+    expect(result.numbers).toContain("25");
+  });
+
+  it("collects name words regardless of position (type between names)", () => {
+    const result = parseQuery("Base Set Pikachu");
+    expect(result.primaryName).toBe("pikachu");
+    expect(result.setWords).toContain("base");
+    expect(result.setWords).toContain("set");
+  });
+
   it("returns empty for null/empty", () => {
     const result = parseQuery("");
     expect(result.primaryName).toBe("");
@@ -273,14 +292,27 @@ describe("scoreRelevance", () => {
   });
 
   it("gives bonus for number match", () => {
-    // Note: adding a number to the query loses the "exact name match" bonus (100 pts)
-    // because "pikachu 25" !== "pikachu". So we test number bonus by comparing
-    // two cards with the same name against a query that includes a number.
     const cardWithMatch = { name: "Pikachu", number: "25" };
     const cardNoMatch = { name: "Pikachu", number: "99" };
     const score1 = scoreRelevance(cardWithMatch, "pikachu 25");
     const score2 = scoreRelevance(cardNoMatch, "pikachu 25");
     expect(score1).toBeGreaterThan(score2);
+  });
+
+  it("does not penalize queries with numbers vs without", () => {
+    // After fix: "pikachu 25" should score at least as high as "pikachu"
+    // for a card named "Pikachu" (exact name match via primaryName)
+    const card = { name: "Pikachu", number: "25" };
+    const scoreWithNum = scoreRelevance(card, "pikachu 25");
+    const scoreWithoutNum = scoreRelevance(card, "pikachu");
+    expect(scoreWithNum).toBeGreaterThanOrEqual(scoreWithoutNum);
+  });
+
+  it("does not penalize queries with set names", () => {
+    // "Celebrations Charizard" should still score well for "Charizard"
+    const card = { name: "Charizard", set: "Celebrations" };
+    const scoreWithSet = scoreRelevance(card, "celebrations charizard");
+    expect(scoreWithSet).toBeGreaterThanOrEqual(100); // exact primaryName match
   });
 });
 
