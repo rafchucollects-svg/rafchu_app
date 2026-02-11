@@ -1928,12 +1928,49 @@ async function updateCardDatabase(db, uniqueCards) {
 }
 
 // PHASE 3: Update all user collections/inventories
+
+/**
+ * Recursively strip undefined values from an object so Firestore won't reject the write.
+ * Replaces undefined with null at any nesting depth.
+ */
+function sanitizeForFirestore(obj) {
+  if (obj === undefined) return null;
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeForFirestore);
+  const clean = {};
+  for (const [key, value] of Object.entries(obj)) {
+    clean[key] = sanitizeForFirestore(value);
+  }
+  return clean;
+}
+
+/**
+ * Process items in batches to avoid overwhelming Firestore with concurrent reads.
+ * Each item is processed individually; failures are logged but don't block others.
+ */
+async function updateItemsInBatches(db, items, updaterFn, batchSize = 20) {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(async (item) => {
+      try {
+        return await updaterFn(db, item);
+      } catch (err) {
+        console.error(`  ⚠️ Failed to update item "${item.name}" (${item.set} #${item.number}):`, err.message);
+        return item; // Return original item on failure so we don't lose data
+      }
+    }));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
 async function updateVendorInventory(db, userId, inventoryData) {
   if (!inventoryData.items || !Array.isArray(inventoryData.items)) {
     return;
   }
   
-  const updatedItems = await Promise.all(inventoryData.items.map(async (item) => {
+  const updatedItems = await updateItemsInBatches(db, inventoryData.items, async (db, item) => {
     // Get cached card data
     const cardKey = generateCardKey(item);
     const cachedCard = await db.collection('card_database').doc(cardKey).get();
@@ -1948,8 +1985,8 @@ async function updateVendorInventory(db, userId, inventoryData) {
     const updatedItem = {
       ...item,
       // Update prices field with fresh market data
-      prices: cached.prices,
-      pricesLastUpdated: new Date().toISOString(), // Use ISO string instead of serverTimestamp (can't use in arrays)
+      prices: cached.prices || item.prices || {},
+      pricesLastUpdated: new Date().toISOString(),
       // Update image if not present (include community images) - use null instead of undefined
       image: item.image || cached.image || item.imageUrl || null,
     };
@@ -1973,11 +2010,14 @@ async function updateVendorInventory(db, userId, inventoryData) {
     // - excludeFromSale, isGraded, gradingCompany, grade
     
     return updatedItem;
-  }));
+  });
+  
+  // Sanitize all items to strip undefined values before writing to Firestore
+  const sanitizedItems = sanitizeForFirestore(updatedItems);
   
   // Save updated inventory
   await db.collection('collections').doc(userId).set(
-    { items: updatedItems },
+    { items: sanitizedItems },
     { merge: true }
   );
 }
@@ -1987,7 +2027,7 @@ async function updateCollectorCollection(db, userId, collectionData) {
     return;
   }
   
-  const updatedItems = await Promise.all(collectionData.items.map(async (item) => {
+  const updatedItems = await updateItemsInBatches(db, collectionData.items, async (db, item) => {
     // Get cached card data
     const cardKey = generateCardKey(item);
     const cachedCard = await db.collection('card_database').doc(cardKey).get();
@@ -2002,8 +2042,8 @@ async function updateCollectorCollection(db, userId, collectionData) {
     const updatedItem = {
       ...item,
       // Update prices field with fresh market data
-      prices: cached.prices,
-      pricesLastUpdated: new Date().toISOString(), // Use ISO string instead of serverTimestamp (can't use in arrays)
+      prices: cached.prices || item.prices || {},
+      pricesLastUpdated: new Date().toISOString(),
       // Update image if not present (include community images) - use null instead of undefined
       image: item.image || cached.image || item.imageUrl || null,
     };
@@ -2022,18 +2062,21 @@ async function updateCollectorCollection(db, userId, collectionData) {
     // - isGraded, gradingCompany, grade
     
     return updatedItem;
-  }));
+  });
+  
+  // Sanitize all items to strip undefined values before writing to Firestore
+  const sanitizedItems = sanitizeForFirestore(updatedItems);
   
   // Save updated collection
   await db.collection('collector_collections').doc(userId).set(
-    { items: updatedItems },
+    { items: sanitizedItems },
     { merge: true }
   );
 }
 
 async function updateAllUserCollections(db) {
   console.log('🔄 Updating user data...');
-  const stats = { vendors: 0, collectors: 0, errors: 0 };
+  const stats = { vendors: 0, collectors: 0, errors: 0, failedUsers: [] };
   
   // Update vendor inventories
   console.log('   📦 Updating vendor inventories...');
@@ -2046,6 +2089,12 @@ async function updateAllUserCollections(db) {
     } catch (error) {
       console.error(`Failed to update vendor ${doc.id}:`, error);
       stats.errors++;
+      stats.failedUsers.push({
+        userId: doc.id,
+        type: 'vendor',
+        error: error.message,
+        itemCount: (doc.data().items || []).length
+      });
     }
   }
   
@@ -2060,6 +2109,12 @@ async function updateAllUserCollections(db) {
     } catch (error) {
       console.error(`Failed to update collector ${doc.id}:`, error);
       stats.errors++;
+      stats.failedUsers.push({
+        userId: doc.id,
+        type: 'collector',
+        error: error.message,
+        itemCount: (doc.data().items || []).length
+      });
     }
   }
   
@@ -2112,6 +2167,7 @@ exports.scheduledCardDatabaseUpdate = functions.runWith({
           vendorsUpdated: userStats.vendors,
           collectorsUpdated: userStats.collectors,
           userErrors: userStats.errors,
+          failedUsers: userStats.failedUsers || [],
           totalCards: uniqueCards.size
         }
       });
@@ -2189,6 +2245,66 @@ exports.initializeCardDatabase = functions.runWith({
       success: false,
       error: error.message,
       stack: error.stack
+    });
+  }
+});
+
+/**
+ * Manual trigger to push cached prices to all user inventories.
+ * Runs Phase 3 only (assumes card_database is already up to date).
+ * Usage: GET /triggerUserPriceRefresh
+ */
+exports.triggerUserPriceRefresh = functions.runWith({
+  timeoutSeconds: 300,
+  memory: '1GB',
+}).https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+
+  console.log('🚀 Manual user price refresh triggered');
+  const db = admin.firestore();
+  const startTime = Date.now();
+
+  try {
+    const userStats = await updateAllUserCollections(db);
+    const duration = (Date.now() - startTime) / 1000;
+
+    // Log to update_logs
+    await db.collection('update_logs').add({
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'manual_user_price_refresh',
+      status: userStats.errors === 0 ? 'success' : 'partial',
+      duration,
+      stats: {
+        vendorsUpdated: userStats.vendors,
+        collectorsUpdated: userStats.collectors,
+        userErrors: userStats.errors,
+        failedUsers: userStats.failedUsers || [],
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'User price refresh complete',
+      duration: `${duration.toFixed(2)}s`,
+      stats: {
+        vendorsUpdated: userStats.vendors,
+        collectorsUpdated: userStats.collectors,
+        userErrors: userStats.errors,
+        failedUsers: userStats.failedUsers || [],
+      },
+    });
+  } catch (error) {
+    console.error('❌ User price refresh failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
     });
   }
 });

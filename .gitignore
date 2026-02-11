@@ -48,3 +48,9 @@ functions/.runtimeconfig.json
 .env
 .env.local
 .env.*.local
+
+# Non-project files (Supercell / work docs that land here by accident)
+Dragon Ball*
+Brawl Stars*
+Clash*
+Supercell*

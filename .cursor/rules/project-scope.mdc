@@ -1,0 +1,14 @@
+---
+description: This workspace is exclusively for the Pokemon TCG app (Rafchu). Never touch, reference, or modify anything related to Supercell games.
+alwaysApply: true
+---
+
+# Project Scope: Pokemon TCG App Only
+
+This workspace is **exclusively** for the Pokemon TCG app (Rafchu / rafchu-tcg-app).
+
+## Strict Boundaries
+
+- **NEVER** create, modify, or reference files related to Supercell games (Brawl Stars, Clash of Clans, Clash Royale, Squad Busters, mo.co, Boom Beach, Hay Day) or any other non-Pokemon project.
+- **NEVER** commit non-project files that may appear in the workspace root.
+- If you see unrelated files (e.g., Supercell docs, work files), **ignore them entirely** -- do not read, edit, commit, or mention them.
