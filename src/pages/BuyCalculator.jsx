@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus } from "lucide-react";
+import { ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
@@ -49,6 +49,20 @@ export function BuyCalculator() {
   
   // Manual card entry state
   const [showManualEntry, setShowManualEntry] = useState(false);
+
+  // Sorting state
+  const [buySortBy, setBuySortBy] = useState("addedAt");
+  const [buySortDir, setBuySortDir] = useState("desc");
+
+  // Threshold percentage state
+  const [thresholdPrice, setThresholdPrice] = useState("");
+  const [thresholdPct, setThresholdPct] = useState(60);
+
+  // Split offer state
+  const [showSplitModal, setShowSplitModal] = useState(false);
+  const [splitShareLinks, setSplitShareLinks] = useState({});
+  const [splitCopied, setSplitCopied] = useState({});
+  const [splitShareLoading, setSplitShareLoading] = useState({});
 
   // Load default percentage from user profile
   useEffect(() => {
@@ -177,6 +191,37 @@ export function BuyCalculator() {
     );
   };
 
+  const handleApplyThreshold = () => {
+    const threshold = parseFloat(thresholdPrice);
+    if (!threshold || threshold <= 0) {
+      triggerQuickAddFeedback("Please enter a valid price threshold.");
+      return;
+    }
+    let count = 0;
+    setBuyItems(prev => prev.map(item => {
+      let marketPrice = 0;
+      if (item.isGraded && item.gradedPrice) {
+        const src = item.gradedPriceCurrency || 'USD';
+        marketPrice = convertCurrency(parseFloat(item.gradedPrice), currency, src);
+      } else if (item.isManualEntry && item.manualPrice) {
+        const src = item.manualPriceCurrency || 'USD';
+        marketPrice = convertCurrency(parseFloat(item.manualPrice), currency, src);
+      } else {
+        const tcg = computeTcgPrice(item, item.condition);
+        const cmAvg = getCardmarketAvg(item, item.condition) || 0;
+        const cmLow = getCardmarketLowest(item, item.condition) || 0;
+        const valid = [tcg, cmAvg, cmLow].filter(p => p > 0);
+        marketPrice = valid.length > 0 ? Math.min(...valid) : 0;
+      }
+      if (marketPrice > 0 && marketPrice < threshold) {
+        count++;
+        return { ...item, buyPct: thresholdPct };
+      }
+      return item;
+    }));
+    triggerQuickAddFeedback(`Updated ${count} card${count !== 1 ? 's' : ''} to ${thresholdPct}%`);
+  };
+
   const calculateItemValue = (item) => {
     const qty = item.quantity || 1;
     const pct = (item.buyPct ?? buyDefaultPct) / 100;
@@ -263,6 +308,50 @@ export function BuyCalculator() {
       { tcgMarket: 0, cmAvg: 0, cmLowest: 0, finalValue: 0 },
     );
   }, [buyItems, selectedIds, buyDefaultPct]);
+
+  const sortedBuyItems = useMemo(() => {
+    const direction = buySortDir === "desc" ? -1 : 1;
+    const getValue = (item) => {
+      const values = calculateItemValue(item);
+      switch (buySortBy) {
+        case "price_suggested":
+          return values.isGraded ? (values.graded || 0) : (values.suggested || 0);
+        case "price_tcg":
+          return values.tcg || 0;
+        case "price_cm":
+          return values.cmAvg || 0;
+        case "addedAt":
+        default:
+          return item.addedAt || 0;
+      }
+    };
+    return [...buyItems].sort((a, b) => {
+      const av = getValue(a);
+      const bv = getValue(b);
+      if (av === bv) return 0;
+      return av > bv ? direction : -direction;
+    });
+  }, [buyItems, buySortBy, buySortDir, buyDefaultPct]);
+
+  const groupedBuyItems = useMemo(() => {
+    const groups = new Map();
+    sortedBuyItems.forEach(item => {
+      const pct = item.buyPct ?? buyDefaultPct;
+      if (!groups.has(pct)) groups.set(pct, []);
+      groups.get(pct).push(item);
+    });
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([pct, items]) => {
+        const total = items.reduce((sum, item) => {
+          const values = calculateItemValue(item);
+          return sum + (values.finalTotal ?? values.finalValue ?? 0);
+        }, 0);
+        return { pct, items, total };
+      });
+  }, [sortedBuyItems, buyDefaultPct]);
+
+  const hasMultipleTiers = groupedBuyItems.length > 1;
 
   const handleConfirmBuy = async () => {
     if (selectedIds.size === 0) {
@@ -617,6 +706,117 @@ export function BuyCalculator() {
     setShowShareModal(true);
   };
 
+  // --- Split offer helpers ---
+  const handleOpenSplitModal = () => {
+    setSplitShareLinks({});
+    setSplitCopied({});
+    setSplitShareLoading({});
+    setShowSplitModal(true);
+  };
+
+  const generateTextSummaryForItems = useCallback((items) => {
+    if (items.length === 0) return "";
+    const vendorName = userProfile?.username || userProfile?.displayName || "Buyer";
+    let summary = `💰 Cash Offer from ${vendorName}\n`;
+    summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    summary += `📦 Cards in this offer (${items.length}):\n\n`;
+    let totalValue = 0;
+    items.forEach((item, index) => {
+      const values = calculateItemValue(item);
+      const conditionLabel = getConditionDisplayLabel(item.condition || "NM");
+      const qty = item.quantity || 1;
+      const itemTotal = values.finalTotal ?? values.finalValue ?? 0;
+      totalValue += itemTotal;
+      if (item.isGraded) {
+        summary += `${index + 1}. ${item.name}${qty > 1 ? ` (x${qty})` : ''}\n`;
+        summary += `   ${item.set} #${item.number}\n`;
+        summary += `   [${item.gradingCompany} ${item.grade}]\n`;
+        summary += `   💵 Cash Offer: ${formatPrice(itemTotal)}\n\n`;
+      } else {
+        summary += `${index + 1}. ${item.name}${qty > 1 ? ` (x${qty})` : ''}\n`;
+        summary += `   ${item.set} #${item.number}\n`;
+        summary += `   📋 Condition: ${conditionLabel}\n`;
+        summary += `   💵 Cash Offer: ${formatPrice(itemTotal)}\n\n`;
+      }
+    });
+    summary += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+    summary += `💵 Total Cash Offer: ${formatPrice(totalValue)}\n`;
+    summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    summary += `Interested in selling? Contact ${vendorName}!`;
+    return summary;
+  }, [userProfile, currency, buyDefaultPct]);
+
+  const handleCopySplitText = async (pct, items) => {
+    const text = generateTextSummaryForItems(items);
+    try {
+      await navigator.clipboard.writeText(text);
+      setSplitCopied(prev => ({ ...prev, [pct]: 'text' }));
+      setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
+    } catch (err) {
+      alert("Failed to copy to clipboard");
+    }
+  };
+
+  const handleGenerateSplitShareLink = async (pct, items, totalValue) => {
+    if (!user || !db) return;
+    setSplitShareLoading(prev => ({ ...prev, [pct]: true }));
+    try {
+      const shareItems = items.map(item => {
+        const values = calculateItemValue(item);
+        return {
+          name: item.name, set: item.set, number: item.number, rarity: item.rarity,
+          condition: item.condition, image: item.image || item.imageUrl || null,
+          cashOffer: values.finalTotal ?? values.finalValue ?? 0,
+          buyPct: item.buyPct ?? buyDefaultPct, quantity: item.quantity || 1,
+          isGraded: item.isGraded || false, gradingCompany: item.gradingCompany || null, grade: item.grade || null,
+        };
+      });
+      const buyOffer = {
+        type: "buy", vendorId: user.uid,
+        vendorName: userProfile?.username || userProfile?.displayName || "Buyer",
+        vendorAvatar: userProfile?.photoURL || null,
+        items: shareItems, totalValue, currency,
+        createdAt: Date.now(), expiresAt: Date.now() + (24 * 60 * 60 * 1000),
+      };
+      const docRef = await addDoc(collection(db, "tradeOffers"), buyOffer);
+      const link = `${window.location.origin}/trade-offer?id=${docRef.id}`;
+      setSplitShareLinks(prev => ({ ...prev, [pct]: link }));
+    } catch (err) {
+      alert("Failed to generate share link.");
+    } finally {
+      setSplitShareLoading(prev => ({ ...prev, [pct]: false }));
+    }
+  };
+
+  const handleCopySplitLink = async (pct) => {
+    try {
+      await navigator.clipboard.writeText(splitShareLinks[pct]);
+      setSplitCopied(prev => ({ ...prev, [pct]: 'link' }));
+      setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
+    } catch (err) {
+      alert("Failed to copy to clipboard");
+    }
+  };
+
+  const handleSaveSplitTierAsPending = (tierItems, pct, totalValue) => {
+    if (pendingDeals.length >= 5) {
+      alert("Maximum 5 pending deals allowed. Delete existing deals first.");
+      return;
+    }
+    const desc = `${pct}% tier (${tierItems.length} cards)`;
+    const newDeal = {
+      id: Date.now() + pct,
+      date: new Date().toISOString(),
+      description: desc.slice(0, 20),
+      items: tierItems,
+      totalValue,
+    };
+    const updated = [...pendingDeals, newDeal];
+    setPendingDeals(updated);
+    savePendingDealsToFirestore(updated);
+    triggerQuickAddFeedback(`Saved ${pct}% tier (${tierItems.length} cards) to pending`);
+  };
+
   if (!user) {
     return (
       <div className="max-w-6xl mx-auto">
@@ -667,6 +867,54 @@ export function BuyCalculator() {
                 value={buyDefaultPct}
                 onChange={handleBuyDefaultChange}
               />
+              <div className="flex items-center gap-2">
+                <label className="text-sm">Sort by</label>
+                <select
+                  className="rounded-md border px-2 py-1 text-sm"
+                  value={buySortBy}
+                  onChange={(e) => setBuySortBy(e.target.value)}
+                >
+                  <option value="addedAt">Date Added</option>
+                  <option value="price_suggested">Suggested Price</option>
+                  <option value="price_tcg">Price (TCG)</option>
+                  <option value="price_cm">Price (Market Avg)</option>
+                </select>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setBuySortDir(prev => prev === "desc" ? "asc" : "desc")}
+                >
+                  {buySortDir === "desc" ? "↓" : "↑"}
+                </Button>
+              </div>
+            </div>
+            {/* Threshold percentage bulk action */}
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label className="text-sm text-muted-foreground">For cards under</label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={thresholdPrice}
+                onChange={(e) => setThresholdPrice(e.target.value)}
+                placeholder="price"
+                className="h-7 w-20 text-xs"
+              />
+              <span className="text-sm text-muted-foreground">{currency}, use</span>
+              <PercentSelect
+                value={thresholdPct}
+                onChange={setThresholdPct}
+                className="text-xs"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleApplyThreshold}
+                disabled={buyItems.length === 0}
+                className="h-7 text-xs"
+              >
+                Apply
+              </Button>
             </div>
             <div className="text-sm">
               <div className="font-semibold mb-1">Total Buy Value:</div>
@@ -775,6 +1023,17 @@ export function BuyCalculator() {
                 <Share2 className="h-4 w-4 mr-2" />
                 Share Offer ({selectedIds.size})
               </Button>
+              {hasMultipleTiers && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleOpenSplitModal}
+                  className="border-purple-300 text-purple-700 hover:bg-purple-50"
+                >
+                  <Scissors className="h-4 w-4 mr-2" />
+                  Split Offer
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="secondary"
@@ -795,110 +1054,123 @@ export function BuyCalculator() {
             </CardContent>
           </Card>
         )}
-        {buyItems.map((it) => {
-          const values = calculateItemValue(it);
-          const isSelected = selectedIds.has(it.entryId);
-          
-          return (
-            <Card key={it.entryId} className={`rounded-2xl p-3 ${isSelected ? 'ring-2 ring-blue-600' : ''}`}>
-              <div className="flex items-start gap-3">
-                <div
-                  className="flex-shrink-0 cursor-pointer mt-1"
-                  onClick={() => toggleSelection(it.entryId)}
-                >
-                  {isSelected ? (
-                    <CheckSquare className="h-5 w-5 text-blue-600" />
-                  ) : (
-                    <Square className="h-5 w-5 text-muted-foreground" />
-                  )}
-                </div>
-                {it.image && (
-                  <img
-                    src={it.image}
-                    alt={it.name}
-                    className="h-20 w-16 rounded-lg object-cover flex-shrink-0"
-                  />
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{it.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    {it.set} • {it.rarity} • #{it.number}
-                  </div>
-                  {it.isGraded ? (
-                    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                      <div className="col-span-2">
-                        <GradingBadge company={it.gradingCompany} grade={it.grade} />
+        {groupedBuyItems.map((group) => (
+          <div key={group.pct}>
+            {hasMultipleTiers && (
+              <div className="flex items-center gap-2 mb-2 mt-3 px-1">
+                <div className="h-px flex-1 bg-blue-200" />
+                <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-3 py-1 rounded-full">
+                  {group.pct}% tier — {group.items.length} card{group.items.length !== 1 ? 's' : ''} — Total: {formatPrice(group.total)}
+                </span>
+                <div className="h-px flex-1 bg-blue-200" />
+              </div>
+            )}
+            {group.items.map((it) => {
+              const values = calculateItemValue(it);
+              const isSelected = selectedIds.has(it.entryId);
+              
+              return (
+                <Card key={it.entryId} className={`rounded-2xl p-3 mb-3 ${isSelected ? 'ring-2 ring-blue-600' : ''}`}>
+                  <div className="flex items-start gap-3">
+                    <div
+                      className="flex-shrink-0 cursor-pointer mt-1"
+                      onClick={() => toggleSelection(it.entryId)}
+                    >
+                      {isSelected ? (
+                        <CheckSquare className="h-5 w-5 text-blue-600" />
+                      ) : (
+                        <Square className="h-5 w-5 text-muted-foreground" />
+                      )}
+                    </div>
+                    {it.image && (
+                      <img
+                        src={it.image}
+                        alt={it.name}
+                        className="h-20 w-16 rounded-lg object-cover flex-shrink-0"
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium">{it.name}</div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {it.set} • {it.rarity} • #{it.number}
                       </div>
-                      <div className="font-semibold col-span-2">
-                        Graded Value ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.isGraded ? values.graded : values.suggested)}
+                      {it.isGraded ? (
+                        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                          <div className="col-span-2">
+                            <GradingBadge company={it.gradingCompany} grade={it.grade} />
+                          </div>
+                          <div className="font-semibold col-span-2">
+                            Graded Value ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.isGraded ? values.graded : values.suggested)}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                          <div>TCG ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.tcg)}</div>
+                          <div>CM Avg ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.cmAvg)}</div>
+                          <div>CM Low ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.cmLowest)}</div>
+                          <div className="font-semibold">Suggested: {formatPrice(values.suggested)}</div>
+                        </div>
+                      )}
+                      <div className="mt-2 flex items-center gap-2">
+                        <label className="text-xs font-semibold">Final Unit:</label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          value={it.overrideValue ?? (values.isGraded ? values.graded.toFixed(2) : values.suggested.toFixed(2))}
+                          onChange={(e) => updateOverrideValue(it.entryId, e.target.value)}
+                          className="h-7 w-24 text-xs"
+                        />
+                        {it.overrideValue && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => updateOverrideValue(it.entryId, "")}
+                            className="h-7 text-xs"
+                          >
+                            Reset
+                          </Button>
+                        )}
+                        {values.qty > 1 && (
+                          <span className="text-xs text-muted-foreground">
+                            × {values.qty} = {formatPrice(values.finalTotal)}
+                          </span>
+                        )}
                       </div>
                     </div>
-                  ) : (
-                    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                      <div>TCG ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.tcg)}</div>
-                      <div>CM Avg ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.cmAvg)}</div>
-                      <div>CM Low ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.cmLowest)}</div>
-                      <div className="font-semibold">Suggested: {formatPrice(values.suggested)}</div>
-                    </div>
-                  )}
-                  <div className="mt-2 flex items-center gap-2">
-                    <label className="text-xs font-semibold">Final Unit:</label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      value={it.overrideValue ?? (values.isGraded ? values.graded.toFixed(2) : values.suggested.toFixed(2))}
-                      onChange={(e) => updateOverrideValue(it.entryId, e.target.value)}
-                      className="h-7 w-24 text-xs"
-                    />
-                    {it.overrideValue && (
+                    <div className="flex flex-col gap-2">
+                      {!it.isGraded && (
+                        <ConditionSelect
+                          value={it.condition}
+                          onChange={(v) => updateBuyCondition(it.entryId, v)}
+                        />
+                      )}
+                      <Input
+                        type="number"
+                        min="1"
+                        value={it.quantity || 1}
+                        onChange={(e) => updateBuyQuantity(it.entryId, e.target.value)}
+                        className="h-8 w-16 text-xs"
+                        placeholder="Qty"
+                      />
+                      <PercentSelect
+                        value={it.buyPct ?? buyDefaultPct}
+                        onChange={(val) => updateBuyPct(it.entryId, val)}
+                        className="text-xs"
+                      />
                       <Button
                         size="sm"
-                        variant="ghost"
-                        onClick={() => updateOverrideValue(it.entryId, "")}
-                        className="h-7 text-xs"
+                        variant="destructive"
+                        onClick={() => removeFromBuy(it.entryId)}
                       >
-                        Reset
+                        <Trash className="h-4 w-4" />
                       </Button>
-                    )}
-                    {values.qty > 1 && (
-                      <span className="text-xs text-muted-foreground">
-                        × {values.qty} = {formatPrice(values.finalTotal)}
-                      </span>
-                    )}
+                    </div>
                   </div>
-                </div>
-                <div className="flex flex-col gap-2">
-                  {!it.isGraded && (
-                    <ConditionSelect
-                      value={it.condition}
-                      onChange={(v) => updateBuyCondition(it.entryId, v)}
-                    />
-                  )}
-                  <Input
-                    type="number"
-                    min="1"
-                    value={it.quantity || 1}
-                    onChange={(e) => updateBuyQuantity(it.entryId, e.target.value)}
-                    className="h-8 w-16 text-xs"
-                    placeholder="Qty"
-                  />
-                  <PercentSelect
-                    value={it.buyPct ?? buyDefaultPct}
-                    onChange={(val) => updateBuyPct(it.entryId, val)}
-                    className="text-xs"
-                  />
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => removeFromBuy(it.entryId)}
-                  >
-                    <Trash className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            </Card>
-          );
-        })}
+                </Card>
+              );
+            })}
+          </div>
+        ))}
       </div>
 
       {/* Manual Card Entry Modal */}
@@ -1128,6 +1400,119 @@ export function BuyCalculator() {
                 >
                   Close
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Split Offer Modal */}
+      {showSplitModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowSplitModal(false)} />
+          <Card className="relative z-10 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto rounded-2xl">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Scissors className="h-6 w-6 text-purple-600" />
+                  <h2 className="text-xl font-bold">Split Offer by Tier</h2>
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setShowSplitModal(false)}>
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+
+              <div className="space-y-4">
+                {groupedBuyItems.map(({ pct, items, total }) => (
+                  <Card key={pct} className="p-4 border-2 border-purple-100">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <span className="text-lg font-bold text-purple-700">{pct}% Tier</span>
+                        <span className="ml-2 text-sm text-muted-foreground">
+                          {items.length} card{items.length !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      <div className="text-lg font-bold text-blue-600">
+                        {formatPrice(total)}
+                      </div>
+                    </div>
+
+                    {/* Card preview */}
+                    <div className="space-y-1 max-h-32 overflow-y-auto mb-3 border rounded-lg p-2 bg-gray-50">
+                      {items.map(item => {
+                        const values = calculateItemValue(item);
+                        const qty = item.quantity || 1;
+                        return (
+                          <div key={item.entryId} className="flex items-center gap-2 text-xs">
+                            {item.image && (
+                              <img src={item.image} alt={item.name} className="h-8 w-6 rounded object-cover" />
+                            )}
+                            <span className="flex-1 truncate">{item.name}{qty > 1 && ` (x${qty})`}</span>
+                            <span className="font-semibold">{formatPrice(values.finalTotal ?? values.finalValue ?? 0)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleCopySplitText(pct, items)}
+                      >
+                        {splitCopied[pct] === 'text' ? (
+                          <><Check className="h-3 w-3 mr-1 text-green-600" /> Copied!</>
+                        ) : (
+                          <><Copy className="h-3 w-3 mr-1" /> Copy Text</>
+                        )}
+                      </Button>
+
+                      {!splitShareLinks[pct] ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleGenerateSplitShareLink(pct, items, total)}
+                          disabled={splitShareLoading[pct]}
+                          className="border-blue-300 text-blue-700"
+                        >
+                          {splitShareLoading[pct] ? (
+                            <><div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600 mr-1" /> Generating...</>
+                          ) : (
+                            <><Link className="h-3 w-3 mr-1" /> Share Link</>
+                          )}
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleCopySplitLink(pct)}
+                          className="border-green-300 text-green-700"
+                        >
+                          {splitCopied[pct] === 'link' ? (
+                            <><Check className="h-3 w-3 mr-1 text-green-600" /> Copied!</>
+                          ) : (
+                            <><Link className="h-3 w-3 mr-1" /> Copy Link</>
+                          )}
+                        </Button>
+                      )}
+
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleSaveSplitTierAsPending(items, pct, total)}
+                        disabled={pendingDeals.length >= 5}
+                        className="border-orange-300 text-orange-700"
+                      >
+                        <Save className="h-3 w-3 mr-1" /> Save to Pending
+                      </Button>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+
+              <div className="mt-6 flex justify-end">
+                <Button variant="outline" onClick={() => setShowSplitModal(false)}>Close</Button>
               </div>
             </CardContent>
           </Card>
