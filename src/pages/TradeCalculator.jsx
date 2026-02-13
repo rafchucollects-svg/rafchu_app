@@ -221,6 +221,14 @@ export function TradeCalculator() {
   // Format price helper - defined early so it can be used by other functions
   const formatPrice = (amount) => formatCurrency(amount, currency);
 
+  // Dual-currency formatter: primary + secondary in parentheses
+  const formatDual = (amount) => {
+    const primary = formatCurrency(amount, currency);
+    if (!secondaryCurrency || secondaryCurrency === currency) return primary;
+    const converted = convertCurrency(amount, secondaryCurrency, currency);
+    return `${primary} (${formatCurrency(converted, secondaryCurrency)})`;
+  };
+
   const calculateItemValue = (item) => {
     const pct = (item.tradePct ?? tradeDefaultPct) / 100;
     
@@ -685,6 +693,13 @@ export function TradeCalculator() {
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `📦 Cards in this offer (${selectedItems.length}):\n\n`;
     
+    const fmtDualText = (amount) => {
+      const primary = formatCurrency(amount, currency);
+      if (!secondaryCurrency || secondaryCurrency === currency) return primary;
+      const converted = convertCurrency(amount, secondaryCurrency, currency);
+      return `${primary} (${formatCurrency(converted, secondaryCurrency)})`;
+    };
+    
     selectedItems.forEach((item, index) => {
       const values = calculateItemValue(item);
       const conditionLabel = getConditionDisplayLabel(item.condition || "NM");
@@ -693,22 +708,22 @@ export function TradeCalculator() {
         summary += `${index + 1}. ${item.name}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   [${item.gradingCompany} ${item.grade}]\n`;
-        summary += `   💰 Trade Value: ${formatPrice(values.finalValue)}\n\n`;
+        summary += `   💰 Trade Value: ${fmtDualText(values.finalValue)}\n\n`;
       } else {
         summary += `${index + 1}. ${item.name}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   📋 Condition: ${conditionLabel}\n`;
-        summary += `   💰 Trade Value: ${formatPrice(values.finalValue)}\n\n`;
+        summary += `   💰 Trade Value: ${fmtDualText(values.finalValue)}\n\n`;
       }
     });
     
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-    summary += `💵 Total Offer Value: ${formatPrice(selectedTotals.finalValue)}\n`;
+    summary += `💵 Total Offer Value: ${fmtDualText(selectedTotals.finalValue)}\n`;
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `Interested? Contact ${vendorName} to discuss!`;
     
     return summary;
-  }, [tradeItems, selectedIds, selectedTotals, userProfile, currency]);
+  }, [tradeItems, selectedIds, selectedTotals, userProfile, currency, secondaryCurrency]);
 
   // Copy text summary to clipboard
   const handleCopyTextSummary = async () => {
@@ -760,6 +775,7 @@ export function TradeCalculator() {
         items: shareItems,
         totalValue: selectedTotals.finalValue,
         currency: currency,
+        secondaryCurrency: secondaryCurrency || null,
         createdAt: Date.now(),
         expiresAt: Date.now() + (24 * 60 * 60 * 1000), // 24 hours expiry
       };
@@ -814,6 +830,12 @@ export function TradeCalculator() {
     let summary = `🔄 Trade Offer from ${vendorName}\n`;
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `📦 Cards in this offer (${items.length}):\n\n`;
+    const fmtDualText = (amount) => {
+      const primary = formatCurrency(amount, currency);
+      if (!secondaryCurrency || secondaryCurrency === currency) return primary;
+      const converted = convertCurrency(amount, secondaryCurrency, currency);
+      return `${primary} (${formatCurrency(converted, secondaryCurrency)})`;
+    };
     let totalValue = 0;
     items.forEach((item, index) => {
       const values = calculateItemValue(item);
@@ -824,20 +846,20 @@ export function TradeCalculator() {
         summary += `${index + 1}. ${item.name}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   [${item.gradingCompany} ${item.grade}]\n`;
-        summary += `   💰 Trade Value: ${formatPrice(itemVal)}\n\n`;
+        summary += `   💰 Trade Value: ${fmtDualText(itemVal)}\n\n`;
       } else {
         summary += `${index + 1}. ${item.name}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   📋 Condition: ${conditionLabel}\n`;
-        summary += `   💰 Trade Value: ${formatPrice(itemVal)}\n\n`;
+        summary += `   💰 Trade Value: ${fmtDualText(itemVal)}\n\n`;
       }
     });
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-    summary += `💵 Total Offer Value: ${formatPrice(totalValue)}\n`;
+    summary += `💵 Total Offer Value: ${fmtDualText(totalValue)}\n`;
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `Interested? Contact ${vendorName} to discuss!`;
     return summary;
-  }, [userProfile, currency, tradeDefaultPct]);
+  }, [userProfile, currency, secondaryCurrency, tradeDefaultPct]);
 
   const handleCopySplitText = async (pct, items) => {
     const text = generateTextSummaryForItems(items);
@@ -869,6 +891,7 @@ export function TradeCalculator() {
         vendorName: userProfile?.username || userProfile?.displayName || "Vendor",
         vendorAvatar: userProfile?.photoURL || null,
         items: shareItems, totalValue, currency,
+        secondaryCurrency: secondaryCurrency || null,
         createdAt: Date.now(), expiresAt: Date.now() + (24 * 60 * 60 * 1000),
       };
       const docRef = await addDoc(collection(db, "tradeOffers"), tradeOffer);
@@ -1075,7 +1098,7 @@ export function TradeCalculator() {
                 <span>TCG: {formatPrice(tradeTotals.tcgMarket)}</span>
                 <span>CM Avg: {formatPrice(tradeTotals.cmAvg)}</span>
                 <span>CM Low: {formatPrice(tradeTotals.cmLowest)}</span>
-                <span className="font-semibold text-green-600">Final: {formatPrice(tradeTotals.finalValue)}</span>
+                <span className="font-semibold text-green-600">Final: {formatDual(tradeTotals.finalValue)}</span>
               </div>
             </div>
             {selectedIds.size > 0 && (
@@ -1085,7 +1108,7 @@ export function TradeCalculator() {
                   <span>TCG: {formatPrice(selectedTotals.tcgMarket)}</span>
                   <span>CM Avg: {formatPrice(selectedTotals.cmAvg)}</span>
                   <span>CM Low: {formatPrice(selectedTotals.cmLowest)}</span>
-                  <span className="font-semibold text-green-600">Final: {formatPrice(selectedTotals.finalValue)}</span>
+                  <span className="font-semibold text-green-600">Final: {formatDual(selectedTotals.finalValue)}</span>
                 </div>
               </div>
             )}
@@ -1179,7 +1202,7 @@ export function TradeCalculator() {
               <div className="flex items-center gap-2 mb-2 mt-3 px-1">
                 <div className="h-px flex-1 bg-green-200" />
                 <span className="text-xs font-semibold text-green-700 bg-green-50 px-3 py-1 rounded-full">
-                  {group.pct}% tier — {group.items.length} card{group.items.length !== 1 ? 's' : ''} — Total: {formatPrice(group.total)}
+                  {group.pct}% tier — {group.items.length} card{group.items.length !== 1 ? 's' : ''} — Total: {formatDual(group.total)}
                 </span>
                 <div className="h-px flex-1 bg-green-200" />
               </div>
@@ -1219,7 +1242,7 @@ export function TradeCalculator() {
                             <GradingBadge company={it.gradingCompany} grade={it.grade} />
                           </div>
                           <div className="font-semibold col-span-2">
-                            Graded Value ({it.tradePct ?? tradeDefaultPct}%): {formatPrice(values.isGraded ? values.graded : values.suggested)}
+                            Graded Value ({it.tradePct ?? tradeDefaultPct}%): {formatDual(values.isGraded ? values.graded : values.suggested)}
                           </div>
                         </div>
                       ) : (
@@ -1227,7 +1250,7 @@ export function TradeCalculator() {
                           <div>TCG ({it.tradePct ?? tradeDefaultPct}%): {formatPrice(values.tcg)}</div>
                           <div>CM Avg ({it.tradePct ?? tradeDefaultPct}%): {formatPrice(values.cmAvg)}</div>
                           <div>CM Low ({it.tradePct ?? tradeDefaultPct}%): {formatPrice(values.cmLowest)}</div>
-                          <div className="font-semibold">Suggested: {formatPrice(values.suggested)}</div>
+                          <div className="font-semibold">Suggested: {formatDual(values.suggested)}</div>
                         </div>
                       )}
                       <div className="mt-2 flex items-center gap-2">
@@ -1580,7 +1603,7 @@ export function TradeCalculator() {
                         </span>
                       </div>
                       <div className="text-lg font-bold text-green-600">
-                        {formatPrice(total)}
+                        {formatDual(total)}
                       </div>
                     </div>
 
@@ -1711,7 +1734,7 @@ export function TradeCalculator() {
                           </div>
                         </div>
                         <div className="text-sm font-semibold text-green-600">
-                          {formatPrice(values.finalValue)}
+                          {formatDual(values.finalValue)}
                         </div>
                       </div>
                     );
@@ -1719,7 +1742,7 @@ export function TradeCalculator() {
                 </div>
                 <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
                   <div className="text-lg font-bold text-green-700">
-                    Total Offer: {formatPrice(selectedTotals.finalValue)}
+                    Total Offer: {formatDual(selectedTotals.finalValue)}
                   </div>
                 </div>
               </div>

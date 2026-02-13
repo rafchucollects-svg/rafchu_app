@@ -396,10 +396,14 @@ export function CardSearch({ mode = "collector" }) {
       return;
     }
     
-    // Regular ungraded card
-    const exists = buyItems.find(it => it.id === card.id);
+    // Regular ungraded card - if already in buy list, increment quantity
+    const exists = buyItems.find(it => it.id === card.id && !it.isGraded);
     if (exists) {
-      triggerQuickAddFeedback(`${card.name} already in buy list`);
+      const newQty = (exists.quantity || 1) + 1;
+      setBuyItems(prev => prev.map(it =>
+        it.entryId === exists.entryId ? { ...it, quantity: newQty } : it
+      ));
+      triggerQuickAddFeedback(`${card.name} quantity → ${newQty}`);
       return;
     }
     
@@ -622,7 +626,11 @@ export function CardSearch({ mode = "collector" }) {
     if (isGradedFilter && gradedPrice?.success && gradedPrice?.graded?.price > 0) {
       const exists = buyItems.find(it => it.id === activeCard.id && it.isGraded && it.gradingCompany === selectedGradingCompany && it.grade === selectedGrade);
       if (exists) {
-        triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) already in buy list`);
+        const newQty = (exists.quantity || 1) + 1;
+        setBuyItems(prev => prev.map(it =>
+          it.entryId === exists.entryId ? { ...it, quantity: newQty } : it
+        ));
+        triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) quantity → ${newQty}`);
         return;
       }
       
@@ -639,6 +647,7 @@ export function CardSearch({ mode = "collector" }) {
         links: activeCard.links,
         condition: 'NM',
         prices: activeCard.prices,
+        quantity: 1,
         addedAt: Date.now(),
         isGraded: true,
         gradingCompany: selectedGradingCompany,

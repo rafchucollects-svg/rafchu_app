@@ -578,6 +578,14 @@ export function BuyCalculator() {
 
   const formatPrice = (amount) => formatCurrency(amount, currency);
 
+  // Dual-currency formatter: primary + secondary in parentheses
+  const formatDual = (amount) => {
+    const primary = formatCurrency(amount, currency);
+    if (!secondaryCurrency || secondaryCurrency === currency) return primary;
+    const converted = convertCurrency(amount, secondaryCurrency, currency);
+    return `${primary} (${formatCurrency(converted, secondaryCurrency)})`;
+  };
+
   // Generate text summary for sharing
   const generateTextSummary = useCallback(() => {
     const selectedItems = buyItems.filter(it => selectedIds.has(it.entryId));
@@ -588,6 +596,13 @@ export function BuyCalculator() {
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `📦 Cards I want to buy (${selectedItems.length}):\n\n`;
     
+    const fmtDualText = (amount) => {
+      const primary = formatCurrency(amount, currency);
+      if (!secondaryCurrency || secondaryCurrency === currency) return primary;
+      const converted = convertCurrency(amount, secondaryCurrency, currency);
+      return `${primary} (${formatCurrency(converted, secondaryCurrency)})`;
+    };
+    
     selectedItems.forEach((item, index) => {
       const values = calculateItemValue(item);
       const conditionLabel = getConditionDisplayLabel(item.condition || "NM");
@@ -597,22 +612,22 @@ export function BuyCalculator() {
         summary += `${index + 1}. ${item.name}${qty > 1 ? ` (x${qty})` : ''}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   [${item.gradingCompany} ${item.grade}]\n`;
-        summary += `   💵 Cash Offer: ${formatPrice(values.finalTotal)}\n\n`;
+        summary += `   💵 Cash Offer: ${fmtDualText(values.finalTotal)}\n\n`;
       } else {
         summary += `${index + 1}. ${item.name}${qty > 1 ? ` (x${qty})` : ''}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   📋 Condition: ${conditionLabel}\n`;
-        summary += `   💵 Cash Offer: ${formatPrice(values.finalTotal)}\n\n`;
+        summary += `   💵 Cash Offer: ${fmtDualText(values.finalTotal)}\n\n`;
       }
     });
     
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-    summary += `💵 Total Cash Offer: ${formatPrice(selectedTotals.finalValue)}\n`;
+    summary += `💵 Total Cash Offer: ${fmtDualText(selectedTotals.finalValue)}\n`;
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `Interested in selling? Contact ${vendorName}!`;
     
     return summary;
-  }, [buyItems, selectedIds, selectedTotals, userProfile, currency]);
+  }, [buyItems, selectedIds, selectedTotals, userProfile, currency, secondaryCurrency]);
 
   // Copy text summary to clipboard
   const handleCopyTextSummary = async () => {
@@ -666,6 +681,7 @@ export function BuyCalculator() {
         items: shareItems,
         totalValue: selectedTotals.finalValue,
         currency: currency,
+        secondaryCurrency: secondaryCurrency || null,
         createdAt: Date.now(),
         expiresAt: Date.now() + (24 * 60 * 60 * 1000), // 24 hours expiry
       };
@@ -720,6 +736,12 @@ export function BuyCalculator() {
     let summary = `💰 Cash Offer from ${vendorName}\n`;
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `📦 Cards in this offer (${items.length}):\n\n`;
+    const fmtDualText = (amount) => {
+      const primary = formatCurrency(amount, currency);
+      if (!secondaryCurrency || secondaryCurrency === currency) return primary;
+      const converted = convertCurrency(amount, secondaryCurrency, currency);
+      return `${primary} (${formatCurrency(converted, secondaryCurrency)})`;
+    };
     let totalValue = 0;
     items.forEach((item, index) => {
       const values = calculateItemValue(item);
@@ -731,20 +753,20 @@ export function BuyCalculator() {
         summary += `${index + 1}. ${item.name}${qty > 1 ? ` (x${qty})` : ''}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   [${item.gradingCompany} ${item.grade}]\n`;
-        summary += `   💵 Cash Offer: ${formatPrice(itemTotal)}\n\n`;
+        summary += `   💵 Cash Offer: ${fmtDualText(itemTotal)}\n\n`;
       } else {
         summary += `${index + 1}. ${item.name}${qty > 1 ? ` (x${qty})` : ''}\n`;
         summary += `   ${item.set} #${item.number}\n`;
         summary += `   📋 Condition: ${conditionLabel}\n`;
-        summary += `   💵 Cash Offer: ${formatPrice(itemTotal)}\n\n`;
+        summary += `   💵 Cash Offer: ${fmtDualText(itemTotal)}\n\n`;
       }
     });
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n`;
-    summary += `💵 Total Cash Offer: ${formatPrice(totalValue)}\n`;
+    summary += `💵 Total Cash Offer: ${fmtDualText(totalValue)}\n`;
     summary += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     summary += `Interested in selling? Contact ${vendorName}!`;
     return summary;
-  }, [userProfile, currency, buyDefaultPct]);
+  }, [userProfile, currency, secondaryCurrency, buyDefaultPct]);
 
   const handleCopySplitText = async (pct, items) => {
     const text = generateTextSummaryForItems(items);
@@ -776,6 +798,7 @@ export function BuyCalculator() {
         vendorName: userProfile?.username || userProfile?.displayName || "Buyer",
         vendorAvatar: userProfile?.photoURL || null,
         items: shareItems, totalValue, currency,
+        secondaryCurrency: secondaryCurrency || null,
         createdAt: Date.now(), expiresAt: Date.now() + (24 * 60 * 60 * 1000),
       };
       const docRef = await addDoc(collection(db, "tradeOffers"), buyOffer);
@@ -922,7 +945,7 @@ export function BuyCalculator() {
                 <span>TCG: {formatPrice(buyTotals.tcgMarket)}</span>
                 <span>CM Avg: {formatPrice(buyTotals.cmAvg)}</span>
                 <span>CM Low: {formatPrice(buyTotals.cmLowest)}</span>
-                <span className="font-semibold text-blue-600">Final: {formatPrice(buyTotals.finalValue)}</span>
+                <span className="font-semibold text-blue-600">Final: {formatDual(buyTotals.finalValue)}</span>
               </div>
             </div>
             {selectedIds.size > 0 && (
@@ -932,7 +955,7 @@ export function BuyCalculator() {
                   <span>TCG: {formatPrice(selectedTotals.tcgMarket)}</span>
                   <span>CM Avg: {formatPrice(selectedTotals.cmAvg)}</span>
                   <span>CM Low: {formatPrice(selectedTotals.cmLowest)}</span>
-                  <span className="font-semibold text-blue-600">Final: {formatPrice(selectedTotals.finalValue)}</span>
+                  <span className="font-semibold text-blue-600">Final: {formatDual(selectedTotals.finalValue)}</span>
                 </div>
               </div>
             )}
@@ -1060,7 +1083,7 @@ export function BuyCalculator() {
               <div className="flex items-center gap-2 mb-2 mt-3 px-1">
                 <div className="h-px flex-1 bg-blue-200" />
                 <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-3 py-1 rounded-full">
-                  {group.pct}% tier — {group.items.length} card{group.items.length !== 1 ? 's' : ''} — Total: {formatPrice(group.total)}
+                  {group.pct}% tier — {group.items.length} card{group.items.length !== 1 ? 's' : ''} — Total: {formatDual(group.total)}
                 </span>
                 <div className="h-px flex-1 bg-blue-200" />
               </div>
@@ -1100,7 +1123,7 @@ export function BuyCalculator() {
                             <GradingBadge company={it.gradingCompany} grade={it.grade} />
                           </div>
                           <div className="font-semibold col-span-2">
-                            Graded Value ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.isGraded ? values.graded : values.suggested)}
+                            Graded Value ({it.buyPct ?? buyDefaultPct}%): {formatDual(values.isGraded ? values.graded : values.suggested)}
                           </div>
                         </div>
                       ) : (
@@ -1108,7 +1131,7 @@ export function BuyCalculator() {
                           <div>TCG ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.tcg)}</div>
                           <div>CM Avg ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.cmAvg)}</div>
                           <div>CM Low ({it.buyPct ?? buyDefaultPct}%): {formatPrice(values.cmLowest)}</div>
-                          <div className="font-semibold">Suggested: {formatPrice(values.suggested)}</div>
+                          <div className="font-semibold">Suggested: {formatDual(values.suggested)}</div>
                         </div>
                       )}
                       <div className="mt-2 flex items-center gap-2">
@@ -1132,7 +1155,7 @@ export function BuyCalculator() {
                         )}
                         {values.qty > 1 && (
                           <span className="text-xs text-muted-foreground">
-                            × {values.qty} = {formatPrice(values.finalTotal)}
+                            × {values.qty} = {formatDual(values.finalTotal)}
                           </span>
                         )}
                       </div>
@@ -1294,7 +1317,7 @@ export function BuyCalculator() {
                           </div>
                         </div>
                         <div className="text-sm font-semibold text-blue-600">
-                          {formatPrice(values.finalTotal)}
+                          {formatDual(values.finalTotal)}
                         </div>
                       </div>
                     );
@@ -1302,7 +1325,7 @@ export function BuyCalculator() {
                 </div>
                 <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                   <div className="text-lg font-bold text-blue-700">
-                    Total Cash Offer: {formatPrice(selectedTotals.finalValue)}
+                    Total Cash Offer: {formatDual(selectedTotals.finalValue)}
                   </div>
                 </div>
               </div>
@@ -1433,7 +1456,7 @@ export function BuyCalculator() {
                         </span>
                       </div>
                       <div className="text-lg font-bold text-blue-600">
-                        {formatPrice(total)}
+                        {formatDual(total)}
                       </div>
                     </div>
 
