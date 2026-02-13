@@ -117,8 +117,11 @@ export function UserProfile() {
     if (!user || !db) return;
     setMarketSource(source);
     try {
-      const ref = doc(db, "collector_collections", user.uid);
-      await setDoc(ref, { marketSource: source }, { merge: true });
+      const payload = { marketSource: source };
+      await Promise.all([
+        setDoc(doc(db, "collector_collections", user.uid), payload, { merge: true }),
+        setDoc(doc(db, "collections", user.uid), payload, { merge: true }),
+      ]);
       triggerQuickAddFeedback(`Market source changed to ${source === "tcg" ? "TCGplayer" : "CardMarket"}`);
     } catch (err) {
       console.error("Failed to update market source", err);
@@ -130,8 +133,12 @@ export function UserProfile() {
     if (!user || !db) return;
     setCurrency(newCurrency);
     try {
-      const ref = doc(db, "collector_collections", user.uid);
-      await setDoc(ref, { currency: newCurrency }, { merge: true });
+      // Save to both collections so it persists regardless of active path
+      const payload = { currency: newCurrency };
+      await Promise.all([
+        setDoc(doc(db, "collector_collections", user.uid), payload, { merge: true }),
+        setDoc(doc(db, "collections", user.uid), payload, { merge: true }),
+      ]);
       const currencyName = SUPPORTED_CURRENCIES.find(c => c.code === newCurrency)?.name || newCurrency;
       triggerQuickAddFeedback(`Currency changed to ${currencyName}`);
     } catch (err) {
@@ -144,8 +151,12 @@ export function UserProfile() {
     if (!user || !db) return;
     setSecondaryCurrency(newCurrency);
     try {
-      const ref = doc(db, "collector_collections", user.uid);
-      await setDoc(ref, { secondaryCurrency: newCurrency }, { merge: true });
+      // Save to both collections so it persists regardless of active path
+      const payload = { secondaryCurrency: newCurrency };
+      await Promise.all([
+        setDoc(doc(db, "collector_collections", user.uid), payload, { merge: true }),
+        setDoc(doc(db, "collections", user.uid), payload, { merge: true }),
+      ]);
       if (newCurrency) {
         const currencyName = SUPPORTED_CURRENCIES.find(c => c.code === newCurrency)?.name || newCurrency;
         triggerQuickAddFeedback(`Secondary currency set to ${currencyName}`);

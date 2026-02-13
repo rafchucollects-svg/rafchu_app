@@ -64,14 +64,25 @@ export function SharedTradeOffer() {
     loadOffer();
   }, [db, offerId]);
 
-  // Format price with user's currency preference
+  // Format price in the offer's own currency (primary)
   const formatPrice = (value, originalCurrency) => {
-    // Convert from offer's currency to viewer's currency if different
     if (originalCurrency && originalCurrency !== currency) {
       const converted = convertCurrency(value, currency, originalCurrency);
       return formatCurrency(converted, currency);
     }
     return formatCurrency(value, currency);
+  };
+
+  // Format price with both offer currency + secondary currency in parentheses
+  const formatDual = (value, originalCurrency) => {
+    const primary = formatPrice(value, originalCurrency);
+    const offerSecondary = offer?.secondaryCurrency;
+    if (!offerSecondary) return primary;
+
+    // Convert value from originalCurrency to the secondary currency
+    const src = originalCurrency || currency;
+    const converted = convertCurrency(value, offerSecondary, src);
+    return `${primary} (${formatCurrency(converted, offerSecondary)})`;
   };
 
   // Calculate total in viewer's currency
@@ -193,7 +204,15 @@ export function SharedTradeOffer() {
           <p className="text-4xl font-bold">
             {formatCurrency(getTotalInViewerCurrency(), currency)}
           </p>
-          {offer.currency && offer.currency !== currency && (
+          {offer.secondaryCurrency && (
+            <p className="text-lg opacity-90 mt-1">
+              {formatCurrency(
+                convertCurrency(offer.totalValue, offer.secondaryCurrency, offer.currency || currency),
+                offer.secondaryCurrency
+              )}
+            </p>
+          )}
+          {offer.currency && offer.currency !== currency && !offer.secondaryCurrency && (
             <p className="text-sm opacity-80 mt-1">
               (Originally {formatCurrency(offer.totalValue, offer.currency)})
             </p>
@@ -262,6 +281,14 @@ export function SharedTradeOffer() {
                     <p className={`text-lg font-bold ${isBuyOffer ? 'text-blue-600' : 'text-green-600'}`}>
                       {formatPrice(itemValue, offer.currency)}
                     </p>
+                    {offer.secondaryCurrency && (
+                      <p className="text-sm text-muted-foreground">
+                        {formatCurrency(
+                          convertCurrency(itemValue, offer.secondaryCurrency, offer.currency || currency),
+                          offer.secondaryCurrency
+                        )}
+                      </p>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       @ {itemPct}%
                     </p>
