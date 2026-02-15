@@ -12,6 +12,7 @@ import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { CashManager } from "@/components/CashManager";
 import { needsImage } from "@/utils/imageHelpers";
+import { CardLadderImport } from "@/components/CardLadderImport";
 import { apiFetchMarketPrices } from "@/utils/apiHelpers";
 import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc } from "firebase/firestore";
 import { CardSearch } from "./CardSearch";
@@ -88,6 +89,9 @@ export function MyInventory() {
   // Image upload modal state
   const [imageUploadModalOpen, setImageUploadModalOpen] = useState(false);
   const [cardForImageUpload, setCardForImageUpload] = useState(null);
+  
+  // CardLadder import modal state
+  const [showCardLadderImport, setShowCardLadderImport] = useState(false);
   
   // Enriched collection items with community images
   const [enrichedItems, setEnrichedItems] = useState([]);
@@ -1181,6 +1185,14 @@ export function MyInventory() {
               <div>Market Low: {formatPrice(totals.cmLowest)}</div>
               <div className="text-primary">Suggested: {formatPrice(totals.suggested)}</div>
             </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowCardLadderImport(true)}
+            >
+              <Upload className="mr-1 h-4 w-4" />
+              Import CardLadder
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -2304,6 +2316,14 @@ export function MyInventory() {
           setCardForImageUpload(null);
         }}
       />
+
+      {/* CardLadder Import Modal */}
+      {showCardLadderImport && (
+        <CardLadderImport
+          onClose={() => setShowCardLadderImport(false)}
+          collectionName="collections"
+        />
+      )}
     </div>
   );
 }

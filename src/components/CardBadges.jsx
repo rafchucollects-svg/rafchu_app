@@ -67,6 +67,16 @@ export function CardBadges({ item, size = 'sm' }) {
     });
   }
 
+  // CardLadder source badge
+  if (item.source === 'cardladder') {
+    badges.push({
+      key: 'cardladder',
+      label: 'CardLadder',
+      color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+      tooltip: 'Imported from CardLadder Pro',
+    });
+  }
+
   if (badges.length === 0) return null;
 
   return (

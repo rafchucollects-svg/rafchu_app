@@ -1,0 +1,505 @@
+import { useState, useCallback } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Upload, X, AlertCircle, Check, Loader2 } from "lucide-react";
+import { useApp } from "@/contexts/AppContext";
+import { doc, setDoc, getDoc } from "firebase/firestore";
+
+// ─── CSV Parsing ──────────────────────────────────────────────────────────────
+
+function parseCSVText(text) {
+  const rows = [];
+  let current = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      if (inQuotes && text[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      current.push(field);
+      field = "";
+    } else if ((ch === "\n" || ch === "\r") && !inQuotes) {
+      current.push(field);
+      field = "";
+      if (current.some(f => f.trim())) rows.push(current);
+      current = [];
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+    } else {
+      field += ch;
+    }
+  }
+  current.push(field);
+  if (current.some(f => f.trim())) rows.push(current);
+  return rows;
+}
+
+// ─── Name Cleanup ─────────────────────────────────────────────────────────────
+
+const ABBREVIATION_MAP = {
+  "reshrm.": "Reshiram",
+  "charzrd.": "Charizard",
+  "blstse.": "Blastoise",
+  "vnsr.": "Venusaur",
+  "pkmn": "Pokemon",
+  "clbrtns.": "Celebrations",
+  "twr.splh.": "Tower Splash",
+  "scrt-fa": "Secret Full Art",
+  "ultra-prem.coll.": "Ultra-Premium Collection",
+};
+
+function cleanPlayerName(raw) {
+  if (!raw) return "";
+  let name = raw.trim();
+
+  // Remove "Fa/" prefix (Full Art indicator)
+  name = name.replace(/^Fa\//i, "");
+
+  // Remove suffixes that indicate variant (store separately)
+  name = name.replace(/-Holo$/i, "");
+  name = name.replace(/-Rev\.Foil$/i, "");
+
+  // Expand known abbreviations
+  for (const [abbr, full] of Object.entries(ABBREVIATION_MAP)) {
+    const regex = new RegExp(abbr.replace(/\./g, "\\."), "gi");
+    name = name.replace(regex, full);
+  }
+
+  // Normalize card type suffixes
+  name = name.replace(/\bGx\b/g, "GX");
+  name = name.replace(/\bVmax\b/g, "VMAX");
+  name = name.replace(/\bVstar\b/g, "VSTAR");
+  name = name.replace(/\bEx\b/g, "EX"); // generic uppercase
+  name = name.replace(/\bV\b/g, "V");
+
+  return name.trim();
+}
+
+function cleanSetName(raw) {
+  if (!raw) return "";
+  let set = raw.trim();
+
+  // Remove "Pokemon " prefix
+  set = set.replace(/^Pokemon\s+/i, "");
+
+  // Remove era prefixes
+  set = set.replace(/^Sword & Shield\s+/i, "");
+  set = set.replace(/^Sun & Moon:\s*/i, "");
+  set = set.replace(/^Sun & Moon\s+/i, "");
+  set = set.replace(/^Swsh\s+/i, "SWSH ");
+  set = set.replace(/^Sm\s+/i, "SM ");
+  set = set.replace(/^Xy\s+/i, "XY ");
+  set = set.replace(/^Bw\s+/i, "BW ");
+  set = set.replace(/^Ex\s+/i, "EX ");
+  set = set.replace(/^Svp\s+/i, "SVP ");
+
+  // Clean up "Japanese" set format: "Japanese Sv-P Promo" etc.
+  set = set.replace(/^Japanese\s+Sv\w*-/i, "Japanese ");
+
+  return set.trim();
+}
+
+function parseCondition(raw) {
+  if (!raw) return { company: "", grade: "" };
+  const match = raw.trim().match(/^(PSA|BGS|SGC|CGC)\s+(.+)$/i);
+  if (match) {
+    return { company: match[1].toUpperCase(), grade: match[2].trim() };
+  }
+  return { company: "", grade: raw.trim() };
+}
+
+// ─── CSV Row → Card Item ──────────────────────────────────────────────────────
+
+const REQUIRED_HEADERS = ["Player", "Set", "Condition", "Current Value"];
+
+function validateHeaders(headers) {
+  const normalized = headers.map(h => h.trim());
+  const missing = REQUIRED_HEADERS.filter(
+    req => !normalized.some(h => h.toLowerCase() === req.toLowerCase())
+  );
+  return { valid: missing.length === 0, missing, headers: normalized };
+}
+
+function rowToCard(row, headerMap) {
+  const get = (col) => (row[headerMap[col]] || "").trim();
+
+  const playerRaw = get("Player");
+  const setRaw = get("Set");
+  const variation = get("Variation");
+  const number = get("Number");
+  const condition = get("Condition");
+  const investment = parseFloat(get("Investment")) || 0;
+  const currentValue = parseFloat(get("Current Value")) || 0;
+  const potentialProfit = parseFloat(get("Potential Profit")) || 0;
+  const ladderId = get("Ladder ID");
+  const slabSerial = get("Slab Serial #");
+  const population = parseInt(get("Population")) || null;
+  const datePurchased = get("Date Purchased");
+  const quantity = parseInt(get("Quantity")) || 1;
+  const fullCard = get("Card");
+  const year = get("Year");
+  const notes = get("Notes");
+
+  const cleanName = cleanPlayerName(playerRaw);
+  const cleanSet = cleanSetName(setRaw);
+  const { company, grade } = parseCondition(condition);
+
+  return {
+    entryId: `cardladder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: cleanName,
+    set: cleanSet,
+    number: number,
+    rarity: variation || "",
+    image: "", // No image from CardLadder CSV
+    condition: "NM", // Graded cards are effectively NM
+    quantity: quantity,
+    addedAt: Date.now(),
+    source: "cardladder",
+    isGraded: true,
+    gradingCompany: company,
+    grade: grade,
+    gradedPrice: currentValue,
+    gradedPriceCurrency: "USD",
+    cardladderData: {
+      playerRaw,
+      setRaw,
+      fullCard,
+      year,
+      variation,
+      investment,
+      currentValue,
+      potentialProfit,
+      ladderId: ladderId || null,
+      slabSerial: slabSerial || null,
+      population,
+      datePurchased,
+      notes: notes || null,
+      importedAt: Date.now(),
+    },
+  };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export function CardLadderImport({ onClose, collectionName }) {
+  const { user, db, collectionItems, setCollectionItems } = useApp();
+  const [file, setFile] = useState(null);
+  const [parsedCards, setParsedCards] = useState([]);
+  const [parseError, setParseError] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+
+  const handleFileChange = useCallback((e) => {
+    const selected = e.target.files?.[0];
+    if (!selected) return;
+
+    setFile(selected);
+    setParseError(null);
+    setParsedCards([]);
+    setImportResult(null);
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const text = evt.target.result;
+        const rows = parseCSVText(text);
+        if (rows.length < 2) {
+          setParseError("CSV file appears to be empty.");
+          return;
+        }
+
+        const headers = rows[0];
+        const { valid, missing } = validateHeaders(headers);
+        if (!valid) {
+          setParseError(
+            `This doesn't look like a CardLadder export. Missing columns: ${missing.join(", ")}. ` +
+            `Make sure you're exporting from CardLadder Pro.`
+          );
+          return;
+        }
+
+        // Build header → index map
+        const headerMap = {};
+        headers.forEach((h, i) => {
+          headerMap[h.trim()] = i;
+        });
+
+        // Parse data rows
+        const cards = [];
+        for (let i = 1; i < rows.length; i++) {
+          if (rows[i].length < 4) continue; // skip malformed rows
+          try {
+            cards.push(rowToCard(rows[i], headerMap));
+          } catch (err) {
+            console.warn(`Skipped row ${i + 1}:`, err);
+          }
+        }
+
+        if (cards.length === 0) {
+          setParseError("No cards found in the CSV. Please check the file.");
+          return;
+        }
+
+        setParsedCards(cards);
+      } catch (err) {
+        console.error("CSV parse error:", err);
+        setParseError("Failed to parse CSV file. Please ensure it's a valid CardLadder export.");
+      }
+    };
+    reader.readAsText(selected);
+  }, []);
+
+  const handleImport = useCallback(async () => {
+    if (!user?.uid || !db || parsedCards.length === 0) return;
+
+    setImporting(true);
+    try {
+      const docRef = doc(db, collectionName, user.uid);
+      const snapshot = await getDoc(docRef);
+      const currentData = snapshot.exists() ? snapshot.data() : {};
+      const currentItems = currentData.items || [];
+
+      // Wipe all previous CardLadder imports, keep everything else
+      const nonCardLadder = currentItems.filter(it => it.source !== "cardladder");
+
+      // Add new CardLadder imports
+      const updatedItems = [...nonCardLadder, ...parsedCards];
+
+      await setDoc(docRef, { ...currentData, items: updatedItems });
+      setCollectionItems(updatedItems);
+
+      setImportResult({
+        success: true,
+        imported: parsedCards.length,
+        removed: currentItems.length - nonCardLadder.length,
+        total: updatedItems.length,
+      });
+    } catch (err) {
+      console.error("Import failed:", err);
+      setImportResult({
+        success: false,
+        error: err.message || "Failed to save to database.",
+      });
+    } finally {
+      setImporting(false);
+    }
+  }, [user, db, collectionName, parsedCards, setCollectionItems]);
+
+  // Summary stats from parsed cards
+  const totalValue = parsedCards.reduce((s, c) => s + (c.gradedPrice || 0), 0);
+  const totalInvestment = parsedCards.reduce(
+    (s, c) => s + (c.cardladderData?.investment || 0),
+    0
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <Card className="relative z-10 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto rounded-2xl">
+        <CardContent className="p-6">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-bold">Import from CardLadder</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Upload your CardLadder Pro CSV export
+              </p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+
+          {/* Info box */}
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <div className="flex gap-2">
+              <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-amber-800">
+                <p className="font-semibold mb-1">CardLadder Pro Required</p>
+                <p>
+                  This feature only works with CSV exports from{" "}
+                  <a
+                    href="https://cardladder.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline font-medium"
+                  >
+                    CardLadder Pro
+                  </a>
+                  . Go to your CardLadder collection, export as CSV, and upload it here.
+                </p>
+                <p className="mt-1 text-amber-700">
+                  Each import <strong>replaces</strong> all previously imported CardLadder
+                  cards. Cards you added manually are never affected.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* File upload */}
+          {!importResult?.success && (
+            <div className="mb-4">
+              <label
+                htmlFor="cardladder-csv"
+                className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
+                  file
+                    ? "border-green-300 bg-green-50"
+                    : "border-gray-300 bg-gray-50 hover:bg-gray-100"
+                }`}
+              >
+                <Upload className={`h-8 w-8 mb-2 ${file ? "text-green-600" : "text-gray-400"}`} />
+                {file ? (
+                  <span className="text-sm font-medium text-green-700">{file.name}</span>
+                ) : (
+                  <>
+                    <span className="text-sm font-medium text-gray-600">
+                      Click to upload CSV
+                    </span>
+                    <span className="text-xs text-gray-400 mt-1">
+                      CardLadder Pro export (.csv)
+                    </span>
+                  </>
+                )}
+                <input
+                  id="cardladder-csv"
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+              </label>
+            </div>
+          )}
+
+          {/* Parse error */}
+          {parseError && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <div className="flex gap-2">
+                <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0" />
+                <p className="text-sm text-red-700">{parseError}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Preview */}
+          {parsedCards.length > 0 && !importResult?.success && (
+            <>
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm font-semibold text-blue-800 mb-1">
+                  Found {parsedCards.length} graded card{parsedCards.length !== 1 ? "s" : ""}
+                </p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-blue-700">
+                  <span>Total Value: ${totalValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  <span>Total Invested: ${totalInvestment.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+              </div>
+
+              {/* Card preview list */}
+              <div className="mb-4 max-h-60 overflow-y-auto border rounded-lg">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="text-left p-2 font-semibold">Card</th>
+                      <th className="text-left p-2 font-semibold">Set</th>
+                      <th className="text-center p-2 font-semibold">Grade</th>
+                      <th className="text-right p-2 font-semibold">Value</th>
+                      <th className="text-right p-2 font-semibold">Invested</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {parsedCards.map((card, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50">
+                        <td className="p-2 font-medium">{card.name}</td>
+                        <td className="p-2 text-muted-foreground truncate max-w-[140px]">
+                          {card.set} #{card.number}
+                        </td>
+                        <td className="p-2 text-center">
+                          <span className="inline-flex px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800 font-semibold">
+                            {card.gradingCompany} {card.grade}
+                          </span>
+                        </td>
+                        <td className="p-2 text-right font-semibold text-green-700">
+                          ${card.gradedPrice?.toFixed(2)}
+                        </td>
+                        <td className="p-2 text-right text-muted-foreground">
+                          ${card.cardladderData?.investment?.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <Button
+                className="w-full bg-blue-600 hover:bg-blue-700"
+                onClick={handleImport}
+                disabled={importing}
+              >
+                {importing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4 mr-2" />
+                    Import {parsedCards.length} Card{parsedCards.length !== 1 ? "s" : ""}
+                  </>
+                )}
+              </Button>
+            </>
+          )}
+
+          {/* Import result */}
+          {importResult && (
+            <div
+              className={`p-4 rounded-lg border ${
+                importResult.success
+                  ? "bg-green-50 border-green-200"
+                  : "bg-red-50 border-red-200"
+              }`}
+            >
+              {importResult.success ? (
+                <div className="text-center">
+                  <Check className="h-10 w-10 text-green-600 mx-auto mb-2" />
+                  <p className="font-semibold text-green-800 mb-1">Import Complete!</p>
+                  <p className="text-sm text-green-700">
+                    {importResult.imported} card{importResult.imported !== 1 ? "s" : ""} imported
+                    {importResult.removed > 0 && (
+                      <> (replaced {importResult.removed} previous CardLadder import{importResult.removed !== 1 ? "s" : ""})</>
+                    )}
+                  </p>
+                  <Button variant="outline" className="mt-4" onClick={onClose}>
+                    Done
+                  </Button>
+                </div>
+              ) : (
+                <div>
+                  <p className="font-semibold text-red-800 mb-1">Import Failed</p>
+                  <p className="text-sm text-red-700">{importResult.error}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Footer */}
+          {!importResult?.success && (
+            <div className="mt-4 flex justify-end">
+              <Button variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+export default CardLadderImport;

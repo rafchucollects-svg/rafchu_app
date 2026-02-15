@@ -10,6 +10,7 @@ import { ConditionSelect, PriceRow } from "@/components/CardComponents";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
+import { CardLadderImport } from "@/components/CardLadderImport";
 import { needsImage } from "@/utils/imageHelpers";
 
 /**
@@ -64,6 +65,9 @@ export function MyCollection() {
   // Manual price editing state
   const [editingManualValueId, setEditingManualValueId] = useState(null);
   const [editingManualValue, setEditingManualValue] = useState("");
+  
+  // CardLadder import modal state
+  const [showCardLadderImport, setShowCardLadderImport] = useState(false);
   
   // Enriched collection items with community images
   const [enrichedItems, setEnrichedItems] = useState([]);
@@ -701,7 +705,15 @@ export function MyCollection() {
             <div className="text-lg font-bold text-primary">
               Collection Value: {formatPrice(totals.value)}
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowCardLadderImport(true)}
+              >
+                <Upload className="mr-1 h-4 w-4" />
+                Import CardLadder
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -1429,6 +1441,14 @@ export function MyCollection() {
             setImageUploadModalOpen(false);
             setCardForImageUpload(null);
           }}
+        />
+      )}
+
+      {/* CardLadder Import Modal */}
+      {showCardLadderImport && (
+        <CardLadderImport
+          onClose={() => setShowCardLadderImport(false)}
+          collectionName="collector_collections"
         />
       )}
     </div>
