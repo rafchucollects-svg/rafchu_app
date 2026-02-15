@@ -1,25 +1,68 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { X, Search, Upload, Loader2, Check, ImageIcon } from "lucide-react";
+import { X, Search, Upload, Loader2, Check, ImageIcon, Link2 } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const CLOUD_FUNCTIONS_BASE =
   "https://us-central1-rafchu-tcg-app.cloudfunctions.net";
 
+// ─── Helper: fetch an image URL as a blob for re-upload ───────────────────────
+
+async function fetchImageAsBlob(url) {
+  // Attempt 1: Direct fetch (works when server sends CORS headers)
+  try {
+    const res = await fetch(url, { mode: "cors" });
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob.size > 0 && blob.type.startsWith("image/")) return blob;
+    }
+  } catch (_) {
+    // CORS blocked — try canvas
+  }
+
+  // Attempt 2: Load into <img crossOrigin> → draw to canvas → export blob
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error("Canvas export failed"));
+          },
+          "image/png"
+        );
+      } catch (e) {
+        reject(e);
+      }
+    };
+    img.onerror = () => reject(new Error("Failed to load image from URL"));
+    img.src = url;
+  });
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 /**
- * CardImageReplacer - Search API or upload a custom image to replace a card's image.
+ * CardImageReplacer - Search API, paste a URL, or upload a custom image.
  *
  * Props:
  *   - item: the collection/inventory item to update
- *   - onImageUpdate: (entryId, newImageUrl) => void - callback to persist the change
+ *   - onImageUpdate: (entryId, newImageUrl) => void
  *   - onClose: () => void
  */
 export function CardImageReplacer({ item, onImageUpdate, onClose }) {
   const { user } = useApp();
-  const [tab, setTab] = useState("search"); // "search" | "upload"
+  const [tab, setTab] = useState("search"); // "search" | "url" | "upload"
 
   // Search state
   const [searchQuery, setSearchQuery] = useState(
@@ -37,9 +80,33 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
 
-  const debounceRef = useRef(null);
+  // URL state
+  const [imageUrl, setImageUrl] = useState("");
+  const [urlPreviewLoaded, setUrlPreviewLoaded] = useState(false);
+  const [urlPreviewError, setUrlPreviewError] = useState(false);
+  const [urlSaving, setUrlSaving] = useState(false);
+  const [urlError, setUrlError] = useState("");
 
-  // ─── Search ───────────────────────────────────────────────────────────
+  // ─── Shared: upload blob to Firebase Storage ────────────────────────
+
+  const uploadBlobToStorage = useCallback(
+    async (blob, ext = "png") => {
+      const storage = getStorage();
+      const timestamp = Date.now();
+      const safeName = (item.name || "card")
+        .replace(/[^a-zA-Z0-9]/g, "-")
+        .toLowerCase();
+      const filename = `${safeName}-${timestamp}.${ext}`;
+      const storageRef = ref(storage, `card-images/${user.uid}/${filename}`);
+      const snapshot = await uploadBytes(storageRef, blob, {
+        contentType: blob.type || `image/${ext}`,
+      });
+      return getDownloadURL(snapshot.ref);
+    },
+    [item, user]
+  );
+
+  // ─── Search ─────────────────────────────────────────────────────────
 
   const handleSearch = useCallback(async () => {
     if (!searchQuery.trim()) return;
@@ -62,14 +129,12 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
               number: String(
                 d?.card_number ?? d?.collector_number ?? d?.number ?? ""
               ),
-              set:
-                d?.episode?.name ?? d?.episode_name ?? d?.set_name ?? "",
+              set: d?.episode?.name ?? d?.episode_name ?? d?.set_name ?? "",
               image: d?.image ?? d?.images?.[0] ?? "",
               id: d?.id ?? d?.card_id ?? "",
             };
           })
           .filter((c) => c.name && c.image);
-
         setSearchResults(cards);
       } else {
         setSearchResults([]);
@@ -98,12 +163,11 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
     [item, onImageUpdate, onClose]
   );
 
-  // ─── Upload ───────────────────────────────────────────────────────────
+  // ─── Upload ─────────────────────────────────────────────────────────
 
   const handleFileSelect = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (!file.type.startsWith("image/")) {
       setUploadError("Please select an image file (JPG, PNG, WebP)");
       return;
@@ -112,7 +176,6 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
       setUploadError("Image must be less than 5MB");
       return;
     }
-
     setUploadError("");
     setUploadFile(file);
     const reader = new FileReader();
@@ -124,23 +187,10 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
     if (!uploadFile || !user) return;
     setUploading(true);
     setUploadError("");
-
     try {
-      const storage = getStorage();
-      const timestamp = Date.now();
-      const safeName = (item.name || "card")
-        .replace(/[^a-zA-Z0-9]/g, "-")
-        .toLowerCase();
       const ext = uploadFile.name.split(".").pop() || "jpg";
-      const filename = `${safeName}-${timestamp}.${ext}`;
-      const storageRef = ref(storage, `card-images/${user.uid}/${filename}`);
-
-      const snapshot = await uploadBytes(storageRef, uploadFile, {
-        contentType: uploadFile.type,
-      });
-      const imageUrl = await getDownloadURL(snapshot.ref);
-
-      await onImageUpdate(item.entryId, imageUrl);
+      const permanentUrl = await uploadBlobToStorage(uploadFile, ext);
+      await onImageUpdate(item.entryId, permanentUrl);
       setSaved(true);
       setTimeout(() => onClose(), 1200);
     } catch (err) {
@@ -149,9 +199,48 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
     } finally {
       setUploading(false);
     }
-  }, [uploadFile, user, item, onImageUpdate, onClose]);
+  }, [uploadFile, user, item, onImageUpdate, onClose, uploadBlobToStorage]);
+
+  // ─── URL ────────────────────────────────────────────────────────────
+
+  const handleUrlPreview = useCallback(() => {
+    if (!imageUrl.trim()) return;
+    setUrlPreviewLoaded(false);
+    setUrlPreviewError(false);
+    setUrlError("");
+    // The <img> tag will handle the preview via onLoad / onError
+  }, [imageUrl]);
+
+  const handleUrlSave = useCallback(async () => {
+    if (!imageUrl.trim() || !user) return;
+    setUrlSaving(true);
+    setUrlError("");
+
+    try {
+      // Try to fetch and re-upload to Firebase Storage for permanence
+      const blob = await fetchImageAsBlob(imageUrl.trim());
+      const permanentUrl = await uploadBlobToStorage(blob, "png");
+      await onImageUpdate(item.entryId, permanentUrl);
+      setSaved(true);
+      setTimeout(() => onClose(), 1200);
+    } catch (fetchErr) {
+      console.warn("Could not download image, saving URL directly:", fetchErr);
+      // Fallback: save the original URL directly
+      try {
+        await onImageUpdate(item.entryId, imageUrl.trim());
+        setSaved(true);
+        setTimeout(() => onClose(), 1200);
+      } catch (err) {
+        setUrlError("Failed to save image. Please try again.");
+      }
+    } finally {
+      setUrlSaving(false);
+    }
+  }, [imageUrl, user, item, onImageUpdate, onClose, uploadBlobToStorage]);
 
   if (!item) return null;
+
+  const isValidUrl = imageUrl.trim().startsWith("http");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -161,14 +250,17 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
           {/* Header */}
           <div className="flex items-center justify-between mb-3">
             <div className="min-w-0">
-              <h2 className="text-lg font-bold truncate">
-                Replace Image
-              </h2>
+              <h2 className="text-lg font-bold truncate">Replace Image</h2>
               <p className="text-sm text-muted-foreground truncate">
                 {item.name} &middot; {item.set} &middot; #{item.number}
               </p>
             </div>
-            <Button variant="ghost" size="sm" onClick={onClose} className="flex-shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="flex-shrink-0"
+            >
               <X className="h-5 w-5" />
             </Button>
           </div>
@@ -186,26 +278,37 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
               {/* Tabs */}
               <div className="flex gap-1 mb-4 p-1 bg-gray-100 rounded-lg">
                 <button
-                  className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex-1 py-2 px-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
                     tab === "search"
                       ? "bg-white text-primary shadow-sm"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                   onClick={() => setTab("search")}
                 >
-                  <Search className="h-3.5 w-3.5 inline mr-1.5" />
-                  Search API
+                  <Search className="h-3.5 w-3.5 inline mr-1" />
+                  Search
                 </button>
                 <button
-                  className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex-1 py-2 px-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
+                    tab === "url"
+                      ? "bg-white text-primary shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  onClick={() => setTab("url")}
+                >
+                  <Link2 className="h-3.5 w-3.5 inline mr-1" />
+                  From URL
+                </button>
+                <button
+                  className={`flex-1 py-2 px-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${
                     tab === "upload"
                       ? "bg-white text-primary shadow-sm"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                   onClick={() => setTab("upload")}
                 >
-                  <Upload className="h-3.5 w-3.5 inline mr-1.5" />
-                  Upload Custom
+                  <Upload className="h-3.5 w-3.5 inline mr-1" />
+                  Upload
                 </button>
               </div>
 
@@ -291,13 +394,106 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
                 </div>
               )}
 
+              {/* ─── URL Tab ────────────────────────────────── */}
+              {tab === "url" && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Paste a link to a card image from the web. The image will be
+                    downloaded and stored permanently in your account so it
+                    won't break if the original link goes down.
+                  </p>
+
+                  <div className="flex gap-2 mb-3">
+                    <Input
+                      value={imageUrl}
+                      onChange={(e) => {
+                        setImageUrl(e.target.value);
+                        setUrlPreviewLoaded(false);
+                        setUrlPreviewError(false);
+                        setUrlError("");
+                      }}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" && isValidUrl && handleUrlPreview()
+                      }
+                      placeholder="https://example.com/card-image.jpg"
+                      className="flex-1 text-sm"
+                    />
+                  </div>
+
+                  {/* URL preview */}
+                  {isValidUrl && (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="relative">
+                        <img
+                          src={imageUrl.trim()}
+                          alt="Preview"
+                          className={`max-h-52 rounded-lg shadow-md object-contain transition-opacity ${
+                            urlPreviewLoaded ? "opacity-100" : "opacity-0"
+                          }`}
+                          onLoad={() => {
+                            setUrlPreviewLoaded(true);
+                            setUrlPreviewError(false);
+                          }}
+                          onError={() => {
+                            setUrlPreviewError(true);
+                            setUrlPreviewLoaded(false);
+                          }}
+                        />
+                        {!urlPreviewLoaded && !urlPreviewError && (
+                          <div className="flex items-center justify-center h-32">
+                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                          </div>
+                        )}
+                      </div>
+
+                      {urlPreviewError && (
+                        <p className="text-sm text-red-600">
+                          Could not load image from this URL. Please check the
+                          link and try again.
+                        </p>
+                      )}
+
+                      {urlPreviewLoaded && (
+                        <Button
+                          size="sm"
+                          onClick={handleUrlSave}
+                          disabled={urlSaving}
+                          className="bg-blue-600 hover:bg-blue-700"
+                        >
+                          {urlSaving ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                              Saving...
+                            </>
+                          ) : (
+                            <>
+                              <Check className="h-4 w-4 mr-1" />
+                              Use This Image
+                            </>
+                          )}
+                        </Button>
+                      )}
+
+                      {urlError && (
+                        <p className="text-sm text-red-600">{urlError}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {!isValidUrl && imageUrl.trim() && (
+                    <p className="text-sm text-red-600 text-center">
+                      Please enter a valid URL starting with http:// or https://
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* ─── Upload Tab ─────────────────────────────── */}
               {tab === "upload" && (
                 <div>
                   <p className="text-xs text-muted-foreground mb-3">
-                    Can't find the card in the API? Upload your own image.
-                    This will be stored in your account and used only for your
-                    collection.
+                    Can't find the card online? Upload your own image. It will
+                    be stored in your account and used only for your collection.
                   </p>
 
                   {!uploadPreview ? (

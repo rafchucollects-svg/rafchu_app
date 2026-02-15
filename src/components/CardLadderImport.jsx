@@ -423,12 +423,11 @@ export function CardLadderImport({ onClose, collectionName }) {
   const [importing, setImporting] = useState(false);
   const [imageProgress, setImageProgress] = useState(null); // { processed, found, total }
   const [importResult, setImportResult] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
   const abortRef = useRef(null);
 
-  const handleFileChange = useCallback((e) => {
-    const selected = e.target.files?.[0];
+  const processFile = useCallback((selected) => {
     if (!selected) return;
-
     setFile(selected);
     setParseError(null);
     setParsedCards([]);
@@ -487,6 +486,36 @@ export function CardLadderImport({ onClose, collectionName }) {
     };
     reader.readAsText(selected);
   }, []);
+
+  const handleFileChange = useCallback((e) => {
+    processFile(e.target.files?.[0]);
+  }, [processFile]);
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const droppedFile = e.dataTransfer?.files?.[0];
+    if (droppedFile) {
+      if (!droppedFile.name.toLowerCase().endsWith(".csv")) {
+        setParseError("Please drop a CSV file.");
+        return;
+      }
+      processFile(droppedFile);
+    }
+  }, [processFile]);
 
   const handleImport = useCallback(async () => {
     if (!user?.uid || !db || parsedCards.length === 0) return;
@@ -614,28 +643,39 @@ export function CardLadderImport({ onClose, collectionName }) {
             </div>
           </div>
 
-          {/* File upload */}
+          {/* File upload with drag-and-drop */}
           {!importResult?.success && !importing && (
-            <div className="mb-4">
+            <div
+              className="mb-4"
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
               <label
                 htmlFor="cardladder-csv"
                 className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
-                  file
-                    ? "border-green-300 bg-green-50"
-                    : "border-gray-300 bg-gray-50 hover:bg-gray-100"
+                  isDragging
+                    ? "border-blue-400 bg-blue-50 scale-[1.02]"
+                    : file
+                      ? "border-green-300 bg-green-50"
+                      : "border-gray-300 bg-gray-50 hover:bg-gray-100"
                 }`}
               >
                 <Upload
-                  className={`h-8 w-8 mb-2 ${file ? "text-green-600" : "text-gray-400"}`}
+                  className={`h-8 w-8 mb-2 ${isDragging ? "text-blue-500" : file ? "text-green-600" : "text-gray-400"}`}
                 />
-                {file ? (
+                {isDragging ? (
+                  <span className="text-sm font-medium text-blue-600">
+                    Drop CSV file here
+                  </span>
+                ) : file ? (
                   <span className="text-sm font-medium text-green-700">
                     {file.name}
                   </span>
                 ) : (
                   <>
                     <span className="text-sm font-medium text-gray-600">
-                      Click to upload CSV
+                      Drag & drop CSV here, or click to browse
                     </span>
                     <span className="text-xs text-gray-400 mt-1">
                       CardLadder Pro export (.csv)
