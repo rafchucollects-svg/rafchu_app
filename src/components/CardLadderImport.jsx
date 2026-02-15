@@ -1,9 +1,11 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Upload, X, AlertCircle, Check, Loader2 } from "lucide-react";
+import { Upload, X, AlertCircle, Check, Loader2, ImageIcon } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { doc, setDoc, getDoc } from "firebase/firestore";
+
+const CLOUD_FUNCTIONS_BASE = "https://us-central1-rafchu-tcg-app.cloudfunctions.net";
 
 // ─── CSV Parsing ──────────────────────────────────────────────────────────────
 
@@ -28,7 +30,7 @@ function parseCSVText(text) {
     } else if ((ch === "\n" || ch === "\r") && !inQuotes) {
       current.push(field);
       field = "";
-      if (current.some(f => f.trim())) rows.push(current);
+      if (current.some((f) => f.trim())) rows.push(current);
       current = [];
       if (ch === "\r" && text[i + 1] === "\n") i++;
     } else {
@@ -36,7 +38,7 @@ function parseCSVText(text) {
     }
   }
   current.push(field);
-  if (current.some(f => f.trim())) rows.push(current);
+  if (current.some((f) => f.trim())) rows.push(current);
   return rows;
 }
 
@@ -119,9 +121,9 @@ function parseCondition(raw) {
 const REQUIRED_HEADERS = ["Player", "Set", "Condition", "Current Value"];
 
 function validateHeaders(headers) {
-  const normalized = headers.map(h => h.trim());
+  const normalized = headers.map((h) => h.trim());
   const missing = REQUIRED_HEADERS.filter(
-    req => !normalized.some(h => h.toLowerCase() === req.toLowerCase())
+    (req) => !normalized.some((h) => h.toLowerCase() === req.toLowerCase())
   );
   return { valid: missing.length === 0, missing, headers: normalized };
 }
@@ -156,8 +158,8 @@ function rowToCard(row, headerMap) {
     set: cleanSet,
     number: number,
     rarity: variation || "",
-    image: "", // No image from CardLadder CSV
-    condition: "NM", // Graded cards are effectively NM
+    image: "", // Will be populated by image fetching
+    condition: "NM",
     quantity: quantity,
     addedAt: Date.now(),
     source: "cardladder",
@@ -185,6 +187,155 @@ function rowToCard(row, headerMap) {
   };
 }
 
+// ─── Image Fetching ───────────────────────────────────────────────────────────
+
+async function searchCardMarket(query) {
+  try {
+    const res = await fetch(
+      `${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=10`
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!data?.success || !data?.results) return [];
+    return data.results
+      .map((raw) => {
+        const d = raw?.data ?? raw;
+        return {
+          name: d?.name || "",
+          number: String(d?.card_number ?? d?.collector_number ?? d?.number ?? ""),
+          set: d?.episode?.name ?? d?.episode_name ?? d?.set_name ?? "",
+          image: d?.image ?? d?.images?.[0] ?? "",
+          id: d?.id ?? d?.card_id ?? "",
+          prices: d?.prices || {},
+        };
+      })
+      .filter((c) => c.name && c.image);
+  } catch (err) {
+    console.warn("Image search failed for:", query, err);
+    return [];
+  }
+}
+
+function normalizeNumber(num) {
+  return String(num || "")
+    .toLowerCase()
+    .replace(/^#/, "")
+    .trim();
+}
+
+function findBestMatch(card, results) {
+  const cardNum = normalizeNumber(card.number);
+  const cardName = card.name?.toLowerCase().trim() || "";
+
+  // Strategy 1: Exact number match
+  for (const r of results) {
+    if (normalizeNumber(r.number) === cardNum) {
+      return r;
+    }
+  }
+
+  // Strategy 2: Number contained in result number or vice versa
+  // (handles cases like "SM166" matching "166" or vice versa)
+  for (const r of results) {
+    const rNum = normalizeNumber(r.number);
+    if (rNum && cardNum && (rNum.includes(cardNum) || cardNum.includes(rNum))) {
+      return r;
+    }
+  }
+
+  // Strategy 3: Name similarity (first word match + set overlap)
+  const cardFirstWord = cardName.split(/\s+/)[0];
+  for (const r of results) {
+    const rName = (r.name || "").toLowerCase();
+    if (cardFirstWord && rName.startsWith(cardFirstWord)) {
+      return r;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fetch images for a batch of cards using the CardMarket search API.
+ * Uses a concurrency pool to avoid overwhelming the API.
+ * 
+ * Search strategy per card (in order):
+ *   1. Search by card number (e.g., "SM166") — most reliable
+ *   2. Search by "name number" (e.g., "Magikarp Wailord GX SM166")
+ *   3. Search by name only (e.g., "Magikarp Wailord GX")
+ */
+async function fetchImagesForCards(cards, onProgress, abortSignal) {
+  const CONCURRENCY = 3;
+  const DELAY_MS = 200; // small delay between batches to be polite
+  let found = 0;
+  let processed = 0;
+
+  const results = new Array(cards.length).fill(null);
+
+  // Process a single card
+  async function processCard(idx) {
+    if (abortSignal?.aborted) return;
+
+    const card = cards[idx];
+    const number = card.number?.trim();
+    const name = card.name?.trim();
+    // Strip "&" for search (API doesn't handle it well in some cases)
+    const searchName = name?.replace(/&/g, " ").replace(/\s+/g, " ").trim();
+
+    let match = null;
+
+    // Attempt 1: Search by number (most reliable for unique card numbers)
+    if (number && !match) {
+      const res = await searchCardMarket(number);
+      match = findBestMatch(card, res);
+    }
+
+    // Attempt 2: Search by "name number"
+    if (!match && searchName && number) {
+      const res = await searchCardMarket(`${searchName} ${number}`);
+      match = findBestMatch(card, res);
+    }
+
+    // Attempt 3: Search by name only
+    if (!match && searchName) {
+      const res = await searchCardMarket(searchName);
+      match = findBestMatch(card, res);
+    }
+
+    if (match) {
+      results[idx] = {
+        image: match.image,
+        id: match.id,
+        apiName: match.name,
+        apiSet: match.set,
+        prices: match.prices,
+      };
+      found++;
+    }
+
+    processed++;
+    onProgress?.({ processed, found, total: cards.length });
+  }
+
+  // Process in batches with concurrency limit
+  for (let i = 0; i < cards.length; i += CONCURRENCY) {
+    if (abortSignal?.aborted) break;
+
+    const batch = [];
+    for (let j = i; j < Math.min(i + CONCURRENCY, cards.length); j++) {
+      batch.push(processCard(j));
+    }
+    await Promise.all(batch);
+
+    // Small delay between batches
+    if (i + CONCURRENCY < cards.length) {
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+    }
+  }
+
+  return results;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function CardLadderImport({ onClose, collectionName }) {
@@ -193,7 +344,9 @@ export function CardLadderImport({ onClose, collectionName }) {
   const [parsedCards, setParsedCards] = useState([]);
   const [parseError, setParseError] = useState(null);
   const [importing, setImporting] = useState(false);
+  const [imageProgress, setImageProgress] = useState(null); // { processed, found, total }
   const [importResult, setImportResult] = useState(null);
+  const abortRef = useRef(null);
 
   const handleFileChange = useCallback((e) => {
     const selected = e.target.files?.[0];
@@ -203,6 +356,7 @@ export function CardLadderImport({ onClose, collectionName }) {
     setParseError(null);
     setParsedCards([]);
     setImportResult(null);
+    setImageProgress(null);
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -219,7 +373,7 @@ export function CardLadderImport({ onClose, collectionName }) {
         if (!valid) {
           setParseError(
             `This doesn't look like a CardLadder export. Missing columns: ${missing.join(", ")}. ` +
-            `Make sure you're exporting from CardLadder Pro.`
+              `Make sure you're exporting from CardLadder Pro.`
           );
           return;
         }
@@ -233,7 +387,7 @@ export function CardLadderImport({ onClose, collectionName }) {
         // Parse data rows
         const cards = [];
         for (let i = 1; i < rows.length; i++) {
-          if (rows[i].length < 4) continue; // skip malformed rows
+          if (rows[i].length < 4) continue;
           try {
             cards.push(rowToCard(rows[i], headerMap));
           } catch (err) {
@@ -249,7 +403,9 @@ export function CardLadderImport({ onClose, collectionName }) {
         setParsedCards(cards);
       } catch (err) {
         console.error("CSV parse error:", err);
-        setParseError("Failed to parse CSV file. Please ensure it's a valid CardLadder export.");
+        setParseError(
+          "Failed to parse CSV file. Please ensure it's a valid CardLadder export."
+        );
       }
     };
     reader.readAsText(selected);
@@ -259,26 +415,63 @@ export function CardLadderImport({ onClose, collectionName }) {
     if (!user?.uid || !db || parsedCards.length === 0) return;
 
     setImporting(true);
+    setImageProgress({ processed: 0, found: 0, total: parsedCards.length });
+
     try {
+      // Step 1: Fetch images from the API
+      const abortController = new AbortController();
+      abortRef.current = abortController;
+
+      const imageResults = await fetchImagesForCards(
+        parsedCards,
+        (progress) => setImageProgress(progress),
+        abortController.signal
+      );
+
+      if (abortController.signal.aborted) {
+        setImporting(false);
+        return;
+      }
+
+      // Step 2: Merge images into parsed cards
+      const enrichedCards = parsedCards.map((card, idx) => {
+        const imgData = imageResults[idx];
+        if (imgData) {
+          return {
+            ...card,
+            image: imgData.image || card.image,
+            id: imgData.id || card.id || "",
+            // Keep CardLadder name/set as primary, store API match for reference
+            ...(imgData.prices && Object.keys(imgData.prices).length > 0
+              ? { prices: imgData.prices }
+              : {}),
+          };
+        }
+        return card;
+      });
+
+      // Step 3: Save to Firestore (wipe previous + add new)
       const docRef = doc(db, collectionName, user.uid);
       const snapshot = await getDoc(docRef);
       const currentData = snapshot.exists() ? snapshot.data() : {};
       const currentItems = currentData.items || [];
 
-      // Wipe all previous CardLadder imports, keep everything else
-      const nonCardLadder = currentItems.filter(it => it.source !== "cardladder");
-
-      // Add new CardLadder imports
-      const updatedItems = [...nonCardLadder, ...parsedCards];
+      const nonCardLadder = currentItems.filter(
+        (it) => it.source !== "cardladder"
+      );
+      const updatedItems = [...nonCardLadder, ...enrichedCards];
 
       await setDoc(docRef, { ...currentData, items: updatedItems });
       setCollectionItems(updatedItems);
 
+      const imagesFound = imageResults.filter(Boolean).length;
+
       setImportResult({
         success: true,
-        imported: parsedCards.length,
+        imported: enrichedCards.length,
         removed: currentItems.length - nonCardLadder.length,
         total: updatedItems.length,
+        imagesFound,
       });
     } catch (err) {
       console.error("Import failed:", err);
@@ -288,6 +481,7 @@ export function CardLadderImport({ onClose, collectionName }) {
       });
     } finally {
       setImporting(false);
+      setImageProgress(null);
     }
   }, [user, db, collectionName, parsedCards, setCollectionItems]);
 
@@ -332,18 +526,19 @@ export function CardLadderImport({ onClose, collectionName }) {
                   >
                     CardLadder Pro
                   </a>
-                  . Go to your CardLadder collection, export as CSV, and upload it here.
+                  . Go to your CardLadder collection, export as CSV, and upload
+                  it here.
                 </p>
                 <p className="mt-1 text-amber-700">
-                  Each import <strong>replaces</strong> all previously imported CardLadder
-                  cards. Cards you added manually are never affected.
+                  Each import <strong>replaces</strong> all previously imported
+                  CardLadder cards. Cards you added manually are never affected.
                 </p>
               </div>
             </div>
           </div>
 
           {/* File upload */}
-          {!importResult?.success && (
+          {!importResult?.success && !importing && (
             <div className="mb-4">
               <label
                 htmlFor="cardladder-csv"
@@ -353,9 +548,13 @@ export function CardLadderImport({ onClose, collectionName }) {
                     : "border-gray-300 bg-gray-50 hover:bg-gray-100"
                 }`}
               >
-                <Upload className={`h-8 w-8 mb-2 ${file ? "text-green-600" : "text-gray-400"}`} />
+                <Upload
+                  className={`h-8 w-8 mb-2 ${file ? "text-green-600" : "text-gray-400"}`}
+                />
                 {file ? (
-                  <span className="text-sm font-medium text-green-700">{file.name}</span>
+                  <span className="text-sm font-medium text-green-700">
+                    {file.name}
+                  </span>
                 ) : (
                   <>
                     <span className="text-sm font-medium text-gray-600">
@@ -387,16 +586,58 @@ export function CardLadderImport({ onClose, collectionName }) {
             </div>
           )}
 
+          {/* Image fetching progress */}
+          {importing && imageProgress && (
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center gap-3 mb-3">
+                <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />
+                <div>
+                  <p className="text-sm font-semibold text-blue-800">
+                    Fetching card images...
+                  </p>
+                  <p className="text-xs text-blue-600">
+                    {imageProgress.processed} / {imageProgress.total} searched
+                    {imageProgress.found > 0 && (
+                      <> &middot; {imageProgress.found} images found</>
+                    )}
+                  </p>
+                </div>
+              </div>
+              {/* Progress bar */}
+              <div className="w-full bg-blue-200 rounded-full h-2">
+                <div
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${Math.round((imageProgress.processed / imageProgress.total) * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Preview */}
-          {parsedCards.length > 0 && !importResult?.success && (
+          {parsedCards.length > 0 && !importResult?.success && !importing && (
             <>
               <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                 <p className="text-sm font-semibold text-blue-800 mb-1">
-                  Found {parsedCards.length} graded card{parsedCards.length !== 1 ? "s" : ""}
+                  Found {parsedCards.length} graded card
+                  {parsedCards.length !== 1 ? "s" : ""}
                 </p>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-blue-700">
-                  <span>Total Value: ${totalValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                  <span>Total Invested: ${totalInvestment.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  <span>
+                    Total Value: $
+                    {totalValue.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </span>
+                  <span>
+                    Total Invested: $
+                    {totalInvestment.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </span>
                 </div>
               </div>
 
@@ -441,17 +682,9 @@ export function CardLadderImport({ onClose, collectionName }) {
                 onClick={handleImport}
                 disabled={importing}
               >
-                {importing ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Importing...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="h-4 w-4 mr-2" />
-                    Import {parsedCards.length} Card{parsedCards.length !== 1 ? "s" : ""}
-                  </>
-                )}
+                <Upload className="h-4 w-4 mr-2" />
+                Import {parsedCards.length} Card
+                {parsedCards.length !== 1 ? "s" : ""}
               </Button>
             </>
           )}
@@ -468,12 +701,24 @@ export function CardLadderImport({ onClose, collectionName }) {
               {importResult.success ? (
                 <div className="text-center">
                   <Check className="h-10 w-10 text-green-600 mx-auto mb-2" />
-                  <p className="font-semibold text-green-800 mb-1">Import Complete!</p>
+                  <p className="font-semibold text-green-800 mb-1">
+                    Import Complete!
+                  </p>
                   <p className="text-sm text-green-700">
-                    {importResult.imported} card{importResult.imported !== 1 ? "s" : ""} imported
+                    {importResult.imported} card
+                    {importResult.imported !== 1 ? "s" : ""} imported
                     {importResult.removed > 0 && (
-                      <> (replaced {importResult.removed} previous CardLadder import{importResult.removed !== 1 ? "s" : ""})</>
+                      <>
+                        {" "}
+                        (replaced {importResult.removed} previous CardLadder
+                        import{importResult.removed !== 1 ? "s" : ""})
+                      </>
                     )}
+                  </p>
+                  <p className="text-xs text-green-600 mt-1 flex items-center justify-center gap-1">
+                    <ImageIcon className="h-3 w-3" />
+                    {importResult.imagesFound} / {importResult.imported} card
+                    images found
                   </p>
                   <Button variant="outline" className="mt-4" onClick={onClose}>
                     Done
@@ -481,7 +726,9 @@ export function CardLadderImport({ onClose, collectionName }) {
                 </div>
               ) : (
                 <div>
-                  <p className="font-semibold text-red-800 mb-1">Import Failed</p>
+                  <p className="font-semibold text-red-800 mb-1">
+                    Import Failed
+                  </p>
                   <p className="text-sm text-red-700">{importResult.error}</p>
                 </div>
               )}
@@ -489,7 +736,7 @@ export function CardLadderImport({ onClose, collectionName }) {
           )}
 
           {/* Footer */}
-          {!importResult?.success && (
+          {!importResult?.success && !importing && (
             <div className="mt-4 flex justify-end">
               <Button variant="outline" onClick={onClose}>
                 Cancel
