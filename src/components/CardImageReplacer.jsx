@@ -147,17 +147,22 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
     }
   }, [searchQuery]);
 
+  const [saveError, setSaveError] = useState("");
+
   const handleSelectImage = useCallback(
     async (card) => {
       setSelected(card);
       setSaving(true);
+      setSaveError("");
       try {
         await onImageUpdate(item.entryId, card.image);
         setSaved(true);
         setTimeout(() => onClose(), 1200);
       } catch (err) {
         console.error("Failed to save image:", err);
+        setSaveError("Failed to save image. Please try again.");
         setSaving(false);
+        setSelected(null);
       }
     },
     [item, onImageUpdate, onClose]
@@ -390,6 +395,12 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
                         Tip: try the card number (e.g., "SM166") or name + set
                       </p>
                     </div>
+                  )}
+
+                  {saveError && (
+                    <p className="text-sm text-red-600 mt-2 text-center font-medium">
+                      {saveError}
+                    </p>
                   )}
                 </div>
               )}

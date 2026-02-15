@@ -75,17 +75,24 @@ export function MyCollection() {
   const [imageReplaceCard, setImageReplaceCard] = useState(null);
   
   const handleImageUpdate = useCallback(async (entryId, newImageUrl) => {
-    // Update local state
-    updateCollectionItem(entryId, { image: newImageUrl });
-    // Persist to Firestore
-    const { setDoc, doc, getDoc } = await import("firebase/firestore");
-    const ref = doc(db, "collector_collections", user.uid);
-    const snap = await getDoc(ref);
-    const data = snap.exists() ? snap.data() : {};
-    const items = (data.items || []).map(it =>
-      it.entryId === entryId ? { ...it, image: newImageUrl } : it
-    );
-    await setDoc(ref, { ...data, items }, { merge: true });
+    try {
+      // Persist to Firestore FIRST — if this fails, nothing changes
+      const { setDoc, doc, getDoc } = await import("firebase/firestore");
+      const ref = doc(db, "collector_collections", user.uid);
+      const snap = await getDoc(ref);
+      const data = snap.exists() ? snap.data() : {};
+      const updatedItems = (data.items || []).map(it =>
+        it.entryId === entryId ? { ...it, image: newImageUrl } : it
+      );
+      await setDoc(ref, { ...data, items: updatedItems }, { merge: true });
+      // Write succeeded — update local state for immediate feedback
+      // (onSnapshot listener will also pick this up)
+      updateCollectionItem(entryId, { image: newImageUrl });
+      console.log("[ImageUpdate] Persisted image for", entryId);
+    } catch (err) {
+      console.error("[ImageUpdate] Firestore write failed:", err);
+      throw err; // CardImageReplacer will catch and show error
+    }
   }, [db, user, updateCollectionItem]);
   
   // Enriched collection items with community images

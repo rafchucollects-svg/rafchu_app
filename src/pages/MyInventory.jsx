@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -98,17 +98,25 @@ export function MyInventory() {
   // Image replacer modal state
   const [imageReplaceCard, setImageReplaceCard] = useState(null);
   
-  const handleImageUpdate = async (entryId, newImageUrl) => {
-    updateCollectionItem(entryId, { image: newImageUrl });
-    const docRef = doc(db, "collections", user.uid);
-    const { getDoc: gd } = await import("firebase/firestore");
-    const snap = await gd(docRef);
-    const data = snap.exists() ? snap.data() : {};
-    const items = (data.items || []).map(it =>
-      it.entryId === entryId ? { ...it, image: newImageUrl } : it
-    );
-    await setDoc(docRef, { ...data, items }, { merge: true });
-  };
+  const handleImageUpdate = useCallback(async (entryId, newImageUrl) => {
+    try {
+      // Persist to Firestore FIRST — if this fails, nothing changes
+      const docRef = doc(db, "collections", user.uid);
+      const { getDoc: gd } = await import("firebase/firestore");
+      const snap = await gd(docRef);
+      const data = snap.exists() ? snap.data() : {};
+      const updatedItems = (data.items || []).map(it =>
+        it.entryId === entryId ? { ...it, image: newImageUrl } : it
+      );
+      await setDoc(docRef, { ...data, items: updatedItems }, { merge: true });
+      // Write succeeded — update local state for immediate feedback
+      updateCollectionItem(entryId, { image: newImageUrl });
+      console.log("[ImageUpdate] Persisted image for", entryId);
+    } catch (err) {
+      console.error("[ImageUpdate] Firestore write failed:", err);
+      throw err; // CardImageReplacer will catch and show error
+    }
+  }, [db, user, updateCollectionItem]);
   
   // Enriched collection items with community images
   const [enrichedItems, setEnrichedItems] = useState([]);
