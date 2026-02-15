@@ -54,7 +54,22 @@ const ABBREVIATION_MAP = {
   "twr.splh.": "Tower Splash",
   "scrt-fa": "Secret Full Art",
   "ultra-prem.coll.": "Ultra-Premium Collection",
+  "splh.": "Splash",
+  "prem.": "Premium",
+  "coll.": "Collection",
+  "g.b.": "Giant Bomb",
 };
+
+/** Apply abbreviation expansion to any text field */
+function expandAbbreviations(text) {
+  if (!text) return "";
+  let result = text;
+  for (const [abbr, full] of Object.entries(ABBREVIATION_MAP)) {
+    const regex = new RegExp(abbr.replace(/\./g, "\\.").replace(/-/g, "\\-"), "gi");
+    result = result.replace(regex, full);
+  }
+  return result.trim();
+}
 
 function cleanPlayerName(raw) {
   if (!raw) return "";
@@ -68,10 +83,7 @@ function cleanPlayerName(raw) {
   name = name.replace(/-Rev\.Foil$/i, "");
 
   // Expand known abbreviations
-  for (const [abbr, full] of Object.entries(ABBREVIATION_MAP)) {
-    const regex = new RegExp(abbr.replace(/\./g, "\\."), "gi");
-    name = name.replace(regex, full);
-  }
+  name = expandAbbreviations(name);
 
   // Normalize card type suffixes
   name = name.replace(/\bGx\b/g, "GX");
@@ -157,7 +169,7 @@ function rowToCard(row, headerMap) {
     name: cleanName,
     set: cleanSet,
     number: number,
-    rarity: variation || "",
+    rarity: expandAbbreviations(variation) || "",
     image: "", // Will be populated by image fetching
     condition: "NM",
     quantity: quantity,
@@ -223,35 +235,78 @@ function normalizeNumber(num) {
     .trim();
 }
 
+/**
+ * Check if a card name from the API matches the CardLadder name.
+ * Compares the first significant word (the Pokemon name) and any
+ * card-type suffix (GX, VMAX, V, VSTAR, EX, etc.)
+ */
+function namesMatch(cardLadderName, apiName) {
+  const clName = (cardLadderName || "").toLowerCase().trim();
+  const aName = (apiName || "").toLowerCase().trim();
+  if (!clName || !aName) return false;
+
+  // Extract first word (Pokemon name) from both
+  const clWords = clName.split(/[\s&-]+/).filter(Boolean);
+  const aWords = aName.split(/[\s&-]+/).filter(Boolean);
+
+  if (!clWords.length || !aWords.length) return false;
+
+  // First word must match (the Pokemon name like "charizard", "pikachu", etc.)
+  if (clWords[0] !== aWords[0]) return false;
+
+  // For multi-word names, also check if any type suffix matches
+  // (GX, VMAX, VSTAR, V, EX, etc.) to disambiguate e.g. "Pikachu V" from "Pikachu VMAX"
+  const TYPE_SUFFIXES = ["gx", "vmax", "vstar", "v", "ex", "tag"];
+  const clTypes = clWords.filter((w) => TYPE_SUFFIXES.includes(w));
+  const aTypes = aWords.filter((w) => TYPE_SUFFIXES.includes(w));
+
+  // Both have type suffixes — at least one must match
+  if (clTypes.length > 0 && aTypes.length > 0) {
+    return clTypes.some((t) => aTypes.includes(t));
+  }
+
+  // CardLadder has type but API doesn't → NOT a match (e.g., "Pikachu V" vs "Pikachu")
+  if (clTypes.length > 0 && aTypes.length === 0) {
+    return false;
+  }
+
+  // API has type but CardLadder doesn't → NOT a match (e.g., "Flareon" vs "Flareon GX")
+  if (clTypes.length === 0 && aTypes.length > 0) {
+    return false;
+  }
+
+  // Neither has types → first word match is sufficient (e.g., "Alakazam", "Flareon")
+  return true;
+}
+
 function findBestMatch(card, results) {
   const cardNum = normalizeNumber(card.number);
-  const cardName = card.name?.toLowerCase().trim() || "";
 
-  // Strategy 1: Exact number match
+  // Tier 1: Exact number + name match (best possible match)
   for (const r of results) {
-    if (normalizeNumber(r.number) === cardNum) {
+    if (normalizeNumber(r.number) === cardNum && namesMatch(card.name, r.name)) {
       return r;
     }
   }
 
-  // Strategy 2: Number contained in result number or vice versa
-  // (handles cases like "SM166" matching "166" or vice versa)
+  // Tier 2: Number contained (e.g., "SM166" vs "166") + name match
   for (const r of results) {
     const rNum = normalizeNumber(r.number);
     if (rNum && cardNum && (rNum.includes(cardNum) || cardNum.includes(rNum))) {
-      return r;
+      if (namesMatch(card.name, r.name)) {
+        return r;
+      }
     }
   }
 
-  // Strategy 3: Name similarity (first word match + set overlap)
-  const cardFirstWord = cardName.split(/\s+/)[0];
+  // Tier 3: Name match only (no number check - for cases where number format differs)
   for (const r of results) {
-    const rName = (r.name || "").toLowerCase();
-    if (cardFirstWord && rName.startsWith(cardFirstWord)) {
+    if (namesMatch(card.name, r.name)) {
       return r;
     }
   }
 
+  // No match - do NOT return a result without name confirmation
   return null;
 }
 
@@ -260,9 +315,12 @@ function findBestMatch(card, results) {
  * Uses a concurrency pool to avoid overwhelming the API.
  * 
  * Search strategy per card (in order):
- *   1. Search by card number (e.g., "SM166") — most reliable
- *   2. Search by "name number" (e.g., "Magikarp Wailord GX SM166")
- *   3. Search by name only (e.g., "Magikarp Wailord GX")
+ *   1. Search by "name number" (e.g., "Charizard VSTAR 262") — most specific
+ *   2. Search by "name set" (e.g., "Charizard VSTAR SWSH Black Star Promo")
+ *   3. Search by name only (e.g., "Charizard VSTAR")
+ *   4. Search by number only as last resort for prefixed numbers (SM166, SV60)
+ * 
+ * Matching always requires NAME confirmation to avoid wrong-card-same-number errors.
  */
 async function fetchImagesForCards(cards, onProgress, abortSignal) {
   const CONCURRENCY = 3;
@@ -284,21 +342,36 @@ async function fetchImagesForCards(cards, onProgress, abortSignal) {
 
     let match = null;
 
-    // Attempt 1: Search by number (most reliable for unique card numbers)
-    if (number && !match) {
-      const res = await searchCardMarket(number);
-      match = findBestMatch(card, res);
-    }
-
-    // Attempt 2: Search by "name number"
+    // Attempt 1: Search by "name number" (most specific — avoids wrong cards with same number)
     if (!match && searchName && number) {
       const res = await searchCardMarket(`${searchName} ${number}`);
       match = findBestMatch(card, res);
     }
 
+    // Attempt 2: Search by "name + set keywords" (helps when number format differs)
+    if (!match && searchName && card.set) {
+      // Take first 2-3 meaningful words from set name
+      const setWords = card.set
+        .replace(/^(SWSH|SM|XY|BW|EX|SVP)\s+/i, "")
+        .split(/\s+/)
+        .slice(0, 2)
+        .join(" ");
+      if (setWords) {
+        const res = await searchCardMarket(`${searchName} ${setWords}`);
+        match = findBestMatch(card, res);
+      }
+    }
+
     // Attempt 3: Search by name only
     if (!match && searchName) {
       const res = await searchCardMarket(searchName);
+      match = findBestMatch(card, res);
+    }
+
+    // Attempt 4: Search by number only — but ONLY for prefixed numbers (SM166, SV60, TG17)
+    // Plain numbers (100, 262) are too ambiguous
+    if (!match && number && /[a-zA-Z]/.test(number)) {
+      const res = await searchCardMarket(number);
       match = findBestMatch(card, res);
     }
 
