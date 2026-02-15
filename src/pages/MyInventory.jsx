@@ -13,6 +13,7 @@ import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { CashManager } from "@/components/CashManager";
 import { needsImage } from "@/utils/imageHelpers";
 import { CardLadderImport } from "@/components/CardLadderImport";
+import { CardImageReplacer } from "@/components/CardImageReplacer";
 import { apiFetchMarketPrices } from "@/utils/apiHelpers";
 import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc } from "firebase/firestore";
 import { CardSearch } from "./CardSearch";
@@ -43,6 +44,7 @@ export function MyInventory() {
     refreshCommunityImages,
     cashData,
     updateCashData,
+    updateCollectionItem,
   } = useApp();
 
   const [editingPriceId, setEditingPriceId] = useState(null);
@@ -92,6 +94,21 @@ export function MyInventory() {
   
   // CardLadder import modal state
   const [showCardLadderImport, setShowCardLadderImport] = useState(false);
+  
+  // Image replacer modal state
+  const [imageReplaceCard, setImageReplaceCard] = useState(null);
+  
+  const handleImageUpdate = async (entryId, newImageUrl) => {
+    updateCollectionItem(entryId, { image: newImageUrl });
+    const docRef = doc(db, "collections", user.uid);
+    const { getDoc: gd } = await import("firebase/firestore");
+    const snap = await gd(docRef);
+    const data = snap.exists() ? snap.data() : {};
+    const items = (data.items || []).map(it =>
+      it.entryId === entryId ? { ...it, image: newImageUrl } : it
+    );
+    await setDoc(docRef, { ...data, items }, { merge: true });
+  };
   
   // Enriched collection items with community images
   const [enrichedItems, setEnrichedItems] = useState([]);
@@ -1408,30 +1425,29 @@ export function MyInventory() {
                   onClick={(e) => e.stopPropagation()}
                   className="h-5 w-5 flex-shrink-0 cursor-pointer rounded border-2 border-gray-400 checked:bg-primary checked:border-primary focus:ring-2 focus:ring-primary/30"
                 />
-                {item.image ? (
-                  <img
-                    src={item.image}
-                    alt={item.name}
-                    className="h-20 w-16 rounded-lg object-cover"
-                  />
-                ) : (
-                  <div className="h-20 w-16 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center relative group">
-                    <span className="text-[8px] text-gray-400 text-center px-1">No Image</span>
-                    {user && needsImage(item) && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCardForImageUpload(item);
-                          setImageUploadModalOpen(true);
-                        }}
-                        className="absolute inset-0 bg-primary/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg"
-                        title="Upload image"
-                      >
-                        <Upload className="h-4 w-4 text-white" />
-                      </button>
-                    )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setImageReplaceCard(item);
+                  }}
+                  className="relative group flex-shrink-0"
+                  title="Click to change image"
+                >
+                  {item.image ? (
+                    <img
+                      src={item.image}
+                      alt={item.name}
+                      className="h-20 w-16 rounded-lg object-cover"
+                    />
+                  ) : (
+                    <div className="h-20 w-16 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center">
+                      <span className="text-[8px] text-gray-400 text-center px-1">No Image</span>
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
+                    <Edit2 className="h-4 w-4 text-white" />
                   </div>
-                )}
+                </button>
                 <div className="flex-1 min-w-0">
                   <div className="font-semibold">{item.name}</div>
                   <div className="text-sm text-muted-foreground">
@@ -2322,6 +2338,15 @@ export function MyInventory() {
         <CardLadderImport
           onClose={() => setShowCardLadderImport(false)}
           collectionName="collections"
+        />
+      )}
+
+      {/* Image Replacer Modal */}
+      {imageReplaceCard && (
+        <CardImageReplacer
+          item={imageReplaceCard}
+          onImageUpdate={handleImageUpdate}
+          onClose={() => setImageReplaceCard(null)}
         />
       )}
     </div>

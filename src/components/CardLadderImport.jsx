@@ -85,10 +85,14 @@ function cleanPlayerName(raw) {
   // Expand known abbreviations
   name = expandAbbreviations(name);
 
+  // Insert space at lowercase→uppercase boundaries
+  // Fixes "CharizardGx" → "Charizard Gx" after abbreviation expansion
+  name = name.replace(/([a-z])([A-Z])/g, "$1 $2");
+
   // Normalize card type suffixes
-  name = name.replace(/\bGx\b/g, "GX");
-  name = name.replace(/\bVmax\b/g, "VMAX");
-  name = name.replace(/\bVstar\b/g, "VSTAR");
+  name = name.replace(/\bGx\b/gi, "GX");
+  name = name.replace(/\bVmax\b/gi, "VMAX");
+  name = name.replace(/\bVstar\b/gi, "VSTAR");
   name = name.replace(/\bEx\b/g, "EX"); // generic uppercase
   name = name.replace(/\bV\b/g, "V");
 
