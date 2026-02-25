@@ -3,11 +3,14 @@ import { useSearchParams } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Store, Package, Search, LogIn, Award } from "lucide-react";
+import { Store, Package, Search, LogIn, Award, MapPin, Sparkles, TrendingUp, Filter, ArrowUpDown, Clock } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { LoginModal } from "@/components/LoginModal";
 import { computeInventoryTotals, formatCurrency, computeItemMetrics, getConditionColorClass, convertCurrency, getConditionDisplayLabel, isViewerInEurope } from "@/utils/cardHelpers";
 import { getDoc, doc } from "firebase/firestore";
+
+const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+const isNewCard = (item) => item.addedAt && (Date.now() - item.addedAt) < TWO_WEEKS_MS;
 
 /**
  * Shared Inventory View (Read-only)
@@ -32,6 +35,8 @@ export function SharedInventory() {
   const [inventoryItems, setInventoryItems] = useState([]);
   const [enrichedItems, setEnrichedItems] = useState([]);
   const [vendorName, setVendorName] = useState("");
+  const [vendorPhoto, setVendorPhoto] = useState("");
+  const [vendorCountry, setVendorCountry] = useState("");
   const [vendorRoundUpPrices, setVendorRoundUpPrices] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -56,6 +61,8 @@ export function SharedInventory() {
         if (userSnap.exists()) {
           const profile = userSnap.data();
           setVendorName(profile.username || profile.displayName || "Vendor");
+          setVendorPhoto(profile.photoURL || "");
+          setVendorCountry(profile.country || "");
         }
         
         // Load inventory
@@ -221,33 +228,32 @@ export function SharedInventory() {
   const totals = useMemo(() => {
     let count = 0;
     let totalValue = 0;
+    let gradedCount = 0;
+    let newCount = 0;
     
     sortedItems.forEach(item => {
       const qty = item.quantity || 1;
       count += qty;
+      if (item.isGraded) gradedCount += qty;
+      if (isNewCard(item)) newCount += qty;
       
       const metrics = computeItemMetrics(item, currency);
       let itemPrice;
       
-      // Get the base price - use fresh calculation like MyInventory
       if (item.overridePrice != null) {
-        // Manual override price set by vendor
         const overrideCurrency = item.overridePriceCurrency || currency;
         itemPrice = overrideCurrency !== currency 
           ? convertCurrency(item.overridePrice, currency, overrideCurrency)
           : item.overridePrice;
       } else if (item.isGraded && item.gradedPrice) {
-        // Graded card - use gradedPrice
         const storedCurrency = item.gradedPriceCurrency || 'USD';
         itemPrice = storedCurrency !== currency
           ? convertCurrency(item.gradedPrice, currency, storedCurrency)
           : item.gradedPrice;
       } else {
-        // Use fresh calculation from metrics
         itemPrice = metrics.suggested;
       }
       
-      // Apply vendor's round-up preference
       if (vendorRoundUpPrices) {
         itemPrice = Math.ceil(itemPrice);
       }
@@ -255,7 +261,7 @@ export function SharedInventory() {
       totalValue += itemPrice * qty;
     });
     
-    return { count, value: totalValue };
+    return { count, value: totalValue, gradedCount, newCount };
   }, [sortedItems, vendorRoundUpPrices, currency]);
 
   const formatPrice = (amount) => formatCurrency(amount, currency);
@@ -300,180 +306,311 @@ export function SharedInventory() {
     );
   }
 
+  // Variant badge helper
+  const VARIANT_CONFIG = {
+    isReverseHolo:  { label: "Reverse Holo",   color: "bg-blue-100 text-blue-700" },
+    isStampedPromo: { label: "Stamped",        color: "bg-purple-100 text-purple-700" },
+    isSealed:       { label: "Sealed",         color: "bg-emerald-100 text-emerald-700" },
+    isAutographed:  { label: "Autographed",    color: "bg-rose-100 text-rose-700" },
+    isFirstEdition: { label: "1st Edition",    color: "bg-amber-100 text-amber-800" },
+    isPokeBall:     { label: "Poké Ball",      color: "bg-red-100 text-red-700" },
+    isMasterBall:   { label: "Master Ball",    color: "bg-violet-100 text-violet-700" },
+    isUnlimited:    { label: "Unlimited",     color: "bg-gray-100 text-gray-700" },
+  };
+
+  const getVariantBadges = (item) =>
+    Object.entries(VARIANT_CONFIG)
+      .filter(([key]) => item[key])
+      .map(([key, cfg]) => ({ key, ...cfg }));
+
   return (
-    <div className="max-w-6xl mx-auto p-4 space-y-4">
-      {/* Header */}
-      <Card className="rounded-2xl p-4 shadow">
-        <CardContent className="p-0">
-          <div className="flex items-center justify-between gap-3 mb-4">
-            <div className="flex items-center gap-3">
-              <Store className="h-8 w-8 text-primary" />
-              <div>
-                <h1 className="text-2xl font-bold">{vendorName}'s Inventory</h1>
-                <p className="text-sm text-muted-foreground">Read-only view</p>
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-50">
+      {/* ── Shop Banner ─────────────────────────────────────────────────── */}
+      <div className="relative bg-gradient-to-br from-indigo-600 via-purple-600 to-violet-700 text-white overflow-hidden">
+        {/* Decorative background pattern */}
+        <div className="absolute inset-0 opacity-10">
+          <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-white/20 blur-3xl" />
+          <div className="absolute -bottom-32 -left-32 w-80 h-80 rounded-full bg-white/15 blur-3xl" />
+        </div>
+
+        <div className="relative max-w-6xl mx-auto px-4 py-10 sm:py-12">
+          <div className="flex flex-col sm:flex-row items-center gap-5">
+            {vendorPhoto ? (
+              <img
+                src={vendorPhoto}
+                alt={vendorName}
+                className="h-24 w-24 rounded-2xl object-cover ring-4 ring-white/30 shadow-2xl"
+              />
+            ) : (
+              <div className="h-24 w-24 rounded-2xl bg-white/15 backdrop-blur-sm flex items-center justify-center border border-white/20">
+                <Store className="h-11 w-11 text-white/80" />
+              </div>
+            )}
+
+            <div className="flex-1 text-center sm:text-left">
+              <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight drop-shadow-sm">
+                {vendorName}'s Shop
+              </h1>
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 mt-3 text-sm text-white/80">
+                {vendorCountry && (
+                  <span className="flex items-center gap-1.5">
+                    <MapPin className="h-4 w-4" /> {vendorCountry}
+                  </span>
+                )}
+                <span className="flex items-center gap-1.5">
+                  <Package className="h-4 w-4" />
+                  {inventoryItems.length} card{inventoryItems.length !== 1 ? "s" : ""} listed
+                </span>
+                {totals.newCount > 0 && (
+                  <span className="flex items-center gap-1.5 text-emerald-300 font-medium">
+                    <Sparkles className="h-4 w-4" />
+                    {totals.newCount} new this week
+                  </span>
+                )}
               </div>
             </div>
+
             {!user && (
-              <Button
-                variant="default"
-                size="sm"
+              <button
                 onClick={() => setLoginModalOpen(true)}
-                className="flex items-center gap-2"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white text-indigo-700 font-bold text-sm hover:bg-white/90 transition-all shadow-lg hover:shadow-xl hover:scale-105"
               >
-                <LogIn className="h-4 w-4" />
-                Sign In / Sign Up
-              </Button>
+                <LogIn className="h-4 w-4" /> Sign In
+              </button>
             )}
             {user && (
-              <div className="text-sm text-muted-foreground">
-                Signed in as <span className="font-semibold">{user.displayName || user.email}</span>
+              <div className="text-sm text-white/70 bg-white/10 rounded-xl px-4 py-2 backdrop-blur-sm border border-white/10">
+                Signed in as <span className="font-semibold text-white">{user.displayName || user.email}</span>
               </div>
             )}
           </div>
-          
-          {/* Search and Sort */}
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search inventory..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
-              />
+        </div>
+      </div>
+
+      {/* ── Quick Stats Bar ──────────────────────────────────────────────── */}
+      <div className="bg-white border-b">
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="flex items-center justify-center sm:justify-start gap-6 sm:gap-10 py-3 overflow-x-auto">
+            <div className="flex flex-col items-center sm:items-start min-w-fit">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Total Value</span>
+              <span className="text-lg sm:text-xl font-extrabold text-slate-900">{formatPrice(totals.value)}</span>
             </div>
+            <div className="w-px h-8 bg-slate-200 hidden sm:block" />
+            <div className="flex flex-col items-center sm:items-start min-w-fit">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Cards</span>
+              <span className="text-lg sm:text-xl font-extrabold text-slate-900">{totals.count}</span>
+            </div>
+            {totals.gradedCount > 0 && (
+              <>
+                <div className="w-px h-8 bg-slate-200 hidden sm:block" />
+                <div className="flex flex-col items-center sm:items-start min-w-fit">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Graded</span>
+                  <span className="text-lg sm:text-xl font-extrabold text-amber-600 flex items-center gap-1">
+                    <Award className="h-4 w-4" /> {totals.gradedCount}
+                  </span>
+                </div>
+              </>
+            )}
+            {totals.newCount > 0 && (
+              <>
+                <div className="w-px h-8 bg-slate-200 hidden sm:block" />
+                <div className="flex flex-col items-center sm:items-start min-w-fit">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">New Arrivals</span>
+                  <span className="text-lg sm:text-xl font-extrabold text-emerald-600 flex items-center gap-1">
+                    <Sparkles className="h-4 w-4" /> {totals.newCount}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Shop Toolbar ────────────────────────────────────────────────── */}
+      <div className="sticky top-14 z-20 bg-white/90 backdrop-blur-xl border-b shadow-sm">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search by name, set, or number..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-9 bg-white border-slate-200 focus:border-indigo-400 focus:ring-indigo-400/20"
+            />
+          </div>
+          <div className="flex gap-2">
+            <select
+              value={filterGraded}
+              onChange={(e) => setFilterGraded(e.target.value)}
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white hover:border-slate-300 transition-colors cursor-pointer"
+            >
+              <option value="all">All Cards</option>
+              <option value="graded">Graded Only</option>
+              <option value="ungraded">Ungraded Only</option>
+            </select>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white hover:border-slate-300 transition-colors cursor-pointer"
             >
-              <option value="name">Sort by Name</option>
-              <option value="set">Sort by Set</option>
-              <option value="price">Sort by Price</option>
-              <option value="dateAdded">Sort by Date Added</option>
+              <option value="name">Sort: Name</option>
+              <option value="set">Sort: Set</option>
+              <option value="price">Sort: Price</option>
+              <option value="dateAdded">Sort: Newest</option>
             </select>
           </div>
-          
-          {/* Filter Buttons */}
-          <div className="flex gap-2 flex-wrap">
-            <Button
-              size="sm"
-              variant={filterGraded === "all" ? "default" : "outline"}
-              onClick={() => setFilterGraded("all")}
-            >
-              All Cards
-            </Button>
-            <Button
-              size="sm"
-              variant={filterGraded === "graded" ? "default" : "outline"}
-              onClick={() => setFilterGraded("graded")}
-            >
-              <Award className="h-4 w-4 mr-1" />
-              Graded Only
-            </Button>
-            <Button
-              size="sm"
-              variant={filterGraded === "ungraded" ? "default" : "outline"}
-              onClick={() => setFilterGraded("ungraded")}
-            >
-              Ungraded Only
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      {/* Inventory Grid */}
-      <div className="grid gap-3">
-        {sortedItems.length === 0 && inventoryItems.length > 0 && (
-          <Card>
-            <CardContent className="p-6 text-center text-muted-foreground">
-              No cards match your search.
-            </CardContent>
-          </Card>
+      {/* ── Product Grid ────────────────────────────────────────────────── */}
+      <div className="max-w-6xl mx-auto px-4 py-6">
+        {/* Active filter indicator */}
+        {(searchTerm || filterGraded !== "all") && sortedItems.length > 0 && (
+          <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
+            <Filter className="h-3.5 w-3.5" />
+            Showing {sortedItems.length} of {inventoryItems.length} cards
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm("")}
+                className="ml-1 px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-xs font-medium transition-colors"
+              >
+                Clear search
+              </button>
+            )}
+          </div>
         )}
-        {sortedItems.map((item) => {
-          const metrics = computeItemMetrics(item, currency);
-          
-          // Calculate display price with vendor's rounding preference
-          let displayPrice;
-          
-          // Get the base price - always use fresh calculation like MyInventory does
-          if (item.overridePrice != null) {
-            // Manual override price set by vendor
-            const overrideCurrency = item.overridePriceCurrency || currency;
-            displayPrice = overrideCurrency !== currency 
-              ? convertCurrency(item.overridePrice, currency, overrideCurrency)
-              : item.overridePrice;
-          } else if (item.isGraded && item.gradedPrice) {
-            // Graded card - use gradedPrice (stored in USD for API-fetched, or user currency for manual)
-            const storedCurrency = item.gradedPriceCurrency || 'USD';
-            displayPrice = storedCurrency !== currency
-              ? convertCurrency(item.gradedPrice, currency, storedCurrency)
-              : item.gradedPrice;
-          } else {
-            // Use fresh calculation from metrics (matches MyInventory behavior)
-            displayPrice = metrics.suggested;
-          }
-          
-          // Apply vendor's round-up preference
-          if (vendorRoundUpPrices) {
-            displayPrice = Math.ceil(displayPrice);
-          }
-          
-          return (
-            <Card
-              key={item.entryId}
-              className="rounded-2xl p-3 hover:bg-accent/40 hover:shadow-lg transition-all duration-200"
+
+        {sortedItems.length === 0 && inventoryItems.length > 0 && (
+          <div className="text-center py-20 text-muted-foreground">
+            <Search className="h-16 w-16 mx-auto mb-4 opacity-20" />
+            <p className="text-xl font-semibold text-slate-700">No cards match your search</p>
+            <p className="text-sm mt-2 text-slate-500">Try adjusting your filters or search terms.</p>
+            <button
+              onClick={() => { setSearchTerm(""); setFilterGraded("all"); }}
+              className="mt-4 px-4 py-2 rounded-lg bg-indigo-50 text-indigo-600 text-sm font-medium hover:bg-indigo-100 transition-colors"
             >
-              <div className="flex items-center gap-3">
-                {item.image ? (
-                  <img
-                    src={item.image}
-                    alt={item.name}
-                    className="h-20 w-16 rounded-lg object-cover shadow-sm"
-                  />
-                ) : (
-                  <div className="h-20 w-16 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 flex items-center justify-center">
-                    <span className="text-[8px] text-gray-400 text-center px-1">No Image</span>
+              Clear all filters
+            </button>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+          {sortedItems.map((item) => {
+            const metrics = computeItemMetrics(item, currency);
+            const cardIsNew = isNewCard(item);
+
+            let displayPrice;
+            if (item.overridePrice != null) {
+              const overrideCurrency = item.overridePriceCurrency || currency;
+              displayPrice = overrideCurrency !== currency
+                ? convertCurrency(item.overridePrice, currency, overrideCurrency)
+                : item.overridePrice;
+            } else if (item.isGraded && item.gradedPrice) {
+              const storedCurrency = item.gradedPriceCurrency || "USD";
+              displayPrice = storedCurrency !== currency
+                ? convertCurrency(item.gradedPrice, currency, storedCurrency)
+                : item.gradedPrice;
+            } else {
+              displayPrice = metrics.suggested;
+            }
+            if (vendorRoundUpPrices) displayPrice = Math.ceil(displayPrice);
+
+            const variants = getVariantBadges(item);
+
+            return (
+              <div
+                key={item.entryId}
+                className="group relative bg-white rounded-2xl overflow-hidden shadow-sm ring-1 ring-slate-100 hover:shadow-xl hover:ring-indigo-200 hover:-translate-y-1.5 transition-all duration-300"
+              >
+                {/* NEW badge */}
+                {cardIsNew && (
+                  <div className="absolute top-2 right-2 z-10">
+                    <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide bg-emerald-500 text-white shadow-lg shadow-emerald-500/30 animate-pulse">
+                      <Sparkles className="h-2.5 w-2.5" />
+                      New
+                    </span>
                   </div>
                 )}
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold">{item.name}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {item.set} • {item.rarity} • #{item.number}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs text-muted-foreground">Qty: {item.quantity || 1}</span>
-                  </div>
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                  {/* Condition or Graded Badge */}
-                  {item.isGraded && item.gradingCompany && item.grade ? (
-                    <span className="text-xs font-semibold px-2 py-1 rounded border border-yellow-400 bg-gradient-to-r from-yellow-50 to-amber-50 text-yellow-900 flex items-center gap-1">
-                      <Award className="h-3 w-3" />
-                      {item.gradingCompany} {item.grade}
-                    </span>
+
+                {/* Card image */}
+                <div className="relative aspect-[3/4] bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200 flex items-center justify-center overflow-hidden">
+                  {item.image ? (
+                    <img
+                      src={item.image}
+                      alt={item.name}
+                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 ease-out"
+                      loading="lazy"
+                    />
                   ) : (
-                    <span className={`text-xs font-semibold px-2 py-1 rounded border ${getConditionColorClass(item.condition)}`}>
-                      {getConditionDisplayLabel(item.condition || "NM")}
-                    </span>
+                    <div className="flex flex-col items-center gap-2 text-slate-300">
+                      <Package className="h-10 w-10" />
+                      <span className="text-[10px] font-medium">No image</span>
+                    </div>
                   )}
-                  
-                  <div 
-                    className="text-2xl font-extrabold text-green-600"
-                    style={{ textShadow: '0 0 20px rgba(34, 197, 94, 0.5), 0 0 40px rgba(34, 197, 94, 0.3)' }}
-                  >
-                    {formatPrice(displayPrice)}
+                  {/* Subtle gradient overlay at bottom for readability */}
+                  <div className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                </div>
+
+                {/* Card info */}
+                <div className="p-3">
+                  {/* Condition / Graded badge + variants */}
+                  <div className="flex flex-wrap gap-1 mb-1.5">
+                    {item.isGraded && item.gradingCompany && item.grade ? (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-gradient-to-r from-yellow-50 to-amber-100 text-amber-800 border border-amber-300 flex items-center gap-0.5 shadow-sm">
+                        <Award className="h-2.5 w-2.5" />
+                        {item.gradingCompany} {item.grade}
+                      </span>
+                    ) : (
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border ${getConditionColorClass(item.condition)}`}>
+                        {getConditionDisplayLabel(item.condition || "NM")}
+                      </span>
+                    )}
+                    {variants.map((v) => (
+                      <span
+                        key={v.key}
+                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${v.color}`}
+                      >
+                        {v.label}
+                      </span>
+                    ))}
                   </div>
-                  <div className="text-xs font-medium text-green-700 uppercase tracking-wide">
-                    Sales Price
+
+                  <h3 className="font-bold text-sm leading-tight truncate text-slate-900" title={item.name}>
+                    {item.name}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 truncate mt-0.5" title={`${item.set} #${item.number}`}>
+                    {item.set} {item.number ? `#${item.number}` : ""}
+                  </p>
+                  {item.quantity > 1 && (
+                    <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Qty: {item.quantity}</p>
+                  )}
+
+                  {/* Price */}
+                  <div className="mt-2.5 pt-2 border-t border-slate-100">
+                    <span className="text-lg font-extrabold text-emerald-600 tracking-tight">
+                      {formatPrice(displayPrice)}
+                    </span>
                   </div>
                 </div>
               </div>
-            </Card>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
+
+      {/* ── Footer ──────────────────────────────────────────────────────── */}
+      {sortedItems.length > 0 && (
+        <div className="border-t bg-white/80 backdrop-blur-sm">
+          <div className="max-w-6xl mx-auto px-4 py-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              {totals.count} card{totals.count !== 1 ? "s" : ""} &middot; Total inventory value: <span className="font-bold text-slate-900">{formatPrice(totals.value)}</span>
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              Prices shown in {currency}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Login Modal */}
       <LoginModal
