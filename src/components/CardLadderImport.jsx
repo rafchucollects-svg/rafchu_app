@@ -168,6 +168,11 @@ function rowToCard(row, headerMap) {
   const cleanSet = cleanSetName(setRaw);
   const { company, grade } = parseCondition(condition);
 
+  // CardLadder reports totals for the line item — divide by quantity for per-unit values
+  const unitValue = quantity > 1 ? currentValue / quantity : currentValue;
+  const unitInvestment = quantity > 1 ? investment / quantity : investment;
+  const unitProfit = quantity > 1 ? potentialProfit / quantity : potentialProfit;
+
   return {
     entryId: `cardladder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     name: cleanName,
@@ -182,7 +187,7 @@ function rowToCard(row, headerMap) {
     isGraded: true,
     gradingCompany: company,
     grade: grade,
-    gradedPrice: currentValue,
+    gradedPrice: unitValue,
     gradedPriceCurrency: "USD",
     cardladderData: {
       playerRaw,
@@ -190,9 +195,11 @@ function rowToCard(row, headerMap) {
       fullCard,
       year,
       variation,
-      investment,
-      currentValue,
-      potentialProfit,
+      investment: unitInvestment,
+      currentValue: unitValue,
+      potentialProfit: unitProfit,
+      totalValue: currentValue,
+      totalInvestment: investment,
       ladderId: ladderId || null,
       slabSerial: slabSerial || null,
       population,
@@ -802,10 +809,10 @@ export function CardLadderImport({ onClose, collectionName }) {
     }
   }, [user, db, collectionName, parsedCards, setCollectionItems]);
 
-  // Summary stats from parsed cards
-  const totalValue = parsedCards.reduce((s, c) => s + (c.gradedPrice || 0), 0);
+  // Summary stats from parsed cards (unit prices × quantity for correct totals)
+  const totalValue = parsedCards.reduce((s, c) => s + (c.gradedPrice || 0) * (c.quantity || 1), 0);
   const totalInvestment = parsedCards.reduce(
-    (s, c) => s + (c.cardladderData?.investment || 0),
+    (s, c) => s + (c.cardladderData?.investment || 0) * (c.quantity || 1),
     0
   );
 
