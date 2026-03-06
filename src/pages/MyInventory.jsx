@@ -274,6 +274,21 @@ export function MyInventory() {
   // Format price with rounding and selected currency
   const formatPrice = (value) => formatCurrency(roundUpPrices ? Math.ceil(Number(value ?? 0)) : Number(value ?? 0), currency);
 
+  // Round up to nearest multiple of 5
+  const roundUpMarkup = (basePrice, pct) => Math.ceil((basePrice * (1 + pct / 100)) / 5) * 5;
+
+  // Quick-apply a markup percentage on a graded card's market price
+  const applyGradedMarkup = async (item, pct) => {
+    if (!item?.isGraded || !item?.gradedPrice) return;
+    const baseInCurrency = convertCurrency(parseFloat(item.gradedPrice), currency, "USD");
+    const rounded = roundUpMarkup(baseInCurrency, pct);
+    const updatedItems = collectionItems.map(i =>
+      i.entryId === item.entryId ? { ...i, overridePrice: rounded, overridePriceCurrency: currency } : i
+    );
+    await saveInventory(updatedItems);
+    triggerQuickAddFeedback(`Set to +${pct}% → ${formatCurrency(rounded, currency)}`);
+  };
+
   // Helper to save to Firestore
   const saveInventory = async (items, metadata = {}) => {
     if (!user || !db) return;
@@ -1648,13 +1663,37 @@ export function MyInventory() {
                           );
                         })()}
                       </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => startEditingPrice(item.entryId, item.overridePrice)}
-                      >
-                        <Edit2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex flex-col gap-1">
+                        {item.isGraded && item.gradedPrice && (
+                          <div className="flex flex-col gap-1">
+                            {[5, 10].map((pct) => {
+                              const base = convertCurrency(parseFloat(item.gradedPrice), currency, "USD");
+                              const rounded = roundUpMarkup(base, pct);
+                              return (
+                                <Button
+                                  key={pct}
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    applyGradedMarkup(item, pct);
+                                  }}
+                                  className="text-[10px] h-6 px-1.5 gap-0.5 border-purple-300 text-purple-700 hover:bg-purple-100"
+                                >
+                                  +{pct}% → {formatPrice(rounded)}
+                                </Button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => startEditingPrice(item.entryId, item.overridePrice)}
+                        >
+                          <Edit2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </>
                   )}
                   
@@ -2249,6 +2288,41 @@ export function MyInventory() {
                       </div>
                       <div className="text-lg font-bold">
                         {formatPrice(convertCurrency(parseFloat(cardDetailsModal.gradedPrice), currency))}
+                      </div>
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        {[5, 10].map((pct) => {
+                          const base = convertCurrency(parseFloat(cardDetailsModal.gradedPrice), currency, "USD");
+                          const rounded = roundUpMarkup(base, pct);
+                          return (
+                            <Button
+                              key={pct}
+                              size="sm"
+                              variant="outline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                applyGradedMarkup(cardDetailsModal, pct);
+                                setCardDetailsModal((prev) => prev ? { ...prev, overridePrice: rounded, overridePriceCurrency: currency } : prev);
+                              }}
+                              className="text-xs gap-1 border-purple-300 text-purple-700 hover:bg-purple-100"
+                            >
+                              +{pct}% → {formatPrice(rounded)}
+                            </Button>
+                          );
+                        })}
+                        {cardDetailsModal.overridePrice != null && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              resetPriceToSuggested(cardDetailsModal.entryId);
+                              setCardDetailsModal((prev) => prev ? { ...prev, overridePrice: null, overridePriceCurrency: null } : prev);
+                            }}
+                            className="text-xs text-red-600 hover:text-red-700"
+                          >
+                            Reset to market
+                          </Button>
+                        )}
                       </div>
                     </CardContent>
                   </Card>
