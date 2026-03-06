@@ -36,6 +36,60 @@ const RAPIDAPI_HOST = "cardmarket-api-tcg.p.rapidapi.com";
 const JUSTTCG_API_KEY = functions.config().justtcg?.key || 'tcg_a6f7312e9a51438fb830df77c26cf5d4';
 const JUSTTCG_API_URL = 'https://api.justtcg.com/v1';
 
+// TCGdex API (free, no key required) — used as fallback when CardMarket/PriceCharting are unavailable
+const TCGDEX_API_URL = 'https://api.tcgdex.net/v2/en';
+
+/**
+ * Search TCGdex as a fallback source for card data.
+ * Returns results in the same shape as searchCardsFromAPI (CardMarket format).
+ */
+async function searchCardsFromTCGdex(query) {
+  try {
+    const url = `${TCGDEX_API_URL}/cards?name=${encodeURIComponent(query)}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      console.error(`TCGdex API error: ${response.status}`);
+      return [];
+    }
+
+    const data = await response.json();
+    if (!Array.isArray(data) || data.length === 0) return [];
+
+    // TCGdex list endpoint returns stubs; fetch full details for the top results
+    const detailPromises = data.slice(0, 25).map(async (stub) => {
+      try {
+        const detailRes = await fetch(`${TCGDEX_API_URL}/cards/${stub.id}`);
+        if (!detailRes.ok) return null;
+        return detailRes.json();
+      } catch {
+        return null;
+      }
+    });
+
+    const details = (await Promise.all(detailPromises)).filter(Boolean);
+
+    return details.map(card => ({
+      id: card.id || '',
+      name: card.name || '',
+      set: card.set?.name || '',
+      setSlug: card.set?.id || '',
+      number: card.localId || '',
+      rarity: card.rarity || '',
+      image: card.image ? `${card.image}/high.webp` : '',
+      imageUrl: card.image ? `${card.image}/high.webp` : '',
+      imageSmall: card.image ? `${card.image}/low.webp` : '',
+      nameNumbered: `${card.name || ''} #${card.localId || ''}`,
+      slug: card.id || '',
+      cardMarketId: '',
+      source: 'tcgdex',
+    }));
+  } catch (error) {
+    console.error('TCGdex fallback search error:', error.message);
+    return [];
+  }
+}
+
 const mailTransport = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -2317,6 +2371,7 @@ exports.triggerUserPriceRefresh = functions.runWith({
  * Helper: Search CardMarket API (same as frontend does)
  */
 async function searchCardsFromAPI(query) {
+  // Try CardMarket first
   try {
     const url = `https://${RAPIDAPI_HOST}/pokemon/cards/search?search=${encodeURIComponent(query)}`;
     const response = await fetch(url, {
@@ -2326,41 +2381,35 @@ async function searchCardsFromAPI(query) {
       }
     });
     
-    if (!response.ok) {
-      console.error(`CardMarket API error: ${response.status}`);
-      return [];
+    if (response.ok) {
+      const response_data = await response.json();
+      const data = response_data.data || response_data;
+      
+      if (Array.isArray(data) && data.length > 0) {
+        return data.map(card => ({
+          id: card.id,
+          name: card.name,
+          set: card.episode?.name || '',
+          setSlug: card.episode?.slug || '',
+          number: card.card_number || card.collector_number || '',
+          rarity: card.rarity || '',
+          image: card.image || '',
+          imageUrl: card.image || '',
+          imageSmall: card.image_small || '',
+          nameNumbered: card.name_numbered || `${card.name} #${card.card_number || ''}`,
+          slug: card.slug || '',
+          cardMarketId: card.id || '',
+        })).slice(0, 25);
+      }
+    } else {
+      console.warn(`CardMarket API error: ${response.status} — falling back to TCGdex`);
     }
-    
-    const response_data = await response.json();
-    
-    // CardMarket returns {data: [...]} not [...]
-    const data = response_data.data || response_data;
-    
-    if (!Array.isArray(data)) {
-      console.error('CardMarket returned non-array data:', typeof data);
-      return [];
-    }
-    
-    // Normalize the results to match frontend format
-    return data.map(card => ({
-      id: card.id,
-      name: card.name,
-      set: card.episode?.name || '',
-      setSlug: card.episode?.slug || '',
-      number: card.card_number || card.collector_number || '',
-      rarity: card.rarity || '',
-      image: card.image || '',
-      imageUrl: card.image || '',
-      imageSmall: card.image_small || '',
-      nameNumbered: card.name_numbered || `${card.name} #${card.card_number || ''}`,
-      slug: card.slug || '',
-      cardMarketId: card.id || '',
-    })).slice(0, 25); // Limit to 25 results
-    
   } catch (error) {
-    console.error('Error searching CardMarket:', error);
-    return [];
+    console.warn('CardMarket search error, falling back to TCGdex:', error.message);
   }
+
+  // Fallback: TCGdex (free, no key required)
+  return searchCardsFromTCGdex(query);
 }
 
 /**
@@ -2711,44 +2760,64 @@ exports.searchCardMarket = functions.runWith({
   console.log(`🔍 CardMarket FULL search: "${query}"`);
   
   try {
-    // IMPORTANT: Use /pokemon/cards (full CardMarket database) NOT /pokemon/cards/search (limited TCG Pocket data)
-    // Changed 2024-01-04: /pokemon/cards has complete sets, /cards/search only has TCG Pocket subset
-    // NOTE: Do NOT use sort=episode_newest - it prioritizes TCG Pocket sets over classic sets like Evolutions
+    // Try CardMarket first (full database)
     const searchUrl = `https://${RAPIDAPI_HOST}/pokemon/cards?search=${encodeURIComponent(query)}&perPage=${maxResults}`;
     
-    const response = await fetch(searchUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'X-RapidAPI-Key': RAPIDAPI_KEY,
-        'X-RapidAPI-Host': RAPIDAPI_HOST,
-      },
-      cache: 'no-store'
-    });
-    
-    if (!response.ok) {
-      console.error(`CardMarket API error: ${response.status}`);
-      res.status(200).json({
-        success: false,
-        results: [],
-        error: `CardMarket API error: ${response.status}`
+    let results = [];
+    let source = 'cardmarket';
+
+    try {
+      const response = await fetch(searchUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST,
+        },
+        cache: 'no-store'
       });
-      return;
+      
+      if (response.ok) {
+        const data = await response.json();
+        results = data?.data || data?.results || (Array.isArray(data) ? data : []);
+        console.log(`✅ CardMarket returned ${results.length} results`);
+      } else {
+        console.warn(`CardMarket API error: ${response.status} — falling back to TCGdex`);
+      }
+    } catch (cmError) {
+      console.warn('CardMarket unreachable, falling back to TCGdex:', cmError.message);
     }
-    
-    const data = await response.json();
-    const results = data?.data || data?.results || (Array.isArray(data) ? data : []);
-    
-    console.log(`✅ CardMarket returned ${results.length} results`);
-    
+
+    // Fallback to TCGdex if CardMarket returned nothing
+    if (results.length === 0) {
+      const tcgdexResults = await searchCardsFromTCGdex(query);
+      if (tcgdexResults.length > 0) {
+        // Convert TCGdex format to the shape the frontend expects from searchCardMarket
+        results = tcgdexResults.map(card => ({
+          id: card.id,
+          name: card.name,
+          card_number: card.number,
+          collector_number: card.number,
+          rarity: card.rarity,
+          image: card.image,
+          image_small: card.imageSmall,
+          name_numbered: card.nameNumbered,
+          slug: card.slug,
+          episode: { name: card.set, slug: card.setSlug },
+        }));
+        source = 'tcgdex';
+        console.log(`✅ TCGdex fallback returned ${results.length} results`);
+      }
+    }
+
     res.json({
-      success: true,
+      success: results.length > 0,
       results: results.slice(0, maxResults),
       query: query,
-      source: 'cardmarket'
+      source
     });
     
   } catch (error) {
-    console.error('❌ CardMarket search error:', error);
+    console.error('❌ Search error:', error);
     res.status(500).json({
       success: false,
       results: [],

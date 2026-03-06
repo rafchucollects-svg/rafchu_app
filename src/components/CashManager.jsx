@@ -12,7 +12,8 @@ import {
   ChevronDown, 
   ChevronUp,
   Banknote,
-  Smartphone
+  Smartphone,
+  Clock
 } from "lucide-react";
 import { formatCurrency, convertCurrency } from "@/utils/cardHelpers";
 
@@ -46,7 +47,7 @@ const DIGITAL_PLATFORMS = [
 ];
 
 export function CashManager({ 
-  cashData = { physical: [], digital: [] }, 
+  cashData = { physical: [], digital: [], pending: [] }, 
   onUpdate, 
   primaryCurrency = 'USD',
   isCollapsed = false,
@@ -55,6 +56,7 @@ export function CashManager({
   const [collapsed, setCollapsed] = useState(isCollapsed);
   const [showAddPhysical, setShowAddPhysical] = useState(false);
   const [showAddDigital, setShowAddDigital] = useState(false);
+  const [showAddPending, setShowAddPending] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   
@@ -65,9 +67,15 @@ export function CashManager({
   const [newDigitalCurrency, setNewDigitalCurrency] = useState('USD');
   const [newDigitalAmount, setNewDigitalAmount] = useState("");
   const [newDigitalNote, setNewDigitalNote] = useState("");
+  // Pending entry states
+  const [newPendingPlatform, setNewPendingPlatform] = useState('paypal');
+  const [newPendingCurrency, setNewPendingCurrency] = useState('USD');
+  const [newPendingAmount, setNewPendingAmount] = useState("");
+  const [newPendingNote, setNewPendingNote] = useState("");
 
   const physicalCash = cashData.physical || [];
   const digitalCash = cashData.digital || [];
+  const pendingCash = cashData.pending || [];
 
   // Calculate totals in primary currency
   const physicalTotal = physicalCash.reduce((sum, entry) => {
@@ -78,7 +86,12 @@ export function CashManager({
     return sum + convertCurrency(entry.amount, primaryCurrency, entry.currency);
   }, 0);
 
+  const pendingTotal = pendingCash.reduce((sum, entry) => {
+    return sum + convertCurrency(entry.amount, primaryCurrency, entry.currency);
+  }, 0);
+
   const grandTotal = physicalTotal + digitalTotal;
+  const projectedTotal = grandTotal + pendingTotal;
 
   const handleAddPhysical = () => {
     if (!newPhysicalAmount || parseFloat(newPhysicalAmount) <= 0) return;
@@ -123,43 +136,72 @@ export function CashManager({
     setShowAddDigital(false);
   };
 
+  const handleAddPending = () => {
+    if (!newPendingAmount || parseFloat(newPendingAmount) <= 0) return;
+    
+    const newEntry = {
+      id: `pending-${Date.now()}`,
+      platform: newPendingPlatform,
+      currency: newPendingCurrency,
+      amount: parseFloat(newPendingAmount),
+      note: newPendingNote.trim(),
+      addedAt: Date.now()
+    };
+    
+    const updated = {
+      ...cashData,
+      pending: [...pendingCash, newEntry]
+    };
+    
+    onUpdate(updated);
+    setNewPendingAmount("");
+    setNewPendingNote("");
+    setShowAddPending(false);
+  };
+
+  const handleReceivePending = (id) => {
+    const entry = pendingCash.find(e => e.id === id);
+    if (!entry) return;
+    
+    const digitalEntry = {
+      id: `digital-${Date.now()}`,
+      platform: entry.platform,
+      currency: entry.currency,
+      amount: entry.amount,
+      note: entry.note ? `${entry.note} (received)` : "Received payment",
+      addedAt: Date.now()
+    };
+    
+    const updated = {
+      ...cashData,
+      digital: [...digitalCash, digitalEntry],
+      pending: pendingCash.filter(e => e.id !== id)
+    };
+    
+    onUpdate(updated);
+  };
+
   const handleDelete = (type, id) => {
-    if (type === 'physical') {
-      const updated = {
-        ...cashData,
-        physical: physicalCash.filter(e => e.id !== id)
-      };
-      onUpdate(updated);
-    } else {
-      const updated = {
-        ...cashData,
-        digital: digitalCash.filter(e => e.id !== id)
-      };
-      onUpdate(updated);
-    }
+    const key = type;
+    const list = key === 'physical' ? physicalCash : key === 'pending' ? pendingCash : digitalCash;
+    const updated = {
+      ...cashData,
+      [key]: list.filter(e => e.id !== id)
+    };
+    onUpdate(updated);
   };
 
   const handleEdit = (type, id, newAmount) => {
     const amount = parseFloat(newAmount);
     if (isNaN(amount) || amount < 0) return;
     
-    if (type === 'physical') {
-      const updated = {
-        ...cashData,
-        physical: physicalCash.map(e => 
-          e.id === id ? { ...e, amount } : e
-        )
-      };
-      onUpdate(updated);
-    } else {
-      const updated = {
-        ...cashData,
-        digital: digitalCash.map(e => 
-          e.id === id ? { ...e, amount } : e
-        )
-      };
-      onUpdate(updated);
-    }
+    const key = type;
+    const list = key === 'physical' ? physicalCash : key === 'pending' ? pendingCash : digitalCash;
+    const updated = {
+      ...cashData,
+      [key]: list.map(e => e.id === id ? { ...e, amount } : e)
+    };
+    onUpdate(updated);
     setEditingId(null);
   };
 
@@ -184,9 +226,16 @@ export function CashManager({
             <CardTitle className="text-lg">Cash Balance</CardTitle>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-lg font-bold text-green-600">
-              {formatCurrency(grandTotal, primaryCurrency)}
-            </span>
+            <div className="text-right">
+              <span className="text-lg font-bold text-green-600">
+                {formatCurrency(grandTotal, primaryCurrency)}
+              </span>
+              {pendingTotal > 0 && (
+                <div className="text-xs text-amber-600 font-medium">
+                  +{formatCurrency(pendingTotal, primaryCurrency)} pending
+                </div>
+              )}
+            </div>
             {collapsed ? (
               <ChevronDown className="h-5 w-5 text-muted-foreground" />
             ) : (
@@ -488,6 +537,190 @@ export function CashManager({
               </div>
             )}
           </div>
+
+          {/* Pending Payments Section */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Clock className="h-4 w-4 text-amber-500" />
+                <span className="font-medium">Pending Payments</span>
+                <span className="text-sm text-amber-600">
+                  ({formatCurrency(pendingTotal, primaryCurrency)})
+                </span>
+              </div>
+              <Button 
+                size="sm" 
+                variant="outline"
+                onClick={() => setShowAddPending(!showAddPending)}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add
+              </Button>
+            </div>
+
+            {/* Add Pending Form */}
+            {showAddPending && (
+              <div className="flex flex-wrap gap-2 mb-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                <select
+                  className="rounded-md border px-2 py-1.5 text-sm"
+                  value={newPendingPlatform}
+                  onChange={(e) => setNewPendingPlatform(e.target.value)}
+                >
+                  {DIGITAL_PLATFORMS.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.icon} {p.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="rounded-md border px-2 py-1.5 text-sm"
+                  value={newPendingCurrency}
+                  onChange={(e) => setNewPendingCurrency(e.target.value)}
+                >
+                  {CURRENCIES.map(c => (
+                    <option key={c.code} value={c.code}>
+                      {c.code}
+                    </option>
+                  ))}
+                </select>
+                <Input
+                  type="number"
+                  placeholder="Amount"
+                  value={newPendingAmount}
+                  onChange={(e) => setNewPendingAmount(e.target.value)}
+                  className="w-28"
+                  min="0"
+                  step="0.01"
+                />
+                <Input
+                  type="text"
+                  placeholder="From whom / note"
+                  value={newPendingNote}
+                  onChange={(e) => setNewPendingNote(e.target.value)}
+                  className="w-40"
+                  maxLength={40}
+                />
+                <Button size="sm" onClick={handleAddPending}>
+                  <Check className="h-4 w-4" />
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setShowAddPending(false)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+
+            {/* Pending List */}
+            {pendingCash.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">No pending payments</p>
+            ) : (
+              <div className="space-y-2">
+                {pendingCash.map(entry => {
+                  const platformInfo = getPlatformInfo(entry.platform);
+                  const currencyInfo = getCurrencyInfo(entry.currency);
+                  const isEditing = editingId === entry.id;
+                  
+                  return (
+                    <div 
+                      key={entry.id} 
+                      className="flex items-center justify-between p-2 bg-amber-50/60 border border-amber-100 rounded-lg"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`px-2 py-0.5 rounded text-white text-xs flex-shrink-0 ${platformInfo.color}`}>
+                          {platformInfo.icon} {platformInfo.name}
+                        </span>
+                        {entry.note && (
+                          <span className="text-xs text-muted-foreground truncate">
+                            {entry.note}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {isEditing ? (
+                          <>
+                            <Input
+                              type="number"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              className="w-24 h-8"
+                              min="0"
+                              step="0.01"
+                              autoFocus
+                            />
+                            <Button 
+                              size="sm" 
+                              variant="ghost"
+                              onClick={() => handleEdit('pending', entry.id, editValue)}
+                            >
+                              <Check className="h-4 w-4 text-green-600" />
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              variant="ghost"
+                              onClick={() => setEditingId(null)}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="font-semibold text-amber-700">
+                              {currencyInfo.symbol}{entry.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            <span className="text-xs text-muted-foreground">{entry.currency}</span>
+                            {entry.currency !== primaryCurrency && (
+                              <span className="text-sm text-muted-foreground">
+                                ≈ {formatCurrency(convertCurrency(entry.amount, primaryCurrency, entry.currency), primaryCurrency)}
+                              </span>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleReceivePending(entry.id)}
+                              title="Mark as received — moves to Digital Balances"
+                              className="text-green-600 hover:text-green-700 hover:bg-green-50"
+                            >
+                              <Check className="h-4 w-4" />
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              variant="ghost"
+                              onClick={() => {
+                                setEditingId(entry.id);
+                                setEditValue(entry.amount.toString());
+                              }}
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              variant="ghost"
+                              onClick={() => handleDelete('pending', entry.id)}
+                            >
+                              <Trash2 className="h-4 w-4 text-red-500" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Projected Balance */}
+          {pendingTotal > 0 && (
+            <div className="mt-6 p-3 bg-gradient-to-r from-green-50 to-amber-50 border border-green-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-muted-foreground">
+                  Balance after pending received
+                </span>
+                <span className="text-lg font-bold text-green-700">
+                  {formatCurrency(projectedTotal, primaryCurrency)}
+                </span>
+              </div>
+            </div>
+          )}
         </CardContent>
       )}
     </Card>

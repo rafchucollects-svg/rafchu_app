@@ -356,60 +356,82 @@ export function VendorProfile() {
     );
   }
 
+  const canInteract = user && user.uid !== vendorId;
+
+  // Variant badge helper
+  const VARIANT_CONFIG = {
+    isReverseHolo:  { label: "Reverse Holo",   color: "bg-blue-100 text-blue-700" },
+    isStampedPromo: { label: "Stamped",        color: "bg-purple-100 text-purple-700" },
+    isSealed:       { label: "Sealed",         color: "bg-emerald-100 text-emerald-700" },
+    isAutographed:  { label: "Autographed",    color: "bg-rose-100 text-rose-700" },
+    isFirstEdition: { label: "1st Edition",    color: "bg-amber-100 text-amber-800" },
+    isPokeBall:     { label: "Poké Ball",      color: "bg-red-100 text-red-700" },
+    isMasterBall:   { label: "Master Ball",    color: "bg-violet-100 text-violet-700" },
+    isUnlimited:    { label: "Unlimited",     color: "bg-gray-100 text-gray-700" },
+  };
+
+  const getVariantBadges = (item) =>
+    Object.entries(VARIANT_CONFIG)
+      .filter(([key]) => item[key])
+      .map(([key, cfg]) => ({ key, ...cfg }));
+
   return (
-    <div className="max-w-6xl mx-auto p-4 space-y-4">
-      {/* Vendor Header */}
-      <Card className="rounded-2xl p-6 shadow">
-        <CardContent className="p-0">
-          <div className="flex flex-col md:flex-row items-start md:items-center gap-4 mb-4">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
+      {/* ── Shop Banner ─────────────────────────────────────────────────── */}
+      <div className="bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-700 text-white">
+        <div className="max-w-6xl mx-auto px-4 py-8">
+          <div className="flex flex-col sm:flex-row items-center gap-5">
             {vendor.photoURL ? (
               <img
                 src={vendor.photoURL}
                 alt={vendor.username || vendor.displayName}
-                className="h-24 w-24 rounded-full object-cover border-4 border-primary shadow-lg"
+                className="h-20 w-20 rounded-2xl object-cover ring-4 ring-white/30 shadow-xl"
               />
             ) : (
-              <Store className="h-16 w-16 text-primary p-3 bg-primary/10 rounded-full" />
+              <div className="h-20 w-20 rounded-2xl bg-white/20 flex items-center justify-center">
+                <Store className="h-10 w-10 text-white/80" />
+              </div>
             )}
-            <div className="flex-1">
-              <h1 className="text-3xl font-bold">{vendor.username || vendor.displayName}</h1>
-              {vendor.country && (
-                <div className="flex items-center gap-2 text-muted-foreground mt-1">
-                  <MapPin className="h-4 w-4" />
-                  <span>{vendor.country}</span>
-                </div>
-              )}
-              {/* Rating display */}
-              <div className="flex items-center gap-2 mt-2">
-                {ratingPercentage !== null ? (
-                  <>
-                    <ThumbsUp className="h-5 w-5 text-green-600" />
-                    <span className="font-semibold">{ratingPercentage}%</span>
-                    <span className="text-sm text-muted-foreground">
-                      ({totalRatings} rating{totalRatings !== 1 ? 's' : ''})
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <ThumbsUp className="h-5 w-5 text-muted-foreground" />
-                    <span className="font-semibold">New Vendor</span>
-                    <span className="text-sm text-muted-foreground">(No ratings yet)</span>
-                  </>
+
+            <div className="flex-1 text-center sm:text-left">
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                {vendor.username || vendor.displayName}
+              </h1>
+
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3 mt-2 text-sm text-white/80">
+                {vendor.country && (
+                  <span className="flex items-center gap-1">
+                    <MapPin className="h-3.5 w-3.5" /> {vendor.country}
+                  </span>
                 )}
+                {ratingPercentage !== null ? (
+                  <span className="flex items-center gap-1">
+                    <ThumbsUp className="h-3.5 w-3.5 text-green-300" />
+                    <span className="font-semibold text-white">{ratingPercentage}%</span>
+                    ({totalRatings} rating{totalRatings !== 1 ? "s" : ""})
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1">
+                    <ThumbsUp className="h-3.5 w-3.5" /> New Vendor
+                  </span>
+                )}
+                <span className="flex items-center gap-1">
+                  <Package className="h-3.5 w-3.5" />
+                  {inventory.length} item{inventory.length !== 1 ? "s" : ""}
+                </span>
               </div>
             </div>
-            
+
             {/* Actions */}
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 justify-center">
               {vendor.socialLinks?.instagram && (
                 <a
                   href={vendor.socialLinks.instagram}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border hover:bg-accent"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-sm font-medium transition-colors"
                 >
-                  <Instagram className="h-4 w-4" />
-                  Instagram
+                  <Instagram className="h-4 w-4" /> Instagram
                 </a>
               )}
               {vendor.socialLinks?.youtube && (
@@ -417,224 +439,220 @@ export function VendorProfile() {
                   href={vendor.socialLinks.youtube}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border hover:bg-accent"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-sm font-medium transition-colors"
                 >
-                  <Youtube className="h-4 w-4" />
-                  YouTube
+                  <Youtube className="h-4 w-4" /> YouTube
                 </a>
               )}
-              {user && user.uid !== vendorId && (
-                <Button 
-                  className="flex items-center gap-2"
+              {canInteract && (
+                <button
                   onClick={handleMessageVendor}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white text-indigo-700 font-semibold text-sm hover:bg-white/90 transition-colors shadow"
                 >
-                  <MessageCircle className="h-4 w-4" />
-                  Message Vendor
-                </Button>
+                  <MessageCircle className="h-4 w-4" /> Message
+                </button>
               )}
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      {/* Inventory Section */}
-      <Card className="rounded-2xl p-4 shadow">
-        <CardContent className="p-0">
-          <div className="flex items-center gap-2 mb-4">
-            <Package className="h-6 w-6 text-primary" />
-            <h2 className="text-2xl font-bold">Inventory ({inventory.length} cards)</h2>
+      {/* ── Shop Toolbar ────────────────────────────────────────────────── */}
+      <div className="sticky top-0 z-20 bg-white/80 backdrop-blur-lg border-b shadow-sm">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search cards..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-9 bg-white"
+            />
           </div>
-          
-          {/* Search, Filter, and Sort */}
-          <div className="flex flex-col sm:flex-row gap-3 mb-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search inventory..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
-              />
-            </div>
-            <select
-              value={conditionFilter}
-              onChange={(e) => setConditionFilter(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm bg-background"
-            >
-              <option value="">All Conditions</option>
-              <option value="NM">Near Mint (NM)</option>
-              <option value="LP">Lightly Played (LP)</option>
-              <option value="MP">Moderately Played (MP)</option>
-              <option value="HP">Heavily Played (HP)</option>
-              <option value="DMG">Damaged (DMG)</option>
-            </select>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm bg-background"
-            >
-              <option value="name">Sort by Name</option>
-              <option value="set">Sort by Set</option>
-              <option value="price">Sort by Price</option>
-              <option value="dateAdded">Sort by Date Added</option>
-            </select>
-          </div>
-        </CardContent>
-      </Card>
+          <select
+            value={conditionFilter}
+            onChange={(e) => setConditionFilter(e.target.value)}
+            className="px-3 py-2 border rounded-lg text-sm bg-white"
+          >
+            <option value="">All Conditions</option>
+            <option value="NM">Near Mint</option>
+            <option value="LP">Lightly Played</option>
+            <option value="MP">Moderately Played</option>
+            <option value="HP">Heavily Played</option>
+            <option value="DMG">Damaged</option>
+          </select>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="px-3 py-2 border rounded-lg text-sm bg-white"
+          >
+            <option value="name">Sort: Name</option>
+            <option value="set">Sort: Set</option>
+            <option value="price">Sort: Price</option>
+            <option value="dateAdded">Sort: Newest</option>
+          </select>
+        </div>
+      </div>
 
-      {/* Selection Actions */}
-      {selectedCards.length > 0 && user && user.uid !== vendorId && (
-        <Card className="rounded-2xl p-4 shadow">
-          <CardContent className="p-0">
-            <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="font-semibold">{selectedCards.length}</span> card{selectedCards.length !== 1 ? 's' : ''} selected
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setSelectedCards([])}
-                  >
-                    Clear Selection
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={handleInquireAboutSelected}
-                  >
-                    <MessageCircle className="mr-1 h-4 w-4" />
-                    Inquire About Selected
-                  </Button>
-                </div>
-              </div>
+      {/* ── Selection Bar (sticky bottom) ───────────────────────────────── */}
+      {selectedCards.length > 0 && canInteract && (
+        <div className="fixed bottom-0 inset-x-0 z-30 bg-indigo-600 text-white shadow-xl border-t border-indigo-500">
+          <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+            <span className="text-sm font-medium">
+              <span className="text-lg font-bold">{selectedCards.length}</span> card{selectedCards.length !== 1 ? "s" : ""} selected
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSelectedCards([])}
+                className="px-3 py-1.5 rounded-lg text-sm bg-white/20 hover:bg-white/30 transition-colors"
+              >
+                Clear
+              </button>
+              <button
+                onClick={handleInquireAboutSelected}
+                className="px-4 py-1.5 rounded-lg text-sm bg-white text-indigo-700 font-semibold hover:bg-white/90 transition-colors flex items-center gap-1.5"
+              >
+                <MessageCircle className="h-4 w-4" />
+                Inquire
+              </button>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       )}
 
-      {/* Inventory Grid */}
-      <div className="grid gap-3">
+      {/* ── Product Grid ────────────────────────────────────────────────── */}
+      <div className="max-w-6xl mx-auto px-4 py-6">
         {sortedItems.length === 0 && inventory.length === 0 && (
-          <Card>
-            <CardContent className="p-6 text-center text-muted-foreground">
-              This vendor has no items for sale.
-            </CardContent>
-          </Card>
+          <div className="text-center py-16 text-muted-foreground">
+            <Store className="h-14 w-14 mx-auto mb-4 opacity-30" />
+            <p className="text-lg font-semibold">No items for sale</p>
+            <p className="text-sm mt-1">This vendor hasn't listed any cards yet.</p>
+          </div>
         )}
         {sortedItems.length === 0 && inventory.length > 0 && (
-          <Card>
-            <CardContent className="p-6 text-center text-muted-foreground">
-              No cards match your search.
-            </CardContent>
-          </Card>
+          <div className="text-center py-16 text-muted-foreground">
+            <Search className="h-14 w-14 mx-auto mb-4 opacity-30" />
+            <p className="text-lg font-semibold">No cards match your search</p>
+            <p className="text-sm mt-1">Try adjusting your filters.</p>
+          </div>
         )}
-        {sortedItems.map((item) => {
-          const metrics = computeItemMetrics(item, currency);
-          const isSelected = selectedCards.some(c => c.entryId === item.entryId);
-          
-          // Calculate display price with vendor's rounding preference
-          let displayPrice;
-          if (item.overridePrice != null) {
-            displayPrice = item.overridePrice;
-          } else if (item.isGraded && item.gradedPrice) {
-            // For graded cards, ALWAYS use fresh calculation with currency conversion
-            displayPrice = metrics.suggested;
-          } else if (item.calculatedSuggestedPrice != null) {
-            displayPrice = item.calculatedSuggestedPrice;
-          } else {
-            displayPrice = metrics.suggested;
-          }
-          
-          // Apply vendor's round-up preference to all prices
-          if (vendorRoundUpPrices) {
-            displayPrice = Math.ceil(displayPrice);
-          }
-          
-          return (
-            <Card
-              key={item.entryId}
-              className={`rounded-2xl p-3 hover:shadow-lg transition-all duration-200 ${
-                isSelected ? 'bg-purple-100 border-purple-400 border-2' : 'hover:bg-accent/40'
-              } ${user && user.uid !== vendorId ? 'cursor-pointer' : ''}`}
-              onClick={() => {
-                if (user && user.uid !== vendorId) {
-                  toggleCardSelection(item);
-                }
-              }}
-            >
-              <div className="flex items-center gap-3">
-                {user && user.uid !== vendorId && (
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => {}}
-                    className="h-4 w-4 flex-shrink-0"
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                )}
-                {item.image && (
-                  <img
-                    src={item.image}
-                    alt={item.name}
-                    className="h-20 w-16 rounded-lg object-cover shadow-sm"
-                  />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold">{item.name}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {item.set} • {item.rarity} • #{item.number}
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+          {sortedItems.map((item) => {
+            const metrics = computeItemMetrics(item, currency);
+            const isSelected = selectedCards.some(c => c.entryId === item.entryId);
+
+            let displayPrice;
+            if (item.overridePrice != null) {
+              displayPrice = item.overridePrice;
+            } else if (item.isGraded && item.gradedPrice) {
+              displayPrice = metrics.suggested;
+            } else if (item.calculatedSuggestedPrice != null) {
+              displayPrice = item.calculatedSuggestedPrice;
+            } else {
+              displayPrice = metrics.suggested;
+            }
+            if (vendorRoundUpPrices) displayPrice = Math.ceil(displayPrice);
+
+            return (
+              <div
+                key={item.entryId}
+                onClick={() => canInteract && toggleCardSelection(item)}
+                className={`group relative bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-200 ${
+                  canInteract ? "cursor-pointer" : ""
+                } ${isSelected ? "ring-2 ring-indigo-500 ring-offset-2" : "hover:-translate-y-1 hover:scale-[1.03]"}`}
+              >
+                {/* Selection indicator */}
+                {canInteract && (
+                  <div className={`absolute top-2 left-2 z-10 h-5 w-5 rounded-full border-2 flex items-center justify-center transition-colors ${
+                    isSelected
+                      ? "bg-indigo-500 border-indigo-500 text-white"
+                      : "border-white/70 bg-black/20 text-transparent group-hover:border-white group-hover:bg-black/30"
+                  }`}>
+                    {isSelected && (
+                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs text-muted-foreground">Qty: {item.quantity || 1}</span>
+                )}
+
+                {/* Card image */}
+                <div className="aspect-[3/4] bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center overflow-hidden">
+                  {item.image ? (
+                    <img
+                      src={item.image}
+                      alt={item.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <Package className="h-10 w-10 text-slate-300" />
+                  )}
+                </div>
+
+                {/* Card info */}
+                <div className="p-2.5">
+                  {/* Condition / Graded badge + variant badges (below image) */}
+                  <div className="flex flex-wrap gap-1 mb-1.5">
                     {item.isGraded && item.gradingCompany && item.grade ? (
-                      <span className="text-xs font-semibold px-2 py-1 rounded border border-yellow-400 bg-gradient-to-r from-yellow-50 to-amber-50 text-yellow-900 flex items-center gap-1">
-                        <Award className="h-3 w-3" />
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-gradient-to-r from-yellow-100 to-amber-100 text-amber-800 border border-amber-300 flex items-center gap-0.5">
+                        <Award className="h-2.5 w-2.5" />
                         {item.gradingCompany} {item.grade}
                       </span>
                     ) : (
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${getConditionColorClass(item.condition)}`}>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border ${getConditionColorClass(item.condition)}`}>
                         {getConditionDisplayLabel(item.condition || "NM")}
                       </span>
                     )}
+                    {getVariantBadges(item).map((v) => (
+                      <span key={v.key} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${v.color}`}>
+                        {v.label}
+                      </span>
+                    ))}
                   </div>
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                  <div className="text-center">
-                    <div 
-                      className="text-2xl font-extrabold text-green-600"
-                      style={{ textShadow: '0 0 20px rgba(34, 197, 94, 0.5), 0 0 40px rgba(34, 197, 94, 0.3)' }}
-                    >
-                      {formatPrice(displayPrice)}
-                    </div>
-                    <div className="text-xs font-medium text-green-700 uppercase tracking-wide">
-                      Sales Price
-                    </div>
-                  </div>
-                  {user && user.uid !== vendorId && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        try {
-                          await addToWishlist(item);
-                          triggerQuickAddFeedback(`${item.name} added to wishlist`);
-                        } catch (error) {
-                          console.error("Error adding to wishlist:", error);
-                        }
-                      }}
-                      className="flex items-center gap-1 text-xs"
-                    >
-                      <Heart className="h-3 w-3" />
-                      Wishlist
-                    </Button>
+
+                  <h3 className="font-semibold text-sm leading-tight truncate" title={item.name}>
+                    {item.name}
+                  </h3>
+                  <p className="text-[11px] text-muted-foreground truncate mt-0.5" title={`${item.set} #${item.number}`}>
+                    {item.set} {item.number ? `#${item.number}` : ""}
+                  </p>
+                  {item.quantity > 1 && (
+                    <p className="text-[10px] text-muted-foreground mt-0.5">Qty: {item.quantity}</p>
                   )}
+
+                  {/* Price */}
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="text-base font-extrabold text-green-600">
+                      {formatPrice(displayPrice)}
+                    </span>
+                    {canInteract && (
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            await addToWishlist(item);
+                            triggerQuickAddFeedback(`${item.name} added to wishlist`);
+                          } catch (err) {
+                            console.error("Error adding to wishlist:", err);
+                          }
+                        }}
+                        className="p-1.5 rounded-full hover:bg-pink-50 text-slate-400 hover:text-pink-500 transition-colors"
+                        title="Add to Wishlist"
+                      >
+                        <Heart className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-            </Card>
-          );
-        })}
+            );
+          })}
+        </div>
+
+        {/* Bottom padding when selection bar is visible */}
+        {selectedCards.length > 0 && canInteract && <div className="h-16" />}
       </div>
     </div>
   );

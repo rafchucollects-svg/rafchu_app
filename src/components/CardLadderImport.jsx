@@ -205,27 +205,55 @@ function rowToCard(row, headerMap) {
 
 // ─── Image Fetching ───────────────────────────────────────────────────────────
 
-async function searchCardMarket(query) {
+async function searchCards(query) {
+  const q = encodeURIComponent(query);
   try {
-    const res = await fetch(
-      `${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=10`
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!data?.success || !data?.results) return [];
-    return data.results
-      .map((raw) => {
-        const d = raw?.data ?? raw;
-        return {
-          name: d?.name || "",
-          number: String(d?.card_number ?? d?.collector_number ?? d?.number ?? ""),
-          set: d?.episode?.name ?? d?.episode_name ?? d?.set_name ?? "",
-          image: d?.image ?? d?.images?.[0] ?? "",
-          id: d?.id ?? d?.card_id ?? "",
-          prices: d?.prices || {},
-        };
-      })
-      .filter((c) => c.name && c.image);
+    // Search both CardMarket (English) and JustTCG (Japanese) in parallel
+    const [cmRes, jpRes] = await Promise.all([
+      fetch(`${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${q}&maxResults=10`)
+        .then((r) => (r.ok ? r.json() : { success: false }))
+        .catch(() => ({ success: false })),
+      fetch(`${CLOUD_FUNCTIONS_BASE}/searchJapaneseCards?q=${q}&limit=10`)
+        .then((r) => (r.ok ? r.json() : { success: false }))
+        .catch(() => ({ success: false })),
+    ]);
+
+    let results = [];
+
+    // CardMarket (English) results
+    if (cmRes?.success && cmRes?.results) {
+      results = cmRes.results
+        .map((raw) => {
+          const d = raw?.data ?? raw;
+          return {
+            name: d?.name || "",
+            number: String(d?.card_number ?? d?.collector_number ?? d?.number ?? ""),
+            set: d?.episode?.name ?? d?.episode_name ?? d?.set_name ?? "",
+            image: d?.image ?? d?.images?.[0] ?? "",
+            id: d?.id ?? d?.card_id ?? "",
+            prices: d?.prices || {},
+          };
+        })
+        .filter((c) => c.name && c.image);
+    }
+
+    // Japanese card results
+    if (jpRes?.success && jpRes?.cards) {
+      const jpCards = jpRes.cards
+        .map((card) => ({
+          name: card.name || "",
+          number: String(card.number || ""),
+          set: card.set || "",
+          image: card.image || card.imageUrl || "",
+          id: card.justTcgId || card.id || "",
+          prices: card.prices || {},
+          isJapanese: true,
+        }))
+        .filter((c) => c.name && c.image);
+      results = [...results, ...jpCards];
+    }
+
+    return results;
   } catch (err) {
     console.warn("Image search failed for:", query, err);
     return [];
@@ -233,82 +261,164 @@ async function searchCardMarket(query) {
 }
 
 function normalizeNumber(num) {
-  return String(num || "")
-    .toLowerCase()
-    .replace(/^#/, "")
-    .trim();
+  if (!num) return "";
+  // Strip set suffix after "/" (e.g., "227/S-P" → "227", "100/196" → "100")
+  let n = String(num).split("/")[0];
+  return n.toLowerCase().replace(/^#/, "").replace(/^0+/, "").trim();
 }
 
 /**
  * Check if a card name from the API matches the CardLadder name.
- * Compares the first significant word (the Pokemon name) and any
+ * Compares ALL base-name words (not just the first!) and any
  * card-type suffix (GX, VMAX, V, VSTAR, EX, etc.)
+ *
+ * "Shining Mew" must NOT match "Shining Tyranitar".
+ * "Pikachu VMAX" must NOT match "Pikachu V".
  */
 function namesMatch(cardLadderName, apiName) {
   const clName = (cardLadderName || "").toLowerCase().trim();
   const aName = (apiName || "").toLowerCase().trim();
   if (!clName || !aName) return false;
 
-  // Extract first word (Pokemon name) from both
-  const clWords = clName.split(/[\s&-]+/).filter(Boolean);
-  const aWords = aName.split(/[\s&-]+/).filter(Boolean);
+  const TYPE_SUFFIXES = new Set(["gx", "vmax", "vstar", "v", "ex", "tag"]);
 
+  // Split on whitespace, &, and hyphens, then strip remaining punctuation from each token
+  const toWords = (s) =>
+    s
+      .split(/[\s&\-]+/)
+      .map((w) => w.replace(/[^a-z0-9]/g, ""))
+      .filter(Boolean);
+
+  const clWords = toWords(clName);
+  const aWords = toWords(aName);
   if (!clWords.length || !aWords.length) return false;
 
-  // First word must match (the Pokemon name like "charizard", "pikachu", etc.)
-  if (clWords[0] !== aWords[0]) return false;
+  // Separate base-name words from type suffixes
+  const clBase = clWords.filter((w) => !TYPE_SUFFIXES.has(w));
+  const aBase = aWords.filter((w) => !TYPE_SUFFIXES.has(w));
+  const clTypes = clWords.filter((w) => TYPE_SUFFIXES.has(w));
+  const aTypes = aWords.filter((w) => TYPE_SUFFIXES.has(w));
 
-  // For multi-word names, also check if any type suffix matches
-  // (GX, VMAX, VSTAR, V, EX, etc.) to disambiguate e.g. "Pikachu V" from "Pikachu VMAX"
-  const TYPE_SUFFIXES = ["gx", "vmax", "vstar", "v", "ex", "tag"];
-  const clTypes = clWords.filter((w) => TYPE_SUFFIXES.includes(w));
-  const aTypes = aWords.filter((w) => TYPE_SUFFIXES.includes(w));
+  // Base name: ALL words must match bidirectionally
+  // "Shining Mew" ↔ "Shining Mew" ✓
+  // "Shining Mew" ↔ "Shining Tyranitar" ✗ ("mew" not in api)
+  // "Mew" ↔ "Shining Mew" ✗ ("shining" not in cl)
+  if (clBase.length > 0 && aBase.length > 0) {
+    const clSet = new Set(clBase);
+    const aSet = new Set(aBase);
+    if (!clBase.every((w) => aSet.has(w))) return false;
+    if (!aBase.every((w) => clSet.has(w))) return false;
+  }
 
-  // Both have type suffixes — at least one must match
+  // Type suffix check
   if (clTypes.length > 0 && aTypes.length > 0) {
     return clTypes.some((t) => aTypes.includes(t));
   }
+  if (clTypes.length > 0 && aTypes.length === 0) return false;
+  if (clTypes.length === 0 && aTypes.length > 0) return false;
 
-  // CardLadder has type but API doesn't → NOT a match (e.g., "Pikachu V" vs "Pikachu")
-  if (clTypes.length > 0 && aTypes.length === 0) {
-    return false;
-  }
-
-  // API has type but CardLadder doesn't → NOT a match (e.g., "Flareon" vs "Flareon GX")
-  if (clTypes.length === 0 && aTypes.length > 0) {
-    return false;
-  }
-
-  // Neither has types → first word match is sufficient (e.g., "Alakazam", "Flareon")
   return true;
+}
+
+/**
+ * Check if the CardLadder set name matches an API result's set name.
+ * Strips "Japanese" prefix, normalizes both, then checks for significant word overlap.
+ */
+function setsMatch(cardLadderSet, apiSet) {
+  if (!cardLadderSet || !apiSet) return false;
+
+  // Strip "Japanese" prefix from CardLadder set for comparison
+  let clSet = cardLadderSet.replace(/^Japanese\s+/i, "").toLowerCase().trim();
+  let aSet = (apiSet || "").toLowerCase().trim();
+
+  if (!clSet || !aSet) return false;
+
+  // Normalize: remove common noise words and punctuation
+  const noise = /\b(pokemon|the|of|and|set|series|edition|collection)\b/gi;
+  clSet = clSet.replace(noise, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  aSet = aSet.replace(noise, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+
+  // Exact match after normalization
+  if (clSet === aSet) return true;
+
+  // One contains the other
+  if (clSet.includes(aSet) || aSet.includes(clSet)) return true;
+
+  // Stem common word variants before overlap check
+  // "promo" / "promos" / "promotional" → "promo", "star" / "stars" → "star"
+  const stem = (w) => {
+    if (w.startsWith("promo")) return "promo"; // promos, promotional, promo
+    return w.replace(/s$/, ""); // simple plural stripping
+  };
+
+  // Significant word overlap (at least 1 meaningful word >= 3 chars, stemmed)
+  const clWords = clSet.split(/\s+/).filter(w => w.length >= 3);
+  const aWords = aSet.split(/\s+/).filter(w => w.length >= 3);
+  const overlap = clWords.filter(w => {
+    const ws = stem(w);
+    return aWords.some(aw => {
+      const as = stem(aw);
+      return as.includes(ws) || ws.includes(as);
+    });
+  });
+  return overlap.length > 0;
+}
+
+/**
+ * Check if a CardLadder card appears to be Japanese, based on its set name.
+ */
+function isJapaneseCard(card) {
+  return /^japanese\b/i.test(card.set || "");
 }
 
 function findBestMatch(card, results) {
   const cardNum = normalizeNumber(card.number);
+  const cardIsJapanese = isJapaneseCard(card);
+
+  // Helper: among a filtered list, prefer results that match set, then language
+  function pickBest(candidates) {
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    // Prefer set match
+    const setMatches = candidates.filter(r => setsMatch(card.set, r.set));
+    if (setMatches.length > 0) return setMatches[0];
+
+    // If card is Japanese, prefer Japanese API results; if English, prefer English
+    if (cardIsJapanese) {
+      const jpMatches = candidates.filter(r => r.isJapanese);
+      if (jpMatches.length > 0) return jpMatches[0];
+    } else {
+      const enMatches = candidates.filter(r => !r.isJapanese);
+      if (enMatches.length > 0) return enMatches[0];
+    }
+
+    return candidates[0];
+  }
 
   // Tier 1: Exact number + name match (best possible match)
-  for (const r of results) {
-    if (normalizeNumber(r.number) === cardNum && namesMatch(card.name, r.name)) {
-      return r;
-    }
-  }
+  const tier1 = results.filter(
+    r => normalizeNumber(r.number) === cardNum && namesMatch(card.name, r.name)
+  );
+  if (tier1.length > 0) return pickBest(tier1);
 
   // Tier 2: Number contained (e.g., "SM166" vs "166") + name match
-  for (const r of results) {
+  const tier2 = results.filter(r => {
     const rNum = normalizeNumber(r.number);
-    if (rNum && cardNum && (rNum.includes(cardNum) || cardNum.includes(rNum))) {
-      if (namesMatch(card.name, r.name)) {
-        return r;
-      }
-    }
-  }
+    return rNum && cardNum && (rNum.includes(cardNum) || cardNum.includes(rNum))
+      && namesMatch(card.name, r.name);
+  });
+  if (tier2.length > 0) return pickBest(tier2);
 
-  // Tier 3: Name match only (no number check - for cases where number format differs)
-  for (const r of results) {
-    if (namesMatch(card.name, r.name)) {
-      return r;
-    }
-  }
+  // Tier 3: Name + set match (strong signal, even without number)
+  const tier3set = results.filter(
+    r => namesMatch(card.name, r.name) && setsMatch(card.set, r.set)
+  );
+  if (tier3set.length > 0) return pickBest(tier3set);
+
+  // Tier 4: Name match only, with language preference
+  const tier4 = results.filter(r => namesMatch(card.name, r.name));
+  if (tier4.length > 0) return pickBest(tier4);
 
   // No match - do NOT return a result without name confirmation
   return null;
@@ -339,44 +449,67 @@ async function fetchImagesForCards(cards, onProgress, abortSignal) {
     if (abortSignal?.aborted) return;
 
     const card = cards[idx];
-    const number = card.number?.trim();
+    const numberRaw = card.number?.trim();
+    // Strip set suffix from number for searching (e.g., "227/S-P" → "227")
+    const number = numberRaw?.replace(/\/.*$/, "").trim();
     const name = card.name?.trim();
     // Strip "&" for search (API doesn't handle it well in some cases)
     const searchName = name?.replace(/&/g, " ").replace(/\s+/g, " ").trim();
 
+    const wantJapanese = isJapaneseCard(card);
     let match = null;
+    let fallbackMatch = null; // English match when we wanted Japanese — keep looking
+
+    // Helper: accept a match, or save it as fallback if it's the wrong language
+    function acceptMatch(m) {
+      if (!m) return false;
+      if (wantJapanese && !m.isJapanese) {
+        // Got an English match for a Japanese card — save as fallback, keep trying
+        if (!fallbackMatch) fallbackMatch = m;
+        return false;
+      }
+      match = m;
+      return true;
+    }
 
     // Attempt 1: Search by "name number" (most specific — avoids wrong cards with same number)
     if (!match && searchName && number) {
-      const res = await searchCardMarket(`${searchName} ${number}`);
-      match = findBestMatch(card, res);
+      const res = await searchCards(`${searchName} ${number}`);
+      acceptMatch(findBestMatch(card, res));
     }
 
     // Attempt 2: Search by "name + set keywords" (helps when number format differs)
     if (!match && searchName && card.set) {
-      // Take first 2-3 meaningful words from set name
+      // Strip "Japanese" prefix and era prefixes, then take first 2 meaningful words
       const setWords = card.set
+        .replace(/^Japanese\s+/i, "")
         .replace(/^(SWSH|SM|XY|BW|EX|SVP)\s+/i, "")
         .split(/\s+/)
+        .filter(w => w.length > 1) // drop single-char noise
         .slice(0, 2)
         .join(" ");
       if (setWords) {
-        const res = await searchCardMarket(`${searchName} ${setWords}`);
-        match = findBestMatch(card, res);
+        const res = await searchCards(`${searchName} ${setWords}`);
+        acceptMatch(findBestMatch(card, res));
       }
     }
 
     // Attempt 3: Search by name only
     if (!match && searchName) {
-      const res = await searchCardMarket(searchName);
-      match = findBestMatch(card, res);
+      const res = await searchCards(searchName);
+      acceptMatch(findBestMatch(card, res));
     }
 
     // Attempt 4: Search by number only — but ONLY for prefixed numbers (SM166, SV60, TG17)
     // Plain numbers (100, 262) are too ambiguous
     if (!match && number && /[a-zA-Z]/.test(number)) {
-      const res = await searchCardMarket(number);
-      match = findBestMatch(card, res);
+      const res = await searchCards(number);
+      acceptMatch(findBestMatch(card, res));
+    }
+
+    // If we never found a Japanese match, use the English fallback
+    if (!match && fallbackMatch) {
+      match = fallbackMatch;
     }
 
     if (match) {
@@ -556,7 +689,8 @@ export function CardLadderImport({ onClose, collectionName }) {
         return card;
       });
 
-      // Step 3: Save to Firestore (wipe previous + add new)
+      // Step 3: Save to Firestore — merge with existing CardLadder cards
+      // to preserve manually-set images and manual prices
       const docRef = doc(db, collectionName, user.uid);
       const snapshot = await getDoc(docRef);
       const currentData = snapshot.exists() ? snapshot.data() : {};
@@ -565,19 +699,96 @@ export function CardLadderImport({ onClose, collectionName }) {
       const nonCardLadder = currentItems.filter(
         (it) => it.source !== "cardladder"
       );
-      const updatedItems = [...nonCardLadder, ...enrichedCards];
+      const oldCardLadder = currentItems.filter(
+        (it) => it.source === "cardladder"
+      );
+
+      // Build lookup of existing cards for field preservation
+      const oldCardMap = new Map();
+      for (const old of oldCardLadder) {
+        const lid = old.cardladderData?.ladderId;
+        if (lid) {
+          oldCardMap.set(`lid:${lid}`, old);
+        }
+        // Composite fallback key: name + number + gradingCompany + grade
+        const compositeKey = [
+          (old.name || "").toLowerCase().trim(),
+          (old.number || "").toLowerCase().trim(),
+          (old.gradingCompany || "").toLowerCase().trim(),
+          (old.grade || "").toLowerCase().trim(),
+        ].join("|");
+        if (!oldCardMap.has(`comp:${compositeKey}`)) {
+          oldCardMap.set(`comp:${compositeKey}`, old);
+        }
+      }
+
+      const isUserUploadedImage = (url) =>
+        typeof url === "string" && url.includes("firebasestorage.googleapis.com");
+
+      const mergedCards = enrichedCards.map((card) => {
+        // Find matching old card by ladderId first, then composite key
+        const lid = card.cardladderData?.ladderId;
+        let oldCard = lid ? oldCardMap.get(`lid:${lid}`) : null;
+        if (!oldCard) {
+          const compositeKey = [
+            (card.name || "").toLowerCase().trim(),
+            (card.number || "").toLowerCase().trim(),
+            (card.gradingCompany || "").toLowerCase().trim(),
+            (card.grade || "").toLowerCase().trim(),
+          ].join("|");
+          oldCard = oldCardMap.get(`comp:${compositeKey}`);
+        }
+
+        if (!oldCard) return card;
+
+        const merged = { ...card, entryId: oldCard.entryId };
+
+        // Preserve image: always keep user-uploaded; otherwise keep as fallback
+        if (isUserUploadedImage(oldCard.image)) {
+          merged.image = oldCard.image;
+        } else if (!card.image && oldCard.image) {
+          merged.image = oldCard.image;
+        }
+
+        // Preserve manual price
+        if (oldCard.manualPrice != null && oldCard.manualPrice !== "") {
+          merged.manualPrice = oldCard.manualPrice;
+          merged.manualPriceCurrency = oldCard.manualPriceCurrency || null;
+        }
+
+        return merged;
+      });
+
+      const updatedItems = [...nonCardLadder, ...mergedCards];
 
       await setDoc(docRef, { ...currentData, items: updatedItems });
       setCollectionItems(updatedItems);
 
       const imagesFound = imageResults.filter(Boolean).length;
+      const preservedImages = mergedCards.filter((c, i) => {
+        const lid = c.cardladderData?.ladderId;
+        const compositeKey = [
+          (c.name || "").toLowerCase().trim(),
+          (c.number || "").toLowerCase().trim(),
+          (c.gradingCompany || "").toLowerCase().trim(),
+          (c.grade || "").toLowerCase().trim(),
+        ].join("|");
+        const oldCard = (lid ? oldCardMap.get(`lid:${lid}`) : null)
+          || oldCardMap.get(`comp:${compositeKey}`);
+        return oldCard && c.image && c.image === oldCard.image;
+      }).length;
+      const preservedPrices = mergedCards.filter(
+        (c) => c.manualPrice != null && c.manualPrice !== ""
+      ).length;
 
       setImportResult({
         success: true,
-        imported: enrichedCards.length,
-        removed: currentItems.length - nonCardLadder.length,
+        imported: mergedCards.length,
+        removed: oldCardLadder.length,
         total: updatedItems.length,
         imagesFound,
+        preservedImages,
+        preservedPrices,
       });
     } catch (err) {
       console.error("Import failed:", err);
@@ -636,8 +847,9 @@ export function CardLadderImport({ onClose, collectionName }) {
                   it here.
                 </p>
                 <p className="mt-1 text-amber-700">
-                  Each import <strong>replaces</strong> all previously imported
-                  CardLadder cards. Cards you added manually are never affected.
+                  Re-importing? No worries — your custom images, manual prices,
+                  and manually added cards are always preserved. Only CardLadder
+                  data (values, grades) gets refreshed.
                 </p>
               </div>
             </div>
@@ -827,8 +1039,8 @@ export function CardLadderImport({ onClose, collectionName }) {
                     {importResult.removed > 0 && (
                       <>
                         {" "}
-                        (replaced {importResult.removed} previous CardLadder
-                        import{importResult.removed !== 1 ? "s" : ""})
+                        (updated {importResult.removed} previous CardLadder
+                        card{importResult.removed !== 1 ? "s" : ""})
                       </>
                     )}
                   </p>
@@ -836,7 +1048,15 @@ export function CardLadderImport({ onClose, collectionName }) {
                     <ImageIcon className="h-3 w-3" />
                     {importResult.imagesFound} / {importResult.imported} card
                     images found
+                    {importResult.preservedImages > 0 && (
+                      <> &middot; {importResult.preservedImages} custom image{importResult.preservedImages !== 1 ? "s" : ""} preserved</>
+                    )}
                   </p>
+                  {importResult.preservedPrices > 0 && (
+                    <p className="text-xs text-green-600 mt-0.5">
+                      {importResult.preservedPrices} manual price{importResult.preservedPrices !== 1 ? "s" : ""} preserved
+                    </p>
+                  )}
                   <Button variant="outline" className="mt-4" onClick={onClose}>
                     Done
                   </Button>

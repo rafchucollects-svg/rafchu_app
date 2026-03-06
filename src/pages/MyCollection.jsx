@@ -282,6 +282,18 @@ export function MyCollection() {
   // Format price with selected currency
   const formatPrice = (value) => formatCurrency(Number(value ?? 0), currency);
 
+  // Round up to nearest multiple of 5
+  const roundUpMarkup = (basePrice, pct) => Math.ceil((basePrice * (1 + pct / 100)) / 5) * 5;
+
+  // Quick-apply a markup percentage on a graded card's market price
+  const applyGradedMarkup = async (item, pct) => {
+    if (!item?.isGraded || !item?.gradedPrice) return;
+    const baseInCurrency = convertCurrency(parseFloat(item.gradedPrice), currency, "USD");
+    const rounded = roundUpMarkup(baseInCurrency, pct);
+    await updateManualPrice(item.entryId, rounded);
+    triggerQuickAddFeedback(`Set to +${pct}% → ${formatCurrency(rounded, currency)}`);
+  };
+
   // Helper to save to Firestore (collector uses different collection)
   const saveCollectorCollection = async (items) => {
     if (!user || !db) return;
@@ -1044,6 +1056,28 @@ export function MyCollection() {
                     </div>
                   ) : (
                     <div className="space-y-2">
+                      {item.isGraded && item.gradedPrice && (
+                        <div className="flex flex-wrap gap-2">
+                          {[5, 10].map((pct) => {
+                            const base = convertCurrency(parseFloat(item.gradedPrice), currency, "USD");
+                            const rounded = roundUpMarkup(base, pct);
+                            return (
+                              <Button
+                                key={pct}
+                                size="sm"
+                                variant="outline"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  applyGradedMarkup(item, pct);
+                                }}
+                                className="text-xs gap-1 border-purple-300 text-purple-700 hover:bg-purple-100"
+                              >
+                                +{pct}% → {formatPrice(rounded)}
+                              </Button>
+                            );
+                          })}
+                        </div>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -1349,6 +1383,50 @@ export function MyCollection() {
                           label={`${selectedCardDetails.gradingCompany} ${selectedCardDetails.grade}`}
                           value={formatPrice(convertCurrency(selectedCardDetails.gradedPrice, currency, 'USD'))}
                         />
+                        <div className="pt-2 border-t">
+                          <p className="text-xs text-muted-foreground mb-2">Quick markup (rounded up to nearest 5)</p>
+                          <div className="flex flex-wrap gap-2">
+                            {[5, 10].map((pct) => {
+                              const base = convertCurrency(parseFloat(selectedCardDetails.gradedPrice), currency, "USD");
+                              const rounded = roundUpMarkup(base, pct);
+                              return (
+                                <Button
+                                  key={pct}
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    applyGradedMarkup(selectedCardDetails, pct);
+                                    setSelectedCardDetails((prev) => prev ? { ...prev, manualPrice: rounded } : prev);
+                                  }}
+                                  className="text-xs gap-1"
+                                >
+                                  +{pct}% → {formatPrice(rounded)}
+                                </Button>
+                              );
+                            })}
+                            {selectedCardDetails.manualPrice != null && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updateManualPrice(selectedCardDetails.entryId, null);
+                                  setSelectedCardDetails((prev) => prev ? { ...prev, manualPrice: null } : prev);
+                                  triggerQuickAddFeedback("Reverted to market pricing");
+                                }}
+                                className="text-xs text-red-600 hover:text-red-700"
+                              >
+                                Reset
+                              </Button>
+                            )}
+                          </div>
+                          {selectedCardDetails.manualPrice != null && (
+                            <p className="text-xs text-blue-600 mt-1.5 font-medium">
+                              Custom value: {formatPrice(selectedCardDetails.manualPrice)}
+                            </p>
+                          )}
+                        </div>
                       </CardContent>
                     </Card>
                   ) : (

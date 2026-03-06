@@ -505,8 +505,8 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
         onPasswordReset={onPasswordReset}
       />
 
-      {/* Coming Soon Banner */}
-      {comingSoonBannerVisible && (
+      {/* Coming Soon Banner - Hidden on shared views */}
+      {comingSoonBannerVisible && !location.search.includes('inventory=') && !location.search.includes('collection=') && (
         <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white py-3 px-4 shadow-lg">
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-3 flex-1">
@@ -539,9 +539,15 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
       )}
 
       {/* Main content */}
-      <main className="container mx-auto px-4 py-6">
-        <Outlet />
-      </main>
+      {location.search.includes('inventory=') || location.search.includes('collection=') ? (
+        <main>
+          <Outlet />
+        </main>
+      ) : (
+        <main className="container mx-auto px-4 py-6">
+          <Outlet />
+        </main>
+      )}
     </div>
   );
 }

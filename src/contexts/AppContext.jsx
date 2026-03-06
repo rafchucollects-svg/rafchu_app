@@ -49,7 +49,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   const [viewingUid, setViewingUid] = useState(null);
   
   // Cash balance state (vendor toolkit)
-  const [cashData, setCashData] = useState({ physical: [], digital: [] });
+  const [cashData, setCashData] = useState({ physical: [], digital: [], pending: [] });
   
   // Wishlist state
   const [wishlistItems, setWishlistItems] = useState([]);
@@ -223,10 +223,11 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
           if (data.cashData && typeof data.cashData === "object") {
             setCashData({
               physical: Array.isArray(data.cashData.physical) ? data.cashData.physical : [],
-              digital: Array.isArray(data.cashData.digital) ? data.cashData.digital : []
+              digital: Array.isArray(data.cashData.digital) ? data.cashData.digital : [],
+              pending: Array.isArray(data.cashData.pending) ? data.cashData.pending : [],
             });
           } else {
-            setCashData({ physical: [], digital: [] });
+            setCashData({ physical: [], digital: [], pending: [] });
           }
         } else {
           setCollectionItems([]);

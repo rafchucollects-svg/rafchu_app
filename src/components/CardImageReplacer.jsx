@@ -114,31 +114,52 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
     setSelected(null);
 
     try {
-      const res = await fetch(
-        `${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(searchQuery.trim())}&maxResults=20`
-      );
-      if (!res.ok) throw new Error("Search failed");
-      const data = await res.json();
+      const q = encodeURIComponent(searchQuery.trim());
 
-      if (data?.success && data?.results) {
-        const cards = data.results
+      // Search both CardMarket (English) and JustTCG (Japanese) in parallel
+      const [cmRes, jpRes] = await Promise.all([
+        fetch(`${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${q}&maxResults=20`)
+          .then((r) => (r.ok ? r.json() : { success: false }))
+          .catch(() => ({ success: false })),
+        fetch(`${CLOUD_FUNCTIONS_BASE}/searchJapaneseCards?q=${q}&limit=20`)
+          .then((r) => (r.ok ? r.json() : { success: false }))
+          .catch(() => ({ success: false })),
+      ]);
+
+      let cards = [];
+
+      // CardMarket (English) results
+      if (cmRes?.success && cmRes?.results) {
+        cards = cmRes.results
           .map((raw) => {
             const d = raw?.data ?? raw;
             return {
               name: d?.name || "",
-              number: String(
-                d?.card_number ?? d?.collector_number ?? d?.number ?? ""
-              ),
+              number: String(d?.card_number ?? d?.collector_number ?? d?.number ?? ""),
               set: d?.episode?.name ?? d?.episode_name ?? d?.set_name ?? "",
               image: d?.image ?? d?.images?.[0] ?? "",
               id: d?.id ?? d?.card_id ?? "",
             };
           })
           .filter((c) => c.name && c.image);
-        setSearchResults(cards);
-      } else {
-        setSearchResults([]);
       }
+
+      // Japanese card results
+      if (jpRes?.success && jpRes?.cards) {
+        const jpCards = jpRes.cards
+          .map((card) => ({
+            name: card.name || "",
+            number: String(card.number || ""),
+            set: card.set || "",
+            image: card.image || card.imageUrl || "",
+            id: card.justTcgId || card.id || "",
+            isJapanese: true,
+          }))
+          .filter((c) => c.name && c.image);
+        cards = [...cards, ...jpCards];
+      }
+
+      setSearchResults(cards);
     } catch (err) {
       console.error("Image search failed:", err);
       setSearchResults([]);
@@ -367,6 +388,11 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
                             className="w-full aspect-[2.5/3.5] object-cover"
                             loading="lazy"
                           />
+                          {card.isJapanese && (
+                            <span className="absolute top-1 right-1 bg-red-600 text-white text-[8px] font-bold px-1 py-0.5 rounded shadow">
+                              JP
+                            </span>
+                          )}
                           <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-1.5">
                             <p className="text-[10px] text-white font-medium truncate">
                               {card.name}

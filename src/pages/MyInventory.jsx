@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw } from "lucide-react";
+import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { computeInventoryTotals, formatCurrency, computeItemMetrics, exportToCSV, getConditionColorClass, recordTransaction, convertCurrency } from "@/utils/cardHelpers";
 import { ConditionSelect, CardPrices, ExternalLinks } from "@/components/CardComponents";
@@ -15,7 +15,7 @@ import { needsImage } from "@/utils/imageHelpers";
 import { CardLadderImport } from "@/components/CardLadderImport";
 import { CardImageReplacer } from "@/components/CardImageReplacer";
 import { apiFetchMarketPrices } from "@/utils/apiHelpers";
-import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc } from "firebase/firestore";
+import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc, updateDoc } from "firebase/firestore";
 import { CardSearch } from "./CardSearch";
 
 /**
@@ -70,6 +70,8 @@ export function MyInventory() {
   const [snapshotGradedFilter, setSnapshotGradedFilter] = useState("all"); // all, graded, ungraded
   const [snapshotCurrentPrices, setSnapshotCurrentPrices] = useState(null);
   const [loadingCurrentPrices, setLoadingCurrentPrices] = useState(false);
+  const [renamingSnapshotId, setRenamingSnapshotId] = useState(null);
+  const [renameSnapshotValue, setRenameSnapshotValue] = useState("");
   
   // Quick Add Search toggle
   const [showQuickAddSearch, setShowQuickAddSearch] = useState(false);
@@ -80,6 +82,12 @@ export function MyInventory() {
   const [editGradingCompany, setEditGradingCompany] = useState("");
   const [editGrade, setEditGrade] = useState("");
   const [updatingGradePrice, setUpdatingGradePrice] = useState(false);
+
+  // Edit card details (name, set, number) states
+  const [editingCardDetails, setEditingCardDetails] = useState(false);
+  const [editCardName, setEditCardName] = useState("");
+  const [editCardSet, setEditCardSet] = useState("");
+  const [editCardNumber, setEditCardNumber] = useState("");
   
   // Filter states
   const [filterRarity, setFilterRarity] = useState("all");
@@ -499,7 +507,7 @@ export function MyInventory() {
         const itemData = {
           name: item.name || "",
           set: item.set || "",
-          number: item.number || "",
+          number: String(item.number || ""),
           condition: item.condition || "NM",
           quantity: item.quantity || 1,
           image: item.image || item.imageUrl || "",
@@ -514,7 +522,13 @@ export function MyInventory() {
           grade: item.grade || "",
           // Include variant info
           isReverseHolo: item.isReverseHolo || false,
-          isFirstEdition: item.isFirstEdition || false
+          isFirstEdition: item.isFirstEdition || false,
+          isStampedPromo: item.isStampedPromo || false,
+          isSealed: item.isSealed || false,
+          isAutographed: item.isAutographed || false,
+          isPokeBall: item.isPokeBall || false,
+          isMasterBall: item.isMasterBall || false,
+          isUnlimited: item.isUnlimited || false,
         };
         
         // Filter out undefined values
@@ -523,6 +537,27 @@ export function MyInventory() {
         );
       });
       
+      // Include cash balance data
+      const physicalCash = (cashData.physical || []).map(e => ({
+        currency: e.currency || "",
+        amount: e.amount || 0,
+      }));
+      const digitalCash = (cashData.digital || []).map(e => ({
+        platform: e.platform || "",
+        currency: e.currency || "",
+        amount: e.amount || 0,
+        note: e.note || "",
+      }));
+      const pendingCash = (cashData.pending || []).map(e => ({
+        platform: e.platform || "",
+        currency: e.currency || "",
+        amount: e.amount || 0,
+        note: e.note || "",
+      }));
+      const cashPhysicalTotal = physicalCash.reduce((sum, e) => sum + convertCurrency(e.amount, currency, e.currency), 0);
+      const cashDigitalTotal = digitalCash.reduce((sum, e) => sum + convertCurrency(e.amount, currency, e.currency), 0);
+      const cashPendingTotal = pendingCash.reduce((sum, e) => sum + convertCurrency(e.amount, currency, e.currency), 0);
+
       const snapshotData = {
         timestamp: serverTimestamp(),
         createdAt: Date.now(),
@@ -534,6 +569,16 @@ export function MyInventory() {
           cmAvg: totals.cmAvg || 0,
           cmLowest: totals.cmLowest || 0,
           suggested: totals.suggested || 0
+        },
+        cashBalance: {
+          physical: physicalCash,
+          digital: digitalCash,
+          pending: pendingCash,
+          physicalTotal: cashPhysicalTotal,
+          digitalTotal: cashDigitalTotal,
+          pendingTotal: cashPendingTotal,
+          grandTotal: cashPhysicalTotal + cashDigitalTotal,
+          projectedTotal: cashPhysicalTotal + cashDigitalTotal + cashPendingTotal,
         },
         items: cleanItems
       };
@@ -585,10 +630,28 @@ export function MyInventory() {
       await deleteDoc(snapshotRef);
       
       triggerQuickAddFeedback("Snapshot deleted");
-      loadSnapshots(); // Reload the list
+      loadSnapshots();
     } catch (error) {
       console.error("Failed to delete snapshot:", error);
       alert("Failed to delete snapshot.");
+    }
+  };
+
+  const renameSnapshot = async (snapshotId, newName) => {
+    if (!user || !db) return;
+    try {
+      const snapshotRef = doc(db, "inventory_snapshots", user.uid, "snapshots", snapshotId);
+      await updateDoc(snapshotRef, { name: newName.trim() });
+      setSnapshots(prev => prev.map(s => s.id === snapshotId ? { ...s, name: newName.trim() } : s));
+      if (selectedSnapshot?.id === snapshotId) {
+        setSelectedSnapshot(prev => prev ? { ...prev, name: newName.trim() } : prev);
+      }
+      setRenamingSnapshotId(null);
+      setRenameSnapshotValue("");
+      triggerQuickAddFeedback("Snapshot renamed");
+    } catch (error) {
+      console.error("Failed to rename snapshot:", error);
+      alert("Failed to rename snapshot.");
     }
   };
 
@@ -650,9 +713,9 @@ export function MyInventory() {
     if (snapshotSearch) {
       const query = snapshotSearch.toLowerCase();
       filtered = filtered.filter(item =>
-        item.name?.toLowerCase().includes(query) ||
-        item.set?.toLowerCase().includes(query) ||
-        item.number?.toLowerCase().includes(query)
+        String(item.name || "").toLowerCase().includes(query) ||
+        String(item.set || "").toLowerCase().includes(query) ||
+        String(item.number || "").toLowerCase().includes(query)
       );
     }
     
@@ -1422,7 +1485,7 @@ export function MyInventory() {
           return (
             <Card
               key={item.entryId}
-              className={`rounded-2xl p-3 transition cursor-pointer ${isSelected ? 'bg-purple-50 border-purple-300' : 'hover:bg-accent/40'}`}
+              className={`rounded-2xl p-3 cursor-pointer transition-all duration-200 ${isSelected ? 'bg-purple-50 border-purple-300' : 'hover:bg-accent/40 hover:shadow-lg hover:scale-[1.02]'}`}
               onClick={() => setCardDetailsModal(item)}
             >
               <div className="flex items-center gap-3">
@@ -1464,6 +1527,19 @@ export function MyInventory() {
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-xs text-muted-foreground">Qty: {item.quantity || 1} • Added: {new Date(item.addedAt).toLocaleDateString()}</span>
                   </div>
+                  {/* Variant badges */}
+                  {(item.isReverseHolo || item.isStampedPromo || item.isSealed || item.isAutographed || item.isFirstEdition || item.isPokeBall || item.isMasterBall || item.isUnlimited) && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {item.isReverseHolo && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">Reverse Holo</span>}
+                      {item.isStampedPromo && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">Stamped</span>}
+                      {item.isSealed && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">Sealed</span>}
+                      {item.isAutographed && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">Autographed</span>}
+                      {item.isFirstEdition && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">1st Edition</span>}
+                      {item.isPokeBall && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700">Poké Ball</span>}
+                      {item.isMasterBall && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">Master Ball</span>}
+                      {item.isUnlimited && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">Unlimited</span>}
+                    </div>
+                  )}
                   {/* Only show ungraded prices for non-graded cards */}
                   {!item.isGraded && (
                     <div className="flex items-center gap-2 mt-2">
@@ -1767,16 +1843,92 @@ export function MyInventory() {
             <CardContent className="p-6">
               {/* Header */}
               <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h2 className="text-2xl font-bold">{cardDetailsModal.name}</h2>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {cardDetailsModal.set} • {cardDetailsModal.rarity} • #{cardDetailsModal.number}
-                  </p>
+                <div className="flex-1 min-w-0 mr-3">
+                  {editingCardDetails ? (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={editCardName}
+                        onChange={(e) => setEditCardName(e.target.value)}
+                        className="w-full text-xl font-bold border-b-2 border-primary bg-transparent outline-none px-0 py-1"
+                        placeholder="Card name"
+                        autoFocus
+                      />
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={editCardSet}
+                          onChange={(e) => setEditCardSet(e.target.value)}
+                          className="flex-1 text-sm border-b border-gray-300 bg-transparent outline-none px-0 py-1"
+                          placeholder="Set"
+                        />
+                        <input
+                          type="text"
+                          value={editCardNumber}
+                          onChange={(e) => setEditCardNumber(e.target.value)}
+                          className="w-24 text-sm border-b border-gray-300 bg-transparent outline-none px-0 py-1"
+                          placeholder="#Number"
+                        />
+                      </div>
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          onClick={async () => {
+                            const updates = {
+                              name: editCardName.trim(),
+                              set: editCardSet.trim(),
+                              number: editCardNumber.trim(),
+                            };
+                            updateCollectionItem(cardDetailsModal.entryId, updates);
+                            setCardDetailsModal(prev => prev ? { ...prev, ...updates } : prev);
+                            setEditingCardDetails(false);
+                            try {
+                              const ref = doc(db, "collections", user.uid);
+                              const updatedItems = collectionItems.map(it =>
+                                it.entryId === cardDetailsModal.entryId ? { ...it, ...updates } : it
+                              );
+                              await setDoc(ref, { items: updatedItems }, { merge: true });
+                              triggerQuickAddFeedback("Card details updated");
+                            } catch (err) {
+                              console.error("Failed to save card details:", err);
+                            }
+                          }}
+                          className="text-sm font-medium px-3 py-1 rounded-md bg-primary text-white hover:bg-primary/90 transition-colors"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingCardDetails(false)}
+                          className="text-sm font-medium px-3 py-1 rounded-md border hover:bg-gray-50 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className="group cursor-pointer"
+                      onClick={() => {
+                        setEditCardName(cardDetailsModal.name || "");
+                        setEditCardSet(cardDetailsModal.set || "");
+                        setEditCardNumber(cardDetailsModal.number || "");
+                        setEditingCardDetails(true);
+                      }}
+                      title="Click to edit name, set, or number"
+                    >
+                      <h2 className="text-2xl font-bold group-hover:text-primary transition-colors">
+                        {cardDetailsModal.name}
+                        <Edit2 className="h-4 w-4 inline ml-2 opacity-0 group-hover:opacity-50 transition-opacity" />
+                      </h2>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {cardDetailsModal.set} • {cardDetailsModal.rarity} • #{cardDetailsModal.number}
+                      </p>
+                    </div>
+                  )}
                 </div>
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => setCardDetailsModal(null)}
+                  onClick={() => { setCardDetailsModal(null); setEditingCardDetails(false); }}
                 >
                   <X className="h-5 w-5" />
                 </Button>
@@ -1953,6 +2105,51 @@ export function MyInventory() {
                     </div>
                   </div>
 
+                  {/* Variant Tags */}
+                  <div className="border-t pt-3">
+                    <p className="text-sm font-semibold mb-2">Variants / Tags</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { key: "isReverseHolo",  label: "Reverse Holo",  on: "bg-blue-100 text-blue-700 border-blue-300" },
+                        { key: "isStampedPromo", label: "Stamped Promo", on: "bg-purple-100 text-purple-700 border-purple-300" },
+                        { key: "isSealed",       label: "Sealed",        on: "bg-emerald-100 text-emerald-700 border-emerald-300" },
+                        { key: "isAutographed",  label: "Autographed",   on: "bg-rose-100 text-rose-700 border-rose-300" },
+                        { key: "isFirstEdition", label: "1st Edition",   on: "bg-amber-100 text-amber-800 border-amber-300" },
+                        { key: "isPokeBall",     label: "Poké Ball",     on: "bg-red-100 text-red-700 border-red-300" },
+                        { key: "isMasterBall",   label: "Master Ball",   on: "bg-violet-100 text-violet-700 border-violet-300" },
+                        { key: "isUnlimited",    label: "Unlimited",     on: "bg-gray-100 text-gray-700 border-gray-300" },
+                      ].map(({ key, label, on }) => {
+                        const active = cardDetailsModal[key] || false;
+                        return (
+                          <button
+                            key={key}
+                            onClick={async () => {
+                              const newVal = !active;
+                              updateCollectionItem(cardDetailsModal.entryId, { [key]: newVal });
+                              setCardDetailsModal(prev => prev ? { ...prev, [key]: newVal } : prev);
+                              try {
+                                const ref = doc(db, "collections", user.uid);
+                                const updatedItems = collectionItems.map(it =>
+                                  it.entryId === cardDetailsModal.entryId ? { ...it, [key]: newVal } : it
+                                );
+                                await setDoc(ref, { items: updatedItems }, { merge: true });
+                              } catch (err) {
+                                console.error("Failed to save variant:", err);
+                              }
+                            }}
+                            className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
+                              active
+                                ? on
+                                : "bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100"
+                            }`}
+                          >
+                            {active ? "✓ " : ""}{label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   {/* Vendor Price */}
                   <div className="border-t pt-3">
                     <div className="flex justify-between items-center mb-2">
@@ -2104,7 +2301,10 @@ export function MyInventory() {
                   </Button>
 
                   <div className="mb-4">
-                    <h3 className="text-xl font-semibold">
+                    {selectedSnapshot.name && (
+                      <h3 className="text-2xl font-bold text-primary">{selectedSnapshot.name}</h3>
+                    )}
+                    <h3 className={selectedSnapshot.name ? "text-sm text-muted-foreground mt-1" : "text-xl font-semibold"}>
                       Snapshot from {new Date(selectedSnapshot.createdAt).toLocaleString()}
                     </h3>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3 mb-4">
@@ -2126,6 +2326,54 @@ export function MyInventory() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Cash Balance (if saved in snapshot) */}
+                  {selectedSnapshot.cashBalance && (selectedSnapshot.cashBalance.physical?.length > 0 || selectedSnapshot.cashBalance.digital?.length > 0) && (
+                    <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl p-4">
+                      <h4 className="text-sm font-semibold text-amber-900 mb-2 flex items-center gap-2">
+                        <Wallet className="h-4 w-4" /> Cash Balance at Snapshot
+                      </h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+                        <div className="bg-white/70 rounded-lg p-2 text-center">
+                          <div className="text-xs text-muted-foreground">Physical Cash</div>
+                          <div className="text-lg font-bold text-amber-800">{formatCurrency(selectedSnapshot.cashBalance.physicalTotal || 0, selectedSnapshot.currency)}</div>
+                        </div>
+                        <div className="bg-white/70 rounded-lg p-2 text-center">
+                          <div className="text-xs text-muted-foreground">Digital Cash</div>
+                          <div className="text-lg font-bold text-amber-800">{formatCurrency(selectedSnapshot.cashBalance.digitalTotal || 0, selectedSnapshot.currency)}</div>
+                        </div>
+                        <div className="bg-white/70 rounded-lg p-2 text-center">
+                          <div className="text-xs text-muted-foreground">Total Cash</div>
+                          <div className="text-lg font-bold text-amber-900">{formatCurrency(selectedSnapshot.cashBalance.grandTotal || 0, selectedSnapshot.currency)}</div>
+                        </div>
+                      </div>
+                      {/* Detailed breakdown */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                        {selectedSnapshot.cashBalance.physical?.length > 0 && (
+                          <div>
+                            <div className="font-semibold text-amber-800 mb-1">Physical</div>
+                            {selectedSnapshot.cashBalance.physical.map((e, i) => (
+                              <div key={i} className="flex justify-between py-0.5">
+                                <span className="text-muted-foreground">{e.currency}</span>
+                                <span className="font-medium">{formatCurrency(e.amount, e.currency)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {selectedSnapshot.cashBalance.digital?.length > 0 && (
+                          <div>
+                            <div className="font-semibold text-amber-800 mb-1">Digital</div>
+                            {selectedSnapshot.cashBalance.digital.map((e, i) => (
+                              <div key={i} className="flex justify-between py-0.5">
+                                <span className="text-muted-foreground">{e.platform}{e.note ? ` (${e.note})` : ""}</span>
+                                <span className="font-medium">{formatCurrency(e.amount, e.currency)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Search and Filters */}
                   <div className="mb-4 space-y-3">
@@ -2298,15 +2546,55 @@ export function MyInventory() {
                           className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border hover:bg-gray-100 transition cursor-pointer"
                           onClick={() => setSelectedSnapshot(snapshot)}
                         >
-                          <div className="flex-1">
-                            <div className="font-semibold">
-                              {new Date(snapshot.createdAt).toLocaleDateString()} at {new Date(snapshot.createdAt).toLocaleTimeString()}
-                            </div>
+                          <div className="flex-1 min-w-0">
+                            {renamingSnapshotId === snapshot.id ? (
+                              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="text"
+                                  value={renameSnapshotValue}
+                                  onChange={(e) => setRenameSnapshotValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") renameSnapshot(snapshot.id, renameSnapshotValue);
+                                    if (e.key === "Escape") { setRenamingSnapshotId(null); setRenameSnapshotValue(""); }
+                                  }}
+                                  className="flex-1 text-sm font-semibold border-b-2 border-primary bg-transparent outline-none px-0 py-1"
+                                  placeholder="Snapshot name"
+                                  autoFocus
+                                />
+                                <Button size="sm" variant="ghost" onClick={() => renameSnapshot(snapshot.id, renameSnapshotValue)}>
+                                  <Check className="h-4 w-4 text-green-600" />
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => { setRenamingSnapshotId(null); setRenameSnapshotValue(""); }}>
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <>
+                                {snapshot.name && (
+                                  <div className="font-bold text-primary truncate">{snapshot.name}</div>
+                                )}
+                                <div className={snapshot.name ? "text-sm text-muted-foreground" : "font-semibold"}>
+                                  {new Date(snapshot.createdAt).toLocaleDateString()} at {new Date(snapshot.createdAt).toLocaleTimeString()}
+                                </div>
+                              </>
+                            )}
                             <div className="text-sm text-muted-foreground mt-1">
                               {snapshot.totalItems} items • Total Value: {formatCurrency(snapshot.totalValue, snapshot.currency)}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Rename snapshot"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRenamingSnapshotId(snapshot.id);
+                                setRenameSnapshotValue(snapshot.name || "");
+                              }}
+                            >
+                              <Edit2 className="h-4 w-4 text-blue-600" />
+                            </Button>
                             <Button
                               size="sm"
                               variant="ghost"
