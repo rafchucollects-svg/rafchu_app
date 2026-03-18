@@ -150,7 +150,10 @@ export function SharedInventory() {
     } else if (filterGraded === "ungraded") {
       items = items.filter(item => !item.isGraded);
     } else if (filterGraded === "manualPrice") {
-      items = items.filter(item => item.manualPrice != null && item.manualPrice > 0);
+      items = items.filter(item =>
+        (item.overridePrice != null && !isNaN(Number(item.overridePrice))) ||
+        (item.manualPrice != null && item.manualPrice > 0)
+      );
     }
     
     // Apply search filter
