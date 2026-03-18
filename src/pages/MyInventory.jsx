@@ -93,7 +93,7 @@ export function MyInventory() {
   const [filterRarity, setFilterRarity] = useState("all");
   const [filterCondition, setFilterCondition] = useState("all");
   const [filterSet, setFilterSet] = useState("all");
-  const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded"
+  const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded", "manualPrice"
   const [showFilters, setShowFilters] = useState(false);
   
   // Image upload modal state
@@ -231,6 +231,8 @@ export function MyInventory() {
       items = items.filter(item => item.isGraded === true);
     } else if (filterGraded === "ungraded") {
       items = items.filter(item => !item.isGraded);
+    } else if (filterGraded === "manualPrice") {
+      items = items.filter(item => item.manualPrice != null && item.manualPrice > 0);
     }
 
     return items;
@@ -1212,6 +1214,13 @@ export function MyInventory() {
               >
                 Ungraded Only
               </Button>
+              <Button
+                size="sm"
+                variant={filterGraded === "manualPrice" ? "default" : "outline"}
+                onClick={() => setFilterGraded("manualPrice")}
+              >
+                Manual Price
+              </Button>
             </div>
 
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1274,7 +1283,7 @@ export function MyInventory() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm font-semibold flex items-center gap-2">
               <span>
-                {filterGraded === "graded" ? "Graded Cards" : filterGraded === "ungraded" ? "Ungraded Cards" : "Total Cards"}: {totals.count}
+                {filterGraded === "graded" ? "Graded Cards" : filterGraded === "ungraded" ? "Ungraded Cards" : filterGraded === "manualPrice" ? "Manual Price Cards" : "Total Cards"}: {totals.count}
               </span>
               {filterGraded !== "all" && (
                 <span className="text-xs text-muted-foreground">

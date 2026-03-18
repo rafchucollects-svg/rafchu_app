@@ -41,7 +41,7 @@ export function SharedInventory() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState("name");
-  const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded"
+  const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded", "manualPrice"
 
   // Load shared inventory
   useEffect(() => {
@@ -149,6 +149,8 @@ export function SharedInventory() {
       items = items.filter(item => item.isGraded);
     } else if (filterGraded === "ungraded") {
       items = items.filter(item => !item.isGraded);
+    } else if (filterGraded === "manualPrice") {
+      items = items.filter(item => item.manualPrice != null && item.manualPrice > 0);
     }
     
     // Apply search filter
@@ -447,6 +449,7 @@ export function SharedInventory() {
               <option value="all">All Cards</option>
               <option value="graded">Graded Only</option>
               <option value="ungraded">Ungraded Only</option>
+              <option value="manualPrice">Manual Price</option>
             </select>
             <select
               value={sortBy}
