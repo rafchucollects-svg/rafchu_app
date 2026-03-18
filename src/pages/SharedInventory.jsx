@@ -397,11 +397,6 @@ export function SharedInventory() {
         <div className="max-w-6xl mx-auto px-4">
           <div className="flex items-center justify-center sm:justify-start gap-6 sm:gap-10 py-3 overflow-x-auto">
             <div className="flex flex-col items-center sm:items-start min-w-fit">
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Total Value</span>
-              <span className="text-lg sm:text-xl font-extrabold text-slate-900">{formatPrice(totals.value)}</span>
-            </div>
-            <div className="w-px h-8 bg-slate-200 hidden sm:block" />
-            <div className="flex flex-col items-center sm:items-start min-w-fit">
               <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Cards</span>
               <span className="text-lg sm:text-xl font-extrabold text-slate-900">{totals.count}</span>
             </div>
