@@ -1930,15 +1930,42 @@ async function updateSingleCardInCache(db, card, existingCard) {
     isJapanese: card.isJapanese || false,
   };
   
+  // Compare old vs new suggested price for change tracking
+  let priceChange = null;
+  if (!isNew && existingCard?.prices) {
+    const oldSuggested = calculateSuggestedPrice(existingCard.prices);
+    const newSuggested = calculateSuggestedPrice(marketPrices);
+    const diff = newSuggested - oldSuggested;
+    const pctChange = oldSuggested > 0 ? (diff / oldSuggested) * 100 : (newSuggested > 0 ? 100 : 0);
+
+    if (Math.abs(diff) >= 0.01) {
+      priceChange = {
+        cardKey,
+        name: card.name,
+        set: card.set || '',
+        number: card.number || '',
+        rarity: card.rarity || '',
+        image: finalImage,
+        oldPrice: Math.round(oldSuggested * 100) / 100,
+        newPrice: Math.round(newSuggested * 100) / 100,
+        diff: Math.round(diff * 100) / 100,
+        pctChange: Math.round(pctChange * 100) / 100,
+        isJapanese: card.isJapanese || false,
+      };
+      console.log(`   📈 Price change: ${card.name} ${oldSuggested.toFixed(2)} → ${newSuggested.toFixed(2)} (${diff > 0 ? '+' : ''}${diff.toFixed(2)})`);
+    }
+  }
+
   await cardRef.set(cardData, { merge: true });
   console.log(`   ✅ ${isNew ? 'Created' : 'Updated'}: ${card.name}`);
   
-  return { isNew, cardKey };
+  return { isNew, cardKey, priceChange };
 }
 
 async function updateCardDatabase(db, uniqueCards) {
   console.log('🔄 Updating card database...');
   const stats = { updated: 0, new: 0, failed: 0 };
+  const priceChanges = [];
   const cardArray = Array.from(uniqueCards.values());
   const batchSize = 10; // Smaller batches to avoid rate limits
   
@@ -1963,6 +1990,9 @@ async function updateCardDatabase(db, uniqueCards) {
         } else {
           stats.updated++;
         }
+        if (updated.priceChange) {
+          priceChanges.push(updated.priceChange);
+        }
       } catch (error) {
         console.error(`Failed to update card ${card.name}:`, error);
         stats.failed++;
@@ -1977,7 +2007,35 @@ async function updateCardDatabase(db, uniqueCards) {
     
     console.log(`   📊 Progress: ${Math.min(i + batchSize, cardArray.length)}/${cardArray.length} cards processed`);
   }
+
+  // Store price changes log if any prices moved
+  if (priceChanges.length > 0) {
+    const sorted = priceChanges.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+    console.log(`📈 ${priceChanges.length} cards had price changes`);
+
+    await db.collection('price_change_logs').add({
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'daily_update',
+      totalChanges: priceChanges.length,
+      increases: priceChanges.filter(c => c.diff > 0).length,
+      decreases: priceChanges.filter(c => c.diff < 0).length,
+      topMovers: sorted.slice(0, 20),
+      allChanges: sorted,
+    });
+  } else {
+    console.log('📊 No price changes detected in this sync');
+    await db.collection('price_change_logs').add({
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'daily_update',
+      totalChanges: 0,
+      increases: 0,
+      decreases: 0,
+      topMovers: [],
+      allChanges: [],
+    });
+  }
   
+  stats.priceChanges = priceChanges;
   return stats;
 }
 
@@ -2208,6 +2266,13 @@ exports.scheduledCardDatabaseUpdate = functions.runWith({
       const duration = (Date.now() - startTime) / 1000;
       console.log(`✨ Daily update complete in ${duration.toFixed(2)}s`);
       
+      // Summarize price changes for the update log
+      const changes = updateStats.priceChanges || [];
+      const topMovers = changes
+        .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
+        .slice(0, 5)
+        .map(c => ({ name: c.name, set: c.set, old: c.oldPrice, new: c.newPrice, diff: c.diff, pct: c.pctChange }));
+
       // Log success to monitoring collection
       await db.collection('update_logs').add({
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
@@ -2222,7 +2287,11 @@ exports.scheduledCardDatabaseUpdate = functions.runWith({
           collectorsUpdated: userStats.collectors,
           userErrors: userStats.errors,
           failedUsers: userStats.failedUsers || [],
-          totalCards: uniqueCards.size
+          totalCards: uniqueCards.size,
+          priceChanges: changes.length,
+          priceIncreases: changes.filter(c => c.diff > 0).length,
+          priceDecreases: changes.filter(c => c.diff < 0).length,
+          topMovers: topMovers,
         }
       });
       
@@ -2958,6 +3027,58 @@ exports.getUpdateLogs = functions.https.onRequest(async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+/**
+ * Get recent price change logs showing which cards had price movements.
+ * Query params:
+ *   - limit: number of sync logs to return (default: 5)
+ *   - minChange: minimum absolute price change to include (default: 0)
+ */
+exports.getPriceChanges = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+
+  const limit = parseInt(req.query.limit) || 5;
+  const minChange = parseFloat(req.query.minChange) || 0;
+
+  try {
+    const db = admin.firestore();
+    const snapshot = await db.collection('price_change_logs')
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .get();
+
+    const logs = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      let changes = data.allChanges || [];
+      if (minChange > 0) {
+        changes = changes.filter(c => Math.abs(c.diff) >= minChange);
+      }
+      logs.push({
+        id: doc.id,
+        timestamp: data.timestamp?.toDate?.()?.toISOString() || data.timestamp,
+        type: data.type,
+        totalChanges: data.totalChanges,
+        increases: data.increases,
+        decreases: data.decreases,
+        topMovers: data.topMovers || [],
+        changes: changes,
+      });
+    });
+
+    res.status(200).json({ success: true, count: logs.length, logs });
+  } catch (error) {
+    console.error('Error fetching price change logs:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
