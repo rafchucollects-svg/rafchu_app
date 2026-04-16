@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, Outlet } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Menu, LogIn, LogOut, Home, User, Package, Store, ShoppingBag, MessageCircle, Settings, ChevronDown, ChevronRight, X, Sparkles, Search } from "lucide-react";
+import { Menu, LogIn, LogOut, Home, User, Package, Store, ShoppingBag, MessageCircle, Settings, ChevronDown, ChevronRight, X, Sparkles, Search, FileText, Receipt, Image } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { OnboardingModal } from "./OnboardingModal";
 import { VendorAccessRequestModal } from "./VendorAccessRequestModal";
@@ -20,8 +20,12 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [comingSoonBannerVisible, setComingSoonBannerVisible] = useState(true);
   const [vendorCtaDismissed, setVendorCtaDismissed] = useState(false);
-  const { user, userProfile, needsOnboarding, setNeedsOnboarding, setUserProfile, quickAddFeedback, vendorRequestModalOpen, setVendorRequestModalOpen, feedbackModalOpen, setFeedbackModalOpen } = useApp();
+  const { user, userProfile, needsOnboarding, setNeedsOnboarding, setUserProfile, quickAddFeedback, vendorRequestModalOpen, setVendorRequestModalOpen, feedbackModalOpen, setFeedbackModalOpen, setCurrentPath } = useApp();
   const location = useLocation();
+
+  useEffect(() => {
+    if (setCurrentPath) setCurrentPath(location.pathname);
+  }, [location.pathname, setCurrentPath]);
   
   // Load dismissed state from localStorage
   useEffect(() => {
@@ -78,14 +82,14 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
             </Button>
           )}
           
-          <Link to="/" className="flex items-center gap-2">
+          <Link to="/" className="flex items-center gap-2 min-w-0">
             <img 
               src="/rafchu-logo.png" 
               alt="Logo" 
-              className="h-8 w-8 rounded-full"
+              className="h-8 w-8 rounded-full flex-shrink-0"
               onError={(e) => { e.target.style.display = 'none'; }}
             />
-            <span className="font-bold text-xl">Rafchu Marketplace</span>
+            <span className="font-bold text-lg sm:text-xl truncate">Rafchu Marketplace</span>
           </Link>
 
           <div className="flex-1" />
@@ -408,6 +412,36 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                             >
                               Transaction Summary
                             </Link>
+                            <Link
+                              to="/vendor/expenses"
+                              onClick={() => setDrawerOpen(false)}
+                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm flex items-center gap-2 ${
+                                isActive('/vendor/expenses') ? 'bg-accent font-medium' : ''
+                              }`}
+                            >
+                              <Receipt className="h-3.5 w-3.5 text-green-600" />
+                              Expense Tracker
+                            </Link>
+                            <Link
+                              to="/vendor/tax-reporting"
+                              onClick={() => setDrawerOpen(false)}
+                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm flex items-center gap-2 ${
+                                isActive('/vendor/tax-reporting') ? 'bg-accent font-medium' : ''
+                              }`}
+                            >
+                              <FileText className="h-3.5 w-3.5 text-green-600" />
+                              Tax Reporting
+                            </Link>
+                            <Link
+                              to="/vendor/story-sale"
+                              onClick={() => setDrawerOpen(false)}
+                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm flex items-center gap-2 ${
+                                isActive('/vendor/story-sale') ? 'bg-accent font-medium' : ''
+                              }`}
+                            >
+                              <Image className="h-3.5 w-3.5 text-green-600" />
+                              Story Sale Generator
+                            </Link>
                           </div>
                         </motion.div>
                       )}
@@ -507,31 +541,33 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
 
       {/* Coming Soon Banner - Hidden on shared views */}
       {comingSoonBannerVisible && !location.search.includes('inventory=') && !location.search.includes('collection=') && (
-        <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white py-3 px-4 shadow-lg">
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-3 flex-1">
-              <Sparkles className="h-5 w-5 flex-shrink-0" />
-              <div className="flex items-center gap-2 flex-wrap text-sm">
-                <span className="font-semibold">Coming Soon:</span>
-                <span>Japanese Cards • Graded Cards • Sealed Products</span>
+        <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white py-2 sm:py-3 px-3 sm:px-4 shadow-lg">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-4">
+            <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
+              <Sparkles className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0" />
+              <div className="text-xs sm:text-sm truncate">
+                <span className="font-semibold">Soon:</span>{' '}
+                <span className="hidden sm:inline">Japanese Cards • Graded Cards • Sealed Products</span>
+                <span className="sm:hidden">JP Cards • Graded • Sealed</span>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 flex-shrink-0">
               <Button
                 size="sm"
                 variant="ghost"
-                className="text-white hover:bg-white/20 h-8"
+                className="text-white hover:bg-white/20 h-7 sm:h-8 text-xs sm:text-sm px-2"
                 onClick={() => setFeedbackModalOpen(true)}
               >
-                <MessageCircle className="h-4 w-4 mr-1" />
-                Submit Feedback
+                <MessageCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
+                <span className="hidden sm:inline">Submit Feedback</span>
+                <span className="sm:hidden">Feedback</span>
               </Button>
               <button
                 onClick={dismissComingSoonBanner}
                 className="p-1 hover:bg-white/20 rounded-full transition-colors"
                 aria-label="Dismiss banner"
               >
-                <X className="h-4 w-4" />
+                <X className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               </button>
             </div>
           </div>
@@ -544,7 +580,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
           <Outlet />
         </main>
       ) : (
-        <main className="container mx-auto px-4 py-6">
+        <main className="container mx-auto px-3 sm:px-4 py-4 sm:py-6">
           <Outlet />
         </main>
       )}

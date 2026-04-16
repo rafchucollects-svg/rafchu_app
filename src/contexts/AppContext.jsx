@@ -3,6 +3,7 @@ import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, onSnapshot, getDoc, setDoc } from "firebase/firestore";
 import { useCommunityImages } from "@/hooks/useCommunityImages";
 import { initSetCatalog } from "@/utils/searchHelpers";
+import { toast } from "@/components/ui/Toaster";
 
 /**
  * AppContext provides shared state and functions across all pages
@@ -138,34 +139,14 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     initSetCatalog(db);
   }, [db]);
 
-  // Listen to route changes
+  // Route changes come in via `<RouteSyncer />` (lives inside the Router tree
+  // and calls setCurrentPath with location.pathname). We also listen to
+  // popstate here as a belt-and-suspenders fallback for non-router navigation
+  // (e.g. direct calls to window.history.back()).
   useEffect(() => {
-    const handleLocationChange = () => {
-      setCurrentPath(window.location.pathname);
-    };
-    
-    // Listen for popstate (back/forward) and custom navigation events
-    window.addEventListener('popstate', handleLocationChange);
-    
-    // Listen for pushState/replaceState (for React Router navigation)
-    const originalPushState = window.history.pushState;
-    const originalReplaceState = window.history.replaceState;
-    
-    window.history.pushState = function(...args) {
-      originalPushState.apply(this, args);
-      handleLocationChange();
-    };
-    
-    window.history.replaceState = function(...args) {
-      originalReplaceState.apply(this, args);
-      handleLocationChange();
-    };
-    
-    return () => {
-      window.removeEventListener('popstate', handleLocationChange);
-      window.history.pushState = originalPushState;
-      window.history.replaceState = originalReplaceState;
-    };
+    const handlePopState = () => setCurrentPath(window.location.pathname);
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   // Load collection from Firestore based on current URL path
@@ -254,7 +235,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
 
   const addToCollection = useCallback(async (card, options = {}) => {
     if (!user || !db) {
-      alert("Please sign in to add cards");
+      toast.error("Please sign in to add cards");
       return null;
     }
     
@@ -342,10 +323,14 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       return newItem;
     } catch (error) {
       console.error("Failed to add to collection", error);
-      alert("Failed to add card. Please try again.");
+      toast.error("Failed to add card. Please try again.");
       return null;
     }
-  }, [user, db, defaultCondition, collectionItems, currentPath]);
+    // NB: we intentionally DO NOT depend on collectionItems. We re-read the
+    // latest items from Firestore inside the function to avoid a race
+    // condition, so keeping collectionItems in deps just churns this callback
+    // on every add/edit for no benefit.
+  }, [user, db, defaultCondition, currentPath, currency, roundUpPrices]);
 
   const removeFromCollection = useCallback(async (entryId) => {
     if (!user || !db) return;
@@ -360,7 +345,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       await setDoc(ref, { items: updatedItems }, { merge: true });
     } catch (error) {
       console.error("Failed to remove from collection", error);
-      alert("Failed to remove card. Please try again.");
+      toast.error("Failed to remove card. Please try again.");
     }
   }, [user, db, currentPath]);
 
@@ -379,7 +364,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       await setDoc(ref, { items: updatedItems }, { merge: true });
     } catch (error) {
       console.error("Failed to update collection item", error);
-      alert("Failed to update card. Please try again.");
+      toast.error("Failed to update card. Please try again.");
     }
   }, [user, db, currentPath]);
 
@@ -402,7 +387,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
 
   const addToWishlist = useCallback(async (card) => {
     if (!user || !db) {
-      alert("Please sign in to add cards to your wishlist");
+      toast.error("Please sign in to add cards to your wishlist");
       return null;
     }
     
@@ -433,7 +418,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       return newItem;
     } catch (error) {
       console.error("Failed to add to wishlist", error);
-      alert("Failed to add card. Please try again.");
+      toast.error("Failed to add card. Please try again.");
       return null;
     }
   }, [user, db, wishlistItems, currentPath]);
@@ -451,7 +436,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       await setDoc(ref, { items: updatedItems }, { merge: true });
     } catch (error) {
       console.error("Failed to remove from wishlist", error);
-      alert("Failed to remove card. Please try again.");
+      toast.error("Failed to remove card. Please try again.");
     }
   }, [user, db, wishlistItems, currentPath]);
 
@@ -496,6 +481,8 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     // Navigation
     workspace,
     setWorkspace,
+    currentPath,
+    setCurrentPath,
 
     // Card search
     query,
@@ -608,7 +595,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     // Auth
     user, userProfile, needsOnboarding, authLoading, auth, db,
     // Navigation
-    workspace,
+    workspace, currentPath,
     // Card search
     query, suggestions, showAllSuggestions, loading, error, activeCard,
     selectedCards, toggleCardSelection, clearSelectedCards,

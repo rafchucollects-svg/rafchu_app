@@ -1,9 +1,9 @@
-import { useMemo, useState, useEffect, useCallback } from "react";
+import { useMemo, useState, useEffect, useCallback, useDeferredValue } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet } from "lucide-react";
+import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { computeInventoryTotals, formatCurrency, computeItemMetrics, exportToCSV, getConditionColorClass, recordTransaction, convertCurrency } from "@/utils/cardHelpers";
 import { ConditionSelect, CardPrices, ExternalLinks } from "@/components/CardComponents";
@@ -94,6 +94,7 @@ export function MyInventory() {
   const [filterCondition, setFilterCondition] = useState("all");
   const [filterSet, setFilterSet] = useState("all");
   const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded", "manualPrice"
+  const [filterVisibility, setFilterVisibility] = useState("all"); // "all", "visible", "hidden"
   const [showFilters, setShowFilters] = useState(false);
   
   // Image upload modal state
@@ -114,11 +115,10 @@ export function MyInventory() {
       const snap = await gd(docRef);
       const data = snap.exists() ? snap.data() : {};
       const updatedItems = (data.items || []).map(it =>
-        it.entryId === entryId ? { ...it, image: newImageUrl } : it
+        it.entryId === entryId ? { ...it, image: newImageUrl, imageManuallySet: true } : it
       );
       await setDoc(docRef, { ...data, items: updatedItems }, { merge: true });
-      // Write succeeded — update local state for immediate feedback
-      updateCollectionItem(entryId, { image: newImageUrl });
+      updateCollectionItem(entryId, { image: newImageUrl, imageManuallySet: true });
       console.log("[ImageUpdate] Persisted image for", entryId);
     } catch (err) {
       console.error("[ImageUpdate] Firestore write failed:", err);
@@ -126,6 +126,11 @@ export function MyInventory() {
     }
   }, [db, user, updateCollectionItem]);
   
+  // Reset "Select All" flag when filters change (since the visible set changed), but keep individual selections
+  useEffect(() => {
+    setSelectAll(false);
+  }, [filterGraded, filterVisibility, filterRarity, filterCondition, filterSet, collectionSearch]);
+
   // Enriched collection items with community images
   const [enrichedItems, setEnrichedItems] = useState([]);
 
@@ -197,13 +202,19 @@ export function MyInventory() {
     return Array.from(rarities).sort();
   }, [collectionItems]);
 
+  // Defer the search term so typing in the box stays responsive even when
+  // the inventory has thousands of cards. React will keep rendering the
+  // previously-filtered list while the new one computes in the background,
+  // then swap it in when ready.
+  const deferredSearch = useDeferredValue(collectionSearch);
+
   // Filter and sort items
   const filteredItems = useMemo(() => {
     let items = enrichedItems;
 
     // Text search
-    if (collectionSearch) {
-      const term = collectionSearch.toLowerCase();
+    if (deferredSearch) {
+      const term = deferredSearch.toLowerCase();
       items = items.filter(item =>
         String(item.name || "").toLowerCase().includes(term) ||
         String(item.set || "").toLowerCase().includes(term) ||
@@ -238,8 +249,15 @@ export function MyInventory() {
       );
     }
 
+    // Visibility filter (stacks with other filters)
+    if (filterVisibility === "hidden") {
+      items = items.filter(item => item.excludeFromSale === true);
+    } else if (filterVisibility === "visible") {
+      items = items.filter(item => !item.excludeFromSale);
+    }
+
     return items;
-  }, [enrichedItems, collectionSearch, filterRarity, filterCondition, filterSet, filterGraded]);
+  }, [enrichedItems, deferredSearch, filterRarity, filterCondition, filterSet, filterGraded, filterVisibility]);
 
   const sortedItems = useMemo(() => {
     const items = [...filteredItems];
@@ -890,13 +908,19 @@ export function MyInventory() {
     });
   };
 
-  // Toggle select all
+  // Toggle select all visible cards (preserves selections from other searches)
   const toggleSelectAll = () => {
+    const visibleIds = new Set(filteredItems.map(item => item.entryId));
     if (selectAll) {
-      setSelectedCards(new Set());
+      // Deselect only the currently visible cards, keep others
+      setSelectedCards(prev => {
+        const newSet = new Set(prev);
+        visibleIds.forEach(id => newSet.delete(id));
+        return newSet;
+      });
     } else {
-      const allIds = new Set(filteredItems.map(item => item.entryId));
-      setSelectedCards(allIds);
+      // Add all visible cards to selection
+      setSelectedCards(prev => new Set([...prev, ...visibleIds]));
     }
     setSelectAll(!selectAll);
   };
@@ -939,6 +963,30 @@ export function MyInventory() {
     } catch (error) {
       console.error("Failed to duplicate cards", error);
       alert("Failed to duplicate cards");
+    }
+  };
+
+  // Bulk toggle visibility (hide/show from sale)
+  const handleBulkToggleVisibility = async (hide) => {
+    if (selectedCards.size === 0) return;
+    try {
+      const updatedItems = collectionItems.map(item =>
+        selectedCards.has(item.entryId)
+          ? { ...item, excludeFromSale: hide }
+          : item
+      );
+      const ref = doc(db, "collections", user.uid);
+      await setDoc(ref, { items: updatedItems }, { merge: true });
+      setSelectedCards(new Set());
+      setSelectAll(false);
+      triggerQuickAddFeedback(
+        hide
+          ? `${selectedCards.size} card(s) hidden from marketplace`
+          : `${selectedCards.size} card(s) now visible in marketplace`
+      );
+    } catch (error) {
+      console.error("Failed to update card visibility", error);
+      alert("Failed to update card visibility");
     }
   };
 
@@ -1159,11 +1207,11 @@ export function MyInventory() {
 
   return (
     <div className="max-w-6xl mx-auto">
-      <div className="mb-6 flex items-center gap-3">
-        <Store className="h-8 w-8 text-green-600" />
+      <div className="mb-4 sm:mb-6 flex items-center gap-3">
+        <Store className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
         <div>
-          <h1 className="text-3xl font-bold">My Inventory</h1>
-          <p className="text-muted-foreground">Vendor Toolkit</p>
+          <h1 className="text-2xl sm:text-3xl font-bold">My Inventory</h1>
+          <p className="text-sm text-muted-foreground">Vendor Toolkit</p>
         </div>
       </div>
 
@@ -1191,48 +1239,64 @@ export function MyInventory() {
       </Card>
 
       {/* Controls */}
-      <Card className="rounded-2xl p-4 shadow mb-4">
+      <Card className="rounded-2xl p-3 sm:p-4 shadow mb-4">
         <CardContent className="p-0">
           <div className="flex flex-col gap-3">
             {/* Quick Filter Buttons */}
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-1.5 sm:gap-2 items-center">
               <Button
                 size="sm"
+                className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3"
                 variant={filterGraded === "all" ? "default" : "outline"}
                 onClick={() => setFilterGraded("all")}
               >
-                All Cards
+                All
               </Button>
               <Button
                 size="sm"
+                className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3"
                 variant={filterGraded === "graded" ? "default" : "outline"}
                 onClick={() => setFilterGraded("graded")}
               >
-                Graded Only
+                Graded
               </Button>
               <Button
                 size="sm"
+                className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3"
                 variant={filterGraded === "ungraded" ? "default" : "outline"}
                 onClick={() => setFilterGraded("ungraded")}
               >
-                Ungraded Only
+                Ungraded
               </Button>
               <Button
                 size="sm"
+                className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3"
                 variant={filterGraded === "manualPrice" ? "default" : "outline"}
                 onClick={() => setFilterGraded("manualPrice")}
               >
-                Manual Price
+                Manual
+              </Button>
+
+              <div className="w-px h-5 sm:h-6 bg-border mx-0.5 sm:mx-1" />
+
+              <Button
+                size="sm"
+                variant={filterVisibility === "hidden" ? "default" : "outline"}
+                onClick={() => setFilterVisibility(filterVisibility === "hidden" ? "all" : "hidden")}
+                className={`text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3 ${filterVisibility === "hidden" ? "bg-orange-600 hover:bg-orange-700" : ""}`}
+              >
+                <EyeOff className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
+                Hidden
               </Button>
             </div>
 
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div className="flex items-center gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 sm:gap-3">
                 <Input
                   placeholder="Search inventory..."
                   value={collectionSearch}
                   onChange={(e) => setCollectionSearch(e.target.value)}
-                  className="w-56"
+                  className="w-full sm:w-56 h-8 sm:h-9 text-sm"
                 />
               <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
                 <input
@@ -1281,67 +1345,76 @@ export function MyInventory() {
       />
 
       {/* Totals */}
-      <Card className="rounded-2xl p-4 shadow mb-4">
+      <Card className="rounded-2xl p-3 sm:p-4 shadow mb-4">
         <CardContent className="p-0">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm font-semibold flex items-center gap-2">
-              <span>
-                {filterGraded === "graded" ? "Graded Cards" : filterGraded === "ungraded" ? "Ungraded Cards" : filterGraded === "manualPrice" ? "Manual Price Cards" : "Total Cards"}: {totals.count}
-              </span>
-              {filterGraded !== "all" && (
-                <span className="text-xs text-muted-foreground">
-                  (of {collectionItems.length} total)
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold flex items-center gap-2">
+                <span>
+                  {filterGraded === "graded" ? "Graded Cards" : filterGraded === "ungraded" ? "Ungraded Cards" : filterGraded === "manualPrice" ? "Manual Price Cards" : "Total Cards"}{filterVisibility === "hidden" ? " (Hidden)" : filterVisibility === "visible" ? " (Visible)" : ""}: {totals.count}
                 </span>
-              )}
+                {(filterGraded !== "all" || filterVisibility !== "all") && (
+                  <span className="text-xs text-muted-foreground">
+                    (of {collectionItems.length} total)
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-4 text-sm font-semibold">
+            <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-x-4 gap-y-1 text-xs sm:text-sm font-semibold">
               <div>TCG: {formatPrice(totals.tcg)}</div>
-              <div>Market Avg: {formatPrice(totals.cmAvg)}</div>
-              <div>Market Low: {formatPrice(totals.cmLowest)}</div>
+              <div>Avg: {formatPrice(totals.cmAvg)}</div>
+              <div>Low: {formatPrice(totals.cmLowest)}</div>
               <div className="text-primary">Suggested: {formatPrice(totals.suggested)}</div>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setShowCardLadderImport(true)}
-            >
-              <Upload className="mr-1 h-4 w-4" />
-              Import CardLadder
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={collectionItems.length === 0}
-              onClick={exportInventoryToCSV}
-            >
-              <Download className="mr-1 h-4 w-4" />
-              Export CSV
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={collectionItems.length === 0}
-              onClick={saveInventorySnapshot}
-            >
-              <Camera className="mr-1 h-4 w-4" />
-              Save Snapshot
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setShowSnapshotsModal(true)}
-            >
-              <History className="mr-1 h-4 w-4" />
-              View Snapshots
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={collectionItems.length === 0}
-              onClick={clearInventory}
-            >
-              Clear Inventory
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-8"
+                onClick={() => setShowCardLadderImport(true)}
+              >
+                <Upload className="mr-1 h-3.5 w-3.5" />
+                Import
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-8"
+                disabled={collectionItems.length === 0}
+                onClick={exportInventoryToCSV}
+              >
+                <Download className="mr-1 h-3.5 w-3.5" />
+                CSV
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-8"
+                disabled={collectionItems.length === 0}
+                onClick={saveInventorySnapshot}
+              >
+                <Camera className="mr-1 h-3.5 w-3.5" />
+                Snapshot
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-8"
+                onClick={() => setShowSnapshotsModal(true)}
+              >
+                <History className="mr-1 h-3.5 w-3.5" />
+                Snapshots
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-8"
+                disabled={collectionItems.length === 0}
+                onClick={clearInventory}
+              >
+                Clear
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -1398,49 +1471,75 @@ export function MyInventory() {
 
       {/* Bulk Actions */}
       {sortedItems.length > 0 && (
-        <Card className="rounded-2xl p-4 shadow">
+        <Card className="rounded-2xl p-3 sm:p-4 shadow">
           <CardContent className="p-0">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={toggleSelectAll}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-accent transition"
-                >
-                  {selectAll || selectedCards.size > 0 ? (
-                    <CheckSquare className="h-5 w-5" />
-                  ) : (
-                    <Square className="h-5 w-5" />
-                  )}
-                  <span className="text-sm font-semibold">
-                    {selectedCards.size > 0 ? `${selectedCards.size} selected` : 'Select All'}
-                  </span>
-                </button>
-              </div>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+              <button
+                onClick={toggleSelectAll}
+                className="flex items-center gap-2 px-3 py-1.5 sm:py-2 rounded-lg border hover:bg-accent transition"
+              >
+                {selectAll || selectedCards.size > 0 ? (
+                  <CheckSquare className="h-4 w-4 sm:h-5 sm:w-5" />
+                ) : (
+                  <Square className="h-4 w-4 sm:h-5 sm:w-5" />
+                )}
+                <span className="text-xs sm:text-sm font-semibold">
+                  {selectedCards.size > 0 ? `${selectedCards.size} selected` : 'Select All'}
+                </span>
+              </button>
 
               {selectedCards.size > 0 && (
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                  {(() => {
+                    const selectedItems = collectionItems.filter(item => selectedCards.has(item.entryId));
+                    const allHidden = selectedItems.every(item => item.excludeFromSale);
+                    return allHidden ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-xs h-7 sm:h-9"
+                        onClick={() => handleBulkToggleVisibility(false)}
+                      >
+                        <Eye className="h-3.5 w-3.5 mr-1" />
+                        Show
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-orange-300 text-orange-700 hover:bg-orange-50 text-xs h-7 sm:h-9"
+                        onClick={() => handleBulkToggleVisibility(true)}
+                      >
+                        <EyeOff className="h-3.5 w-3.5 mr-1" />
+                        Hide
+                      </Button>
+                    );
+                  })()}
                   <Button
                     size="sm"
                     variant="outline"
+                    className="text-xs h-7 sm:h-9"
                     onClick={handleBulkDuplicate}
                   >
-                    <Copy className="h-4 w-4 mr-1" />
+                    <Copy className="h-3.5 w-3.5 mr-1" />
                     Duplicate
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
+                    className="text-xs h-7 sm:h-9"
                     onClick={handleBulkMarkSale}
                   >
-                    <DollarSign className="h-4 w-4 mr-1" />
-                    Mark as Sold
+                    <DollarSign className="h-3.5 w-3.5 mr-1" />
+                    Sold
                   </Button>
                   <Button
                     size="sm"
                     variant="destructive"
+                    className="text-xs h-7 sm:h-9"
                     onClick={handleBulkDelete}
                   >
-                    <Trash2 className="h-4 w-4 mr-1" />
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
                     Delete
                   </Button>
                 </div>
@@ -1512,228 +1611,192 @@ export function MyInventory() {
           return (
             <Card
               key={item.entryId}
-              className={`rounded-2xl p-3 cursor-pointer transition-all duration-200 ${isSelected ? 'bg-purple-50 border-purple-300' : 'hover:bg-accent/40 hover:shadow-lg hover:scale-[1.02]'}`}
+              className={`rounded-2xl p-2.5 sm:p-3 cursor-pointer transition-all duration-200 ${isSelected ? 'bg-purple-50 border-purple-300' : 'hover:bg-accent/40 hover:shadow-lg hover:scale-[1.02]'}`}
               onClick={() => setCardDetailsModal(item)}
             >
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={isSelected}
-                  onChange={() => toggleCardSelection(item.entryId)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="h-5 w-5 flex-shrink-0 cursor-pointer rounded border-2 border-gray-400 checked:bg-primary checked:border-primary focus:ring-2 focus:ring-primary/30"
-                />
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setImageReplaceCard(item);
-                  }}
-                  className="relative group flex-shrink-0"
-                  title="Click to change image"
-                >
-                  {item.image ? (
-                    <img
-                      src={item.image}
-                      alt={item.name}
-                      className="h-20 w-16 rounded-lg object-cover"
-                    />
-                  ) : (
-                    <div className="h-20 w-16 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center">
-                      <span className="text-[8px] text-gray-400 text-center px-1">No Image</span>
-                    </div>
-                  )}
-                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
-                    <Edit2 className="h-4 w-4 text-white" />
-                  </div>
-                </button>
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold">{item.name}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {item.set} • {item.rarity} • #{item.number}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs text-muted-foreground">Qty: {item.quantity || 1} • Added: {new Date(item.addedAt).toLocaleDateString()}</span>
-                  </div>
-                  {/* Variant badges */}
-                  {(item.isReverseHolo || item.isStampedPromo || item.isSealed || item.isAutographed || item.isFirstEdition || item.isPokeBall || item.isMasterBall || item.isUnlimited) && (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {item.isReverseHolo && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">Reverse Holo</span>}
-                      {item.isStampedPromo && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">Stamped</span>}
-                      {item.isSealed && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">Sealed</span>}
-                      {item.isAutographed && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">Autographed</span>}
-                      {item.isFirstEdition && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">1st Edition</span>}
-                      {item.isPokeBall && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700">Poké Ball</span>}
-                      {item.isMasterBall && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">Master Ball</span>}
-                      {item.isUnlimited && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">Unlimited</span>}
-                    </div>
-                  )}
-                  {/* Only show ungraded prices for non-graded cards */}
-                  {!item.isGraded && (
-                    <div className="flex items-center gap-2 mt-2">
-                      <div className="text-xs text-muted-foreground">
-                        TCG: {formatPrice(metrics.tcg)} • Avg: {formatPrice(metrics.cmAvg)} • Low: {formatPrice(metrics.cmLowest)}
-                      </div>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2 mt-2">
-                    <label className="flex items-center gap-2 text-xs cursor-pointer" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={item.excludeFromSale || false}
-                        onChange={() => toggleExcludeFromSale(item.entryId, item.excludeFromSale)}
-                        className="w-4 h-4 rounded border-2 border-gray-400 checked:bg-orange-600 checked:border-orange-600 focus:ring-2 focus:ring-orange-600/30"
+              <div className="flex flex-col gap-1.5">
+                {/* Row 1: checkbox + image + card name/set */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleCardSelection(item.entryId)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0 cursor-pointer rounded border-2 border-gray-400 checked:bg-primary checked:border-primary focus:ring-2 focus:ring-primary/30"
+                  />
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setImageReplaceCard(item);
+                    }}
+                    className="relative group flex-shrink-0"
+                    title="Click to change image"
+                  >
+                    {item.image ? (
+                      <img
+                        src={item.image}
+                        alt={item.name}
+                        className="h-14 w-10 sm:h-20 sm:w-16 rounded-lg object-cover"
                       />
-                      <span className={item.excludeFromSale ? 'text-orange-600 font-medium' : 'text-muted-foreground'}>
-                        {item.excludeFromSale ? '🔒 Hidden from sale' : 'Exclude from sale'}
-                      </span>
-                    </label>
+                    ) : (
+                      <div className="h-14 w-10 sm:h-20 sm:w-16 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center">
+                        <span className="text-[8px] text-gray-400 text-center px-1">No Image</span>
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
+                      <Edit2 className="h-4 w-4 text-white" />
+                    </div>
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-sm leading-tight truncate">{item.name}</div>
+                    <div className="text-[11px] text-muted-foreground leading-tight mt-0.5 truncate">
+                      {item.set} • {item.rarity} • #{item.number}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5">
+                      Qty: {item.quantity || 1} • {new Date(item.addedAt).toLocaleDateString()}
+                    </div>
+                    {(item.isReverseHolo || item.isStampedPromo || item.isSealed || item.isAutographed || item.isFirstEdition || item.isPokeBall || item.isMasterBall || item.isUnlimited) && (
+                      <div className="flex flex-wrap gap-0.5 mt-0.5">
+                        {item.isReverseHolo && <span className="text-[9px] font-semibold px-1 rounded bg-blue-100 text-blue-700">RH</span>}
+                        {item.isStampedPromo && <span className="text-[9px] font-semibold px-1 rounded bg-purple-100 text-purple-700">Stamp</span>}
+                        {item.isSealed && <span className="text-[9px] font-semibold px-1 rounded bg-emerald-100 text-emerald-700">Sealed</span>}
+                        {item.isAutographed && <span className="text-[9px] font-semibold px-1 rounded bg-rose-100 text-rose-700">Auto</span>}
+                        {item.isFirstEdition && <span className="text-[9px] font-semibold px-1 rounded bg-amber-100 text-amber-800">1st Ed</span>}
+                        {item.isPokeBall && <span className="text-[9px] font-semibold px-1 rounded bg-red-100 text-red-700">Poké</span>}
+                        {item.isMasterBall && <span className="text-[9px] font-semibold px-1 rounded bg-violet-100 text-violet-700">Master</span>}
+                        {item.isUnlimited && <span className="text-[9px] font-semibold px-1 rounded bg-gray-100 text-gray-700">Unl.</span>}
+                      </div>
+                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+
+                {/* Row 2: price + condition + vs market — own row so it's always visible */}
+                <div className="flex items-center gap-2 pl-6 sm:pl-7 flex-wrap" onClick={(e) => e.stopPropagation()}>
                   {isEditing ? (
-                    <>
-                      <div className="flex flex-col items-end gap-1">
-                        <Input
-                          type="number"
-                          step="0.01"
-                          value={editingPriceValue}
-                          onChange={(e) => setEditingPriceValue(e.target.value)}
-                          className="w-20 h-8"
-                          placeholder="Price"
-                        />
-                        {hasOverride && (
-                          <span className="text-xs text-muted-foreground whitespace-nowrap">
-                            Suggested: {formatPrice(metrics.suggested)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => savePriceOverride(item.entryId)}
-                          title="Save price"
-                        >
-                          <Check className="h-4 w-4 text-green-600" />
-                        </Button>
-                        {hasOverride && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => resetPriceToSuggested(item.entryId)}
-                            title="Reset to suggested price"
-                          >
-                            <RotateCcw className="h-3 w-3 text-blue-600" />
-                          </Button>
-                        )}
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={cancelEditingPrice}
-                        title="Cancel"
-                      >
-                        <X className="h-4 w-4 text-red-600" />
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={editingPriceValue}
+                        onChange={(e) => setEditingPriceValue(e.target.value)}
+                        className="w-28 h-9 text-base font-bold"
+                        placeholder="Price"
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") savePriceOverride(item.entryId);
+                          else if (e.key === "Escape") cancelEditingPrice();
+                        }}
+                      />
+                      <Button size="sm" onClick={() => savePriceOverride(item.entryId)} className="h-9 px-3 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold">
+                        <Check className="h-4 w-4 mr-1" /> Save
                       </Button>
-                    </>
+                      {hasOverride && (
+                        <Button size="sm" variant="outline" onClick={() => resetPriceToSuggested(item.entryId)} className="h-9 px-3 text-xs border-blue-300 text-blue-600 hover:bg-blue-50">
+                          <RotateCcw className="h-3.5 w-3.5 mr-1" /> Reset
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" onClick={cancelEditingPrice} className="h-9 px-3 text-xs border-red-300 text-red-600 hover:bg-red-50">
+                        <X className="h-4 w-4 mr-1" /> Cancel
+                      </Button>
+                    </div>
                   ) : (
                     <>
-                      <div className="flex flex-col items-end gap-1">
-                        <div className={`text-sm font-bold ${hasOverride ? 'text-red-600' : 'text-primary'}`}>
-                          {formatPrice(displayPrice)}
-                        </div>
-                        {secondaryDisplayPrice !== null && (
-                          <div className="text-xs text-muted-foreground font-semibold">
-                            {formatCurrency(secondaryDisplayPrice, secondaryCurrency)}
-                          </div>
-                        )}
-                        <div className="text-xs text-muted-foreground">
-                          {hasOverride ? 'Manual' : 'Suggested'}
-                        </div>
-                        
-                        {/* Price Comparison for Manual Overrides - Compact */}
-                        {hasOverride && (() => {
-                          // Calculate market price - metrics.suggested handles all cases correctly
-                          const marketPrice = metrics.suggested;
-                          
-                          // Convert override price to current currency if needed
-                          const overrideCurrency = item.overridePriceCurrency || currency;
-                          const vendorPrice = overrideCurrency !== currency 
-                            ? convertCurrency(item.overridePrice, currency, overrideCurrency)
-                            : item.overridePrice;
-                          
-                          const difference = vendorPrice - marketPrice;
-                          const percentDiff = marketPrice > 0 ? ((difference / marketPrice) * 100) : 0;
-                          const isBelow = difference < 0;
-                          const colorClass = isBelow ? 'text-red-600' : 'text-yellow-600';
-                          const arrow = isBelow ? '↓' : '↑';
-                          
-                          return (
-                            <div className={`text-[10px] font-medium ${colorClass} whitespace-nowrap`}>
-                              {arrow} {Math.abs(percentDiff).toFixed(1)}% vs market
-                            </div>
-                          );
-                        })()}
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        {item.isGraded && item.gradedPrice && (
-                          <div className="flex flex-col gap-1">
-                            {[5, 10].map((pct) => {
-                              const base = convertCurrency(parseFloat(item.gradedPrice), currency, "USD");
-                              const rounded = roundUpMarkup(base, pct);
-                              return (
-                                <Button
-                                  key={pct}
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    applyGradedMarkup(item, pct);
-                                  }}
-                                  className="text-[10px] h-6 px-1.5 gap-0.5 border-purple-300 text-purple-700 hover:bg-purple-100"
-                                >
-                                  +{pct}% → {formatPrice(rounded)}
-                                </Button>
-                              );
-                            })}
-                          </div>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => startEditingPrice(item.entryId, item.overridePrice)}
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+                      <button
+                        onClick={() => startEditingPrice(item.entryId, hasOverride ? item.overridePrice : displayPrice)}
+                        className={`text-sm font-bold ${hasOverride ? 'text-red-600' : 'text-primary'} hover:underline cursor-pointer`}
+                        title="Tap to edit price"
+                      >
+                        {formatPrice(displayPrice)}
+                      </button>
+                      <Edit2 className="h-3 w-3 text-muted-foreground/50" />
+                      {secondaryDisplayPrice !== null && (
+                        <span className="text-[10px] text-muted-foreground font-semibold">
+                          ({formatCurrency(secondaryDisplayPrice, secondaryCurrency)})
+                        </span>
+                      )}
+                      <span className="text-[10px] text-muted-foreground">
+                        {hasOverride ? 'Manual' : 'Suggested'}
+                      </span>
+                      {hasOverride && (() => {
+                        const marketPrice = metrics.suggested;
+                        const overrideCurrency = item.overridePriceCurrency || currency;
+                        const vendorPrice = overrideCurrency !== currency 
+                          ? convertCurrency(item.overridePrice, currency, overrideCurrency)
+                          : item.overridePrice;
+                        const difference = vendorPrice - marketPrice;
+                        const percentDiff = marketPrice > 0 ? ((difference / marketPrice) * 100) : 0;
+                        const isBelow = difference < 0;
+                        const colorClass = isBelow ? 'text-red-600' : 'text-yellow-600';
+                        const arrow = isBelow ? '↓' : '↑';
+                        return (
+                          <span className={`text-[10px] font-medium ${colorClass}`}>
+                            {arrow} {Math.abs(percentDiff).toFixed(1)}% vs mkt
+                          </span>
+                        );
+                      })()}
                     </>
                   )}
-                  
-                  {/* Condition or Graded Badge */}
-                  {item.isGraded ? (
+                  {!isEditing && (item.isGraded ? (
                     <GradingBadge company={item.gradingCompany} grade={item.grade} />
                   ) : (
-                    <span className={`text-xs font-semibold px-2 py-1 rounded border whitespace-nowrap ${getConditionColorClass(item.condition)}`}>
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${getConditionColorClass(item.condition)}`}>
                       {item.condition || "NM"}
                     </span>
-                  )}
-                  
-                  <Button
-                    size="sm"
-                    variant="default"
-                    onClick={() => handleMarkSale(item)}
-                    className="bg-green-600 hover:bg-green-700"
-                  >
-                    <DollarSign className="h-4 w-4 mr-1" />
-                    Sale
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => deleteItem(item.entryId)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                  ))}
+                </div>
+
+                {/* Row 3: exclude + markup buttons + actions */}
+                <div className="flex items-center gap-1.5 pl-6 sm:pl-7" onClick={(e) => e.stopPropagation()}>
+                  <label className="flex items-center gap-1 text-[10px] cursor-pointer whitespace-nowrap flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={item.excludeFromSale || false}
+                      onChange={() => toggleExcludeFromSale(item.entryId, item.excludeFromSale)}
+                      className="w-3 h-3 rounded border-2 border-gray-400 checked:bg-orange-600 checked:border-orange-600"
+                    />
+                    <span className={item.excludeFromSale ? 'text-orange-600 font-medium' : 'text-muted-foreground'}>
+                      {item.excludeFromSale ? '🔒' : 'Excl.'}
+                    </span>
+                  </label>
+
+                  <div className="flex-1" />
+
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {item.isGraded && item.gradedPrice && (
+                      <>
+                        {[5, 10].map((pct) => {
+                          const base = convertCurrency(parseFloat(item.gradedPrice), currency, "USD");
+                          const rounded = roundUpMarkup(base, pct);
+                          return (
+                            <Button
+                              key={pct}
+                              size="sm"
+                              variant="outline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                applyGradedMarkup(item, pct);
+                              }}
+                              className="text-[10px] h-6 px-1.5 gap-0.5 border-purple-300 text-purple-700 hover:bg-purple-100 flex-shrink-0"
+                            >
+                              +{pct}% → {formatPrice(rounded)}
+                            </Button>
+                          );
+                        })}
+                      </>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="default"
+                      onClick={() => handleMarkSale(item)}
+                      className="bg-green-600 hover:bg-green-700 h-6 px-1.5 text-[10px] flex-shrink-0"
+                    >
+                      <DollarSign className="h-3 w-3 mr-0.5" />
+                      Sale
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 flex-shrink-0" onClick={() => deleteItem(item.entryId)} title="Delete">
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
                 </div>
               </div>
             </Card>
@@ -2205,26 +2268,85 @@ export function MyInventory() {
                   <div className="border-t pt-3">
                     <div className="flex justify-between items-center mb-2">
                       <span className="text-sm font-semibold">Your Price:</span>
-                      <span className="text-xl font-bold text-primary">
-                        {(() => {
-                          let price;
-                          if (cardDetailsModal.overridePrice != null) {
-                            price = cardDetailsModal.overridePrice;
-                          } else {
-                            // Use computeItemMetrics which handles all cases correctly
-                            price = computeItemMetrics(cardDetailsModal, currency).suggested;
-                          }
-                          return formatPrice(price);
-                        })()}
-                      </span>
+                      {editingPriceId === cardDetailsModal.entryId ? (
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={editingPriceValue}
+                            onChange={(e) => setEditingPriceValue(e.target.value)}
+                            className="w-28 h-8 text-sm"
+                            placeholder="Price"
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                const val = editingPriceValue.trim();
+                                const numVal = val === "" ? null : parseFloat(val);
+                                savePriceOverride(cardDetailsModal.entryId);
+                                setCardDetailsModal((prev) => prev ? { ...prev, overridePrice: numVal, overridePriceCurrency: numVal !== null ? currency : null } : prev);
+                              } else if (e.key === "Escape") {
+                                cancelEditingPrice();
+                              }
+                            }}
+                          />
+                          <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => {
+                            const val = editingPriceValue.trim();
+                            const numVal = val === "" ? null : parseFloat(val);
+                            savePriceOverride(cardDetailsModal.entryId);
+                            setCardDetailsModal((prev) => prev ? { ...prev, overridePrice: numVal, overridePriceCurrency: numVal !== null ? currency : null } : prev);
+                          }} title="Save">
+                            <Check className="h-4 w-4 text-green-600" />
+                          </Button>
+                          <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={cancelEditingPrice} title="Cancel">
+                            <X className="h-4 w-4 text-red-600" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xl font-bold ${cardDetailsModal.overridePrice != null ? 'text-red-600' : 'text-primary'}`}>
+                            {(() => {
+                              let price;
+                              if (cardDetailsModal.overridePrice != null) {
+                                price = cardDetailsModal.overridePrice;
+                              } else {
+                                price = computeItemMetrics(cardDetailsModal, currency).suggested;
+                              }
+                              return formatPrice(price);
+                            })()}
+                          </span>
+                          <button
+                            onClick={() => startEditingPrice(cardDetailsModal.entryId, cardDetailsModal.overridePrice)}
+                            className="text-primary hover:text-primary/80"
+                            title="Edit price"
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                     
+                    {editingPriceId !== cardDetailsModal.entryId && cardDetailsModal.overridePrice != null && (
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs text-red-600 font-medium">Manual override</span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            resetPriceToSuggested(cardDetailsModal.entryId);
+                            setCardDetailsModal((prev) => prev ? { ...prev, overridePrice: null, overridePriceCurrency: null } : prev);
+                          }}
+                          className="h-6 px-2 text-[11px] text-blue-600 hover:text-blue-700"
+                        >
+                          <RotateCcw className="h-3 w-3 mr-1" />
+                          Reset to market
+                        </Button>
+                      </div>
+                    )}
+
                     {/* Price Comparison for Manual Overrides */}
-                    {cardDetailsModal.overridePrice != null && (() => {
-                      // Calculate market price - computeItemMetrics handles all cases correctly
+                    {editingPriceId !== cardDetailsModal.entryId && cardDetailsModal.overridePrice != null && (() => {
                       const marketPrice = computeItemMetrics(cardDetailsModal, currency).suggested;
                       
-                      // Convert override price to current currency if needed
                       const overrideCurrency = cardDetailsModal.overridePriceCurrency || currency;
                       const vendorPrice = overrideCurrency !== currency 
                         ? convertCurrency(cardDetailsModal.overridePrice, currency, overrideCurrency)
@@ -2255,7 +2377,7 @@ export function MyInventory() {
                       );
                     })()}
                     
-                    {!cardDetailsModal.overridePrice && (
+                    {editingPriceId !== cardDetailsModal.entryId && !cardDetailsModal.overridePrice && (
                       <p className="text-xs text-muted-foreground">Suggested market price</p>
                     )}
                   </div>

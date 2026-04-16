@@ -14,6 +14,15 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  // In production builds, drop all console.* calls and debugger statements.
+  // Error reporting in prod should go through a real logger (or Sentry/etc),
+  // not scattered console.logs. This also shrinks the bundle a bit.
+  // `console.error` and `console.warn` are kept because some libraries
+  // (Firebase, React) emit important diagnostics through them.
+  esbuild: {
+    pure: ["console.log", "console.debug", "console.info", "console.trace"],
+    drop: ["debugger"],
+  },
   test: {
     globals: true,
     environment: "jsdom",

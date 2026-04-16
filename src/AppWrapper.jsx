@@ -1,10 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useEffect } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
   connectAuthEmulator,
   GoogleAuthProvider,
-  signInWithPopup,
+  signInWithCredential,
   signOut as firebaseSignOut,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -14,8 +14,12 @@ import {
 import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getAnalytics } from "firebase/analytics";
 import { AppProvider } from "./contexts/AppContext";
+import { TaxProvider } from "./contexts/TaxContext";
+import { ExpenseProvider } from "./contexts/ExpenseContext";
 import { AppRouter } from "./Router";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { Toaster, toast } from "./components/ui/Toaster";
+import { ConfirmDialogHost } from "./components/ui/ConfirmDialog";
 
 /**
  * AppWrapper - Main application wrapper
@@ -45,8 +49,8 @@ try {
   db = getFirestore(app);
   analytics = getAnalytics(app);
   
-  // Connect to emulators in development mode
-  if (import.meta.env.DEV && !useEmulators) {
+  // Connect to emulators only when explicitly opted in via VITE_USE_EMULATORS=true
+  if (import.meta.env.VITE_USE_EMULATORS === "true" && !useEmulators) {
     try {
       connectAuthEmulator(auth, "http://localhost:9099", { disableWarnings: true });
       connectFirestoreEmulator(db, "localhost", 8080);
@@ -76,21 +80,70 @@ try {
 }
 
 export function AppWrapper() {
-  // Google Sign-In
-  const handleGoogleLogin = useMemo(() => async () => {
+  // Clean up any leftover GIS modal on auth state change
+  useEffect(() => {
+    const container = document.getElementById("gsi-btn-container");
+    if (container) container.remove();
+  }, []);
+
+  // Google Sign-In using Google Identity Services (GIS) — bypasses redirect_uri entirely
+  const handleGoogleLogin = useMemo(() => () => {
     if (!auth) {
-      alert("Authentication not initialized");
+      toast.error("Authentication not initialized");
       return;
     }
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (err) {
-      console.error("Google login failed", err);
-      if (err.code !== "auth/popup-closed-by-user") {
-        throw err;
-      }
+
+    // Wait for GIS script to load
+    if (!window.google?.accounts?.id) {
+      toast.info("Google sign-in is loading, please try again in a moment.");
+      return;
     }
+
+    const GOOGLE_CLIENT_ID = "1045008710585-kh31cut39285d0vo20o3481nsv9qvtk3.apps.googleusercontent.com";
+
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: async (response) => {
+        try {
+          const credential = GoogleAuthProvider.credential(response.credential);
+          await signInWithCredential(auth, credential);
+          // Remove GIS modal if present
+          const container = document.getElementById("gsi-btn-container");
+          if (container) container.remove();
+        } catch (err) {
+          console.error("Firebase credential sign-in failed:", err);
+          toast.error("Sign-in failed: " + (err.message || "Unknown error"));
+        }
+      },
+    });
+
+    window.google.accounts.id.prompt((notification) => {
+      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+        // One Tap not available (e.g. user dismissed it before, or 3rd party cookies blocked)
+        // Fall back to the button/popup flow
+        const btnContainer = document.createElement("div");
+        btnContainer.id = "gsi-btn-container";
+        btnContainer.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
+        
+        const inner = document.createElement("div");
+        inner.style.cssText = "background:white;border-radius:16px;padding:32px;text-align:center;max-width:360px;width:90%;";
+        inner.innerHTML = '<p style="margin-bottom:16px;font-weight:600;font-size:16px;">Sign in with Google</p><div id="gsi-btn"></div><button id="gsi-cancel" style="margin-top:16px;padding:8px 16px;border:1px solid #ddd;border-radius:8px;background:white;cursor:pointer;font-size:14px;">Cancel</button>';
+        btnContainer.appendChild(inner);
+        document.body.appendChild(btnContainer);
+
+        window.google.accounts.id.renderButton(
+          document.getElementById("gsi-btn"),
+          { theme: "outline", size: "large", width: 280, text: "signin_with" }
+        );
+
+        document.getElementById("gsi-cancel").onclick = () => {
+          btnContainer.remove();
+        };
+        btnContainer.onclick = (e) => {
+          if (e.target === btnContainer) btnContainer.remove();
+        };
+      }
+    });
   }, []);
 
   // Email/Password Sign Up
@@ -144,7 +197,7 @@ export function AppWrapper() {
       await firebaseSignOut(auth);
     } catch (err) {
       console.error("Logout failed", err);
-      alert(`Logout failed: ${err.message}`);
+      toast.error(`Logout failed: ${err.message}`);
     }
   }, []);
 
@@ -159,14 +212,20 @@ export function AppWrapper() {
   return (
     <ErrorBoundary>
       <AppProvider auth={auth} db={db} authHandlers={authHandlers}>
-        <AppRouter 
-          onGoogleLogin={handleGoogleLogin}
-          onEmailSignUp={handleEmailSignUp}
-          onEmailLogin={handleEmailLogin}
-          onPasswordReset={handlePasswordReset}
-          onLogout={handleLogout} 
-        />
+        <TaxProvider>
+          <ExpenseProvider>
+            <AppRouter 
+              onGoogleLogin={handleGoogleLogin}
+              onEmailSignUp={handleEmailSignUp}
+              onEmailLogin={handleEmailLogin}
+              onPasswordReset={handlePasswordReset}
+              onLogout={handleLogout} 
+            />
+          </ExpenseProvider>
+        </TaxProvider>
       </AppProvider>
+      <Toaster />
+      <ConfirmDialogHost />
     </ErrorBoundary>
   );
 }
