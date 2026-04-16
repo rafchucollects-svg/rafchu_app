@@ -2,13 +2,15 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors } from "lucide-react";
+import { ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
+import { CardPhotoScanner } from "@/components/CardPhotoScanner";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { collection, addDoc, doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
+import { toast } from "@/components/ui/Toaster";
 
 /**
  * Buy Calculator Page (Vendor Toolkit)
@@ -49,6 +51,7 @@ export function BuyCalculator() {
   
   // Manual card entry state
   const [showManualEntry, setShowManualEntry] = useState(false);
+  const [showCardScanner, setShowCardScanner] = useState(false);
 
   // Sorting state
   const [buySortBy, setBuySortBy] = useState("addedAt");
@@ -298,11 +301,15 @@ export function BuyCalculator() {
     const selectedItems = buyItems.filter(it => selectedIds.has(it.entryId));
     return selectedItems.reduce(
       (acc, item) => {
-        const { tcg, cmAvg, cmLowest, finalTotal, qty } = calculateItemValue(item);
-        acc.tcgMarket += tcg * qty;
-        acc.cmAvg += cmAvg * qty;
-        acc.cmLowest += cmLowest * qty;
-        acc.finalValue += finalTotal;
+        const values = calculateItemValue(item);
+        if (values.isGraded) {
+          acc.finalValue += values.finalTotal;
+        } else {
+          acc.tcgMarket += values.tcg * values.qty;
+          acc.cmAvg += values.cmAvg * values.qty;
+          acc.cmLowest += values.cmLowest * values.qty;
+          acc.finalValue += values.finalTotal;
+        }
         return acc;
       },
       { tcgMarket: 0, cmAvg: 0, cmLowest: 0, finalValue: 0 },
@@ -355,12 +362,12 @@ export function BuyCalculator() {
 
   const handleConfirmBuy = async () => {
     if (selectedIds.size === 0) {
-      alert("Please select cards to confirm the purchase.");
+      toast.info("Please select cards to confirm the purchase.");
       return;
     }
 
     if (!user || !db) {
-      alert("Please sign in to confirm purchases.");
+      toast.error("Please sign in to confirm purchases.");
       return;
     }
 
@@ -381,7 +388,8 @@ export function BuyCalculator() {
           const tcgFull = computeTcgPrice(item, item.condition) || 0;
           const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
           const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
-          unitPrice = Math.min(tcgFull, cmAvgFull, cmLowFull);
+          const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
+          unitPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }
         
         return {
@@ -435,6 +443,8 @@ export function BuyCalculator() {
       const inventoryItems = [];
       selectedItems.forEach(item => {
         const qty = item.quantity || 1;
+        const values = calculateItemValue(item);
+        const perUnitBuyPrice = values.finalUnit || 0;
         for (let i = 0; i < qty; i++) {
           const inventoryItem = {
             entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -447,7 +457,9 @@ export function BuyCalculator() {
             condition: item.condition || "NM",
             quantity: 1,
             prices: item.prices || {},
-            addedAt: Date.now()
+            addedAt: Date.now(),
+            buyPrice: perUnitBuyPrice,
+            acquiredVia: "buy",
           };
           
           // Preserve manual entry information
@@ -488,18 +500,18 @@ export function BuyCalculator() {
       triggerQuickAddFeedback(`Purchase confirmed! ${totalCards} card(s) added to inventory.`);
     } catch (error) {
       console.error("Failed to confirm purchase:", error);
-      alert("Failed to confirm purchase. Please try again.");
+      toast.error("Failed to confirm purchase. Please try again.");
     }
   };
 
   const handleSaveAsPending = () => {
     if (selectedIds.size === 0) {
-      alert("Please select cards to save as pending.");
+      toast.info("Please select cards to save as pending.");
       return;
     }
 
     if (pendingDeals.length >= 5) {
-      alert("Maximum 5 pending deals allowed. Please complete or delete existing deals first.");
+      toast.info("Maximum 5 pending deals allowed. Please complete or delete existing deals first.");
       return;
     }
 
@@ -576,6 +588,34 @@ export function BuyCalculator() {
     triggerQuickAddFeedback(`"${manualCard.name}" added to buy calculator`);
   }, [buyDefaultPct, setBuyItems, triggerQuickAddFeedback]);
 
+  const handleScannedCardsAdd = useCallback((scannedCards) => {
+    const newItems = scannedCards.map((card) => ({
+      entryId: `${card.id}-buy-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      baseId: card.id,
+      name: card.name,
+      set: card.set,
+      number: card.number,
+      rarity: card.rarity,
+      image: card.image,
+      prices: card.prices || {},
+      condition: card.condition || 'NM',
+      quantity: 1,
+      buyPct: buyDefaultPct,
+      addedAt: Date.now(),
+      isManualEntry: card.isManualEntry || false,
+      manualPrice: card.manualPrice,
+      manualPriceCurrency: card.manualPriceCurrency,
+      isGraded: card.isGraded || false,
+      gradingCompany: card.gradingCompany,
+      grade: card.grade,
+      gradedPrice: card.gradedPrice,
+      gradedPriceCurrency: card.gradedPriceCurrency,
+      notes: card.notes || "",
+    }));
+    setBuyItems(prev => [...prev, ...newItems]);
+    triggerQuickAddFeedback(`${newItems.length} card${newItems.length !== 1 ? 's' : ''} added from scan`);
+  }, [buyDefaultPct, setBuyItems, triggerQuickAddFeedback]);
+
   const formatPrice = (amount) => formatCurrency(amount, currency);
 
   // Dual-currency formatter: primary + secondary in parentheses
@@ -638,14 +678,14 @@ export function BuyCalculator() {
       setTimeout(() => setCopiedText(false), 2000);
     } catch (err) {
       console.error("Failed to copy:", err);
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
   // Generate shareable link by saving to Firestore
   const handleGenerateShareLink = async () => {
     if (!user || !db) {
-      alert("Please sign in to generate a share link.");
+      toast.error("Please sign in to generate a share link.");
       return;
     }
     
@@ -692,7 +732,7 @@ export function BuyCalculator() {
       
     } catch (err) {
       console.error("Failed to generate share link:", err);
-      alert("Failed to generate share link. Please try again.");
+      toast.error("Failed to generate share link. Please try again.");
     } finally {
       setShareLoading(false);
     }
@@ -706,14 +746,14 @@ export function BuyCalculator() {
       setTimeout(() => setCopiedLink(false), 2000);
     } catch (err) {
       console.error("Failed to copy:", err);
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
   // Open share modal
   const handleOpenShareModal = () => {
     if (selectedIds.size === 0) {
-      alert("Please select cards to share.");
+      toast.info("Please select cards to share.");
       return;
     }
     setShareLink(""); // Reset link
@@ -775,7 +815,7 @@ export function BuyCalculator() {
       setSplitCopied(prev => ({ ...prev, [pct]: 'text' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
     } catch (err) {
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
@@ -805,7 +845,7 @@ export function BuyCalculator() {
       const link = `${window.location.origin}/trade-offer?id=${docRef.id}`;
       setSplitShareLinks(prev => ({ ...prev, [pct]: link }));
     } catch (err) {
-      alert("Failed to generate share link.");
+      toast.error("Failed to generate share link.");
     } finally {
       setSplitShareLoading(prev => ({ ...prev, [pct]: false }));
     }
@@ -817,13 +857,13 @@ export function BuyCalculator() {
       setSplitCopied(prev => ({ ...prev, [pct]: 'link' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
     } catch (err) {
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
   const handleSaveSplitTierAsPending = (tierItems, pct, totalValue) => {
     if (pendingDeals.length >= 5) {
-      alert("Maximum 5 pending deals allowed. Delete existing deals first.");
+      toast.info("Maximum 5 pending deals allowed. Delete existing deals first.");
       return;
     }
     const desc = `${pct}% tier (${tierItems.length} cards)`;
@@ -863,6 +903,13 @@ export function BuyCalculator() {
           </div>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowCardScanner(true)}
+          >
+            <Camera className="h-4 w-4 mr-2" />
+            Scan Cards
+          </Button>
           <Button
             variant="outline"
             onClick={() => setShowManualEntry(true)}
@@ -1195,6 +1242,20 @@ export function BuyCalculator() {
           </div>
         ))}
       </div>
+
+      {/* Card Photo Scanner Modal */}
+      {showCardScanner && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <CardContent className="p-6">
+              <CardPhotoScanner
+                onAddCards={handleScannedCardsAdd}
+                onClose={() => setShowCardScanner(false)}
+              />
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Manual Card Entry Modal */}
       {showManualEntry && (

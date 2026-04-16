@@ -7,6 +7,7 @@ import { useApp } from "@/contexts/AppContext";
 import { SUPPORTED_CURRENCIES } from "@/utils/cardHelpers";
 import { setDoc, doc } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { toast } from "@/components/ui/Toaster";
 
 /**
  * User Profile & Settings Page
@@ -52,13 +53,13 @@ export function UserProfile() {
 
     // Validate file type
     if (!file.type.startsWith('image/')) {
-      alert('Please upload an image file');
+      toast.info('Please upload an image file');
       return;
     }
 
     // Validate file size (max 5MB)
     if (file.size > 5 * 1024 * 1024) {
-      alert('Image size must be less than 5MB');
+      toast.info('Image size must be less than 5MB');
       return;
     }
 
@@ -81,7 +82,7 @@ export function UserProfile() {
       triggerQuickAddFeedback('Profile picture updated!');
     } catch (error) {
       console.error('Failed to upload profile picture:', error);
-      alert('Failed to upload profile picture. Please try again.');
+      toast.error('Failed to upload profile picture. Please try again.');
     } finally {
       setUploading(false);
     }
@@ -109,7 +110,7 @@ export function UserProfile() {
       triggerQuickAddFeedback(`${platform} link ${url.trim() ? 'saved' : 'removed'}`);
     } catch (err) {
       console.error(`Failed to update ${platform} link`, err);
-      alert(`Failed to update ${platform} link`);
+      toast.error(`Failed to update ${platform} link`);
     }
   }, [user, db, userProfile, setUserProfile, triggerQuickAddFeedback]);
 
@@ -125,7 +126,7 @@ export function UserProfile() {
       triggerQuickAddFeedback(`Market source changed to ${source === "tcg" ? "TCGplayer" : "CardMarket"}`);
     } catch (err) {
       console.error("Failed to update market source", err);
-      alert(`Failed to update market source: ${err?.message ?? "Please try again."}`);
+      toast.error(`Failed to update market source: ${err?.message ?? "Please try again."}`);
     }
   }, [user, db, setMarketSource, triggerQuickAddFeedback]);
 
@@ -143,7 +144,7 @@ export function UserProfile() {
       triggerQuickAddFeedback(`Currency changed to ${currencyName}`);
     } catch (err) {
       console.error("Failed to update currency", err);
-      alert(`Failed to update currency: ${err?.message ?? "Please try again."}`);
+      toast.error(`Failed to update currency: ${err?.message ?? "Please try again."}`);
     }
   }, [user, db, setCurrency, triggerQuickAddFeedback]);
 
@@ -165,7 +166,7 @@ export function UserProfile() {
       }
     } catch (err) {
       console.error("Failed to update secondary currency", err);
-      alert(`Failed to update secondary currency: ${err?.message ?? "Please try again."}`);
+      toast.error(`Failed to update secondary currency: ${err?.message ?? "Please try again."}`);
     }
   }, [user, db, setSecondaryCurrency, triggerQuickAddFeedback]);
 
@@ -188,7 +189,7 @@ export function UserProfile() {
       triggerQuickAddFeedback("Default percentages saved");
     } catch (err) {
       console.error("Failed to save default percentages", err);
-      alert(`Failed to save: ${err?.message ?? "Please try again."}`);
+      toast.error(`Failed to save: ${err?.message ?? "Please try again."}`);
     }
   }, [user, db, defaultTradePct, defaultBuyPct, setUserProfile, triggerQuickAddFeedback]);
 

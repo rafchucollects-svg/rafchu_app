@@ -32,6 +32,7 @@ import { GradedCardModal } from "@/components/GradedCardModal";
 import { ManualCardModal } from "@/components/ManualCardEntry";
 import { formatCurrency, convertCurrency } from "@/utils/cardHelpers";
 import { needsImage } from "@/utils/imageHelpers";
+import { toast } from "@/components/ui/Toaster";
 
 /**
  * Card Search Page
@@ -319,7 +320,7 @@ export function CardSearch({ mode = "collector" }) {
   // Quick add handlers - v2.1: Direct add for ungraded, graded modal for graded cards
   const handleQuickAddCollection = useCallback(async (card) => {
     if (!user) {
-      alert("Please sign in to add cards to your collection");
+      toast.error("Please sign in to add cards to your collection");
       return;
     }
     if (isGradedFilter) {
@@ -343,7 +344,7 @@ export function CardSearch({ mode = "collector" }) {
         }
       } catch (error) {
         console.error("Error adding to collection:", error);
-        alert("Failed to add card. Please try again.");
+        toast.error("Failed to add card. Please try again.");
       }
     }
   }, [user, isGradedFilter, defaultCondition, mode, addToCollection, triggerQuickAddFeedback, isVendor]);
@@ -440,7 +441,7 @@ export function CardSearch({ mode = "collector" }) {
 
   const handleQuickAddWishlist = useCallback(async (card) => {
     if (!user) {
-      alert("Please sign in to add cards to your wishlist");
+      toast.error("Please sign in to add cards to your wishlist");
       return;
     }
     try {
@@ -450,7 +451,7 @@ export function CardSearch({ mode = "collector" }) {
       }
     } catch (error) {
       console.error("Error adding to wishlist:", error);
-      alert("Failed to add card to wishlist. Please try again.");
+      toast.error("Failed to add card to wishlist. Please try again.");
     }
   }, [user, addToWishlist, triggerQuickAddFeedback]);
 
@@ -482,14 +483,14 @@ export function CardSearch({ mode = "collector" }) {
       }
     } catch (error) {
       console.error("Error adding to collection:", error);
-      alert("Failed to add card. Please try again.");
+      toast.error("Failed to add card. Please try again.");
     }
   }, [addToCollection, triggerQuickAddFeedback, isVendor, mode]);
 
   // Handle manual card entry
   const handleManualCardAdd = useCallback(async (card, options = {}) => {
     if (!user) {
-      alert("Please sign in to add cards");
+      toast.error("Please sign in to add cards");
       return;
     }
     
@@ -532,7 +533,7 @@ export function CardSearch({ mode = "collector" }) {
       setManualCardModalOpen(false);
     } catch (error) {
       console.error("Error adding manual card:", error);
-      alert("Failed to add card. Please try again.");
+      toast.error("Failed to add card. Please try again.");
     }
   }, [user, addToCollection, mode, defaultCondition, triggerQuickAddFeedback, isVendor]);
 
@@ -541,7 +542,7 @@ export function CardSearch({ mode = "collector" }) {
     if (!activeCard) return;
     
     if (!user) {
-      alert("Please sign in to add cards to your collection");
+      toast.error("Please sign in to add cards to your collection");
       return;
     }
     
@@ -580,7 +581,7 @@ export function CardSearch({ mode = "collector" }) {
   const handleAddToWishlist = useCallback(() => {
     if (!activeCard) return;
     if (!user) {
-      alert("Please sign in to add cards to your wishlist");
+      toast.error("Please sign in to add cards to your wishlist");
       return;
     }
     const newItem = addToWishlist(activeCard);
@@ -767,60 +768,60 @@ export function CardSearch({ mode = "collector" }) {
 
   return (
     <div className="max-w-6xl mx-auto">
-      <div className="mb-6 flex items-center gap-3">
+      <div className="mb-4 sm:mb-6 flex items-center gap-3">
         {isVendor ? (
-          <Store className="h-8 w-8 text-green-600" />
+          <Store className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
         ) : (
-          <Package className="h-8 w-8 text-purple-600" />
+          <Package className="h-6 w-6 sm:h-8 sm:w-8 text-purple-600" />
         )}
         <div>
-          <h1 className="text-3xl font-bold">Card Search</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-2xl sm:text-3xl font-bold">Card Search</h1>
+          <p className="text-sm text-muted-foreground">
             {isVendor ? "Vendor" : "Collector"} Toolkit
           </p>
         </div>
       </div>
 
       {/* Quick Access Buttons */}
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className="mb-3 sm:mb-4 flex flex-wrap gap-1.5 sm:gap-2">
         <Link to="/collector/marketplace">
-          <Button variant="outline" size="sm">
-            <ShoppingBag className="h-4 w-4 mr-1" />
+          <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
+            <ShoppingBag className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
             Marketplace
           </Button>
         </Link>
         {isVendor ? (
           <>
             <Link to="/vendor/inventory">
-              <Button variant="outline" size="sm">
-                <LayoutGrid className="h-4 w-4 mr-1" />
-                My Inventory
+              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
+                <LayoutGrid className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
+                Inventory
               </Button>
             </Link>
             <Link to="/vendor/trade-calculator">
-              <Button variant="outline" size="sm">
-                <Calculator className="h-4 w-4 mr-1" />
-                Trade Calculator
+              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
+                <Calculator className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
+                Trade
               </Button>
             </Link>
             <Link to="/vendor/buy-calculator">
-              <Button variant="outline" size="sm">
-                <TrendingUp className="h-4 w-4 mr-1" />
-                Buy Calculator
+              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
+                <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
+                Buy
               </Button>
             </Link>
           </>
         ) : (
           <>
             <Link to="/collector/collection">
-              <Button variant="outline" size="sm">
-                <LayoutGrid className="h-4 w-4 mr-1" />
-                My Collection
+              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
+                <LayoutGrid className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
+                Collection
               </Button>
             </Link>
             <Link to="/collector/wishlist">
-              <Button variant="outline" size="sm">
-                <Heart className="h-4 w-4 mr-1" />
+              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
+                <Heart className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
                 Wishlist
               </Button>
             </Link>
@@ -829,13 +830,14 @@ export function CardSearch({ mode = "collector" }) {
       </div>
 
       {/* Search Input */}
-      <Card className="rounded-2xl p-4 shadow">
+      <Card className="rounded-2xl p-3 sm:p-4 shadow">
         <CardContent className="space-y-4 p-0">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center">
+          <div className="flex flex-col gap-2 sm:gap-3 sm:flex-row sm:items-center">
             <Input
-              placeholder="Search by name, set (e.g., Crown Zenith), or number (e.g., GG69)"
+              placeholder="Search by name, set, or number..."
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              className="h-9 sm:h-10 text-sm sm:text-base"
             />
             {!isGradedFilter && (
               <div className="flex items-center gap-2">

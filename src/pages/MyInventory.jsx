@@ -17,6 +17,8 @@ import { CardImageReplacer } from "@/components/CardImageReplacer";
 import { apiFetchMarketPrices } from "@/utils/apiHelpers";
 import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc, updateDoc } from "firebase/firestore";
 import { CardSearch } from "./CardSearch";
+import { toast } from "@/components/ui/Toaster";
+import { confirm } from "@/components/ui/ConfirmDialog";
 
 /**
  * My Inventory Page (Vendor Toolkit)
@@ -344,7 +346,7 @@ export function MyInventory() {
       triggerQuickAddFeedback("Card removed from inventory");
     } catch (error) {
       console.error("Failed to delete card", error);
-      alert("Failed to delete card. Please try again.");
+      toast.error("Failed to delete card. Please try again.");
     }
   };
 
@@ -448,7 +450,7 @@ export function MyInventory() {
     } catch (error) {
       console.error("Failed to update condition/grade", error);
       setUpdatingGradePrice(false);
-      alert("Failed to update. Please try again.");
+      toast.error("Failed to update. Please try again.");
     }
   };
 
@@ -478,7 +480,7 @@ export function MyInventory() {
       triggerQuickAddFeedback("Price updated");
     } catch (error) {
       console.error("Failed to update price", error);
-      alert("Failed to update price. Please try again.");
+      toast.error("Failed to update price. Please try again.");
     }
   };
 
@@ -505,14 +507,18 @@ export function MyInventory() {
       triggerQuickAddFeedback("Price reset to suggested");
     } catch (error) {
       console.error("Failed to reset price", error);
-      alert("Failed to reset price. Please try again.");
+      toast.error("Failed to reset price. Please try again.");
     }
   };
 
   // Clear all
   const clearInventory = async () => {
     if (!user || !db) return;
-    const confirmed = window.confirm("Clear entire inventory? This cannot be undone.");
+    const confirmed = await confirm("Clear entire inventory? This cannot be undone.", {
+      title: "Clear inventory",
+      confirmText: "Clear",
+      variant: "destructive",
+    });
     if (!confirmed) return;
 
     try {
@@ -520,7 +526,7 @@ export function MyInventory() {
       triggerQuickAddFeedback("Inventory cleared");
     } catch (error) {
       console.error("Failed to clear inventory", error);
-      alert("Failed to clear inventory. Please try again.");
+      toast.error("Failed to clear inventory. Please try again.");
     }
   };
 
@@ -634,7 +640,7 @@ export function MyInventory() {
       console.error("Failed to save snapshot - detailed error:", error);
       console.error("Error code:", error.code);
       console.error("Error message:", error.message);
-      alert(`Failed to save snapshot: ${error.message || "Unknown error"}. Please check console for details.`);
+      toast.error(`Failed to save snapshot: ${error.message || "Unknown error"}. Please check console for details.`);
     }
   };
 
@@ -671,7 +677,7 @@ export function MyInventory() {
       loadSnapshots();
     } catch (error) {
       console.error("Failed to delete snapshot:", error);
-      alert("Failed to delete snapshot.");
+      toast.error("Failed to delete snapshot.");
     }
   };
 
@@ -689,7 +695,7 @@ export function MyInventory() {
       triggerQuickAddFeedback("Snapshot renamed");
     } catch (error) {
       console.error("Failed to rename snapshot:", error);
-      alert("Failed to rename snapshot.");
+      toast.error("Failed to rename snapshot.");
     }
   };
 
@@ -846,7 +852,7 @@ export function MyInventory() {
       triggerQuickAddFeedback(enabled ? "Inventory sharing enabled" : "Inventory sharing disabled");
     } catch (err) {
       console.error("Failed to update sharing", err);
-      alert("Failed to update sharing preference");
+      toast.error("Failed to update sharing preference");
     }
   };
 
@@ -859,7 +865,7 @@ export function MyInventory() {
       triggerQuickAddFeedback("Shareable name updated");
     } catch (err) {
       console.error("Failed to update shareable name", err);
-      alert("Failed to update shareable name");
+      toast.error("Failed to update shareable name");
     }
   };
 
@@ -871,7 +877,7 @@ export function MyInventory() {
       triggerQuickAddFeedback("Inventory share link copied to clipboard");
     } catch (err) {
       console.error("Failed to copy link", err);
-      alert("Failed to copy share link");
+      toast.error("Failed to copy share link");
     }
   };
 
@@ -891,7 +897,7 @@ export function MyInventory() {
       );
     } catch (error) {
       console.error("Failed to update exclude status", error);
-      alert("Failed to update card visibility");
+      toast.error("Failed to update card visibility");
     }
   };
 
@@ -938,7 +944,7 @@ export function MyInventory() {
       triggerQuickAddFeedback(`${selectedCards.size} card(s) deleted`);
     } catch (error) {
       console.error("Failed to delete cards", error);
-      alert("Failed to delete cards");
+      toast.error("Failed to delete cards");
     }
   };
 
@@ -962,7 +968,7 @@ export function MyInventory() {
       triggerQuickAddFeedback(`${duplicatedItems.length} card(s) duplicated`);
     } catch (error) {
       console.error("Failed to duplicate cards", error);
-      alert("Failed to duplicate cards");
+      toast.error("Failed to duplicate cards");
     }
   };
 
@@ -986,7 +992,7 @@ export function MyInventory() {
       );
     } catch (error) {
       console.error("Failed to update card visibility", error);
-      alert("Failed to update card visibility");
+      toast.error("Failed to update card visibility");
     }
   };
 
@@ -1073,7 +1079,7 @@ export function MyInventory() {
       let finalPrice = parseFloat(finalTotal);
       
       if (isNaN(finalPrice) || finalPrice <= 0) {
-        alert("Please enter a valid sales price");
+        toast.info("Please enter a valid sales price");
         return;
       }
       
@@ -1188,7 +1194,7 @@ export function MyInventory() {
       console.error("Failed to log sale - detailed error:", error);
       console.error("Error code:", error.code);
       console.error("Error message:", error.message);
-      alert(`Failed to log sale: ${error.message || "Unknown error"}. Please try again.`);
+      toast.error(`Failed to log sale: ${error.message || "Unknown error"}. Please try again.`);
     }
   };
 
@@ -2806,11 +2812,14 @@ export function MyInventory() {
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={(e) => {
+                              onClick={async (e) => {
                                 e.stopPropagation();
-                                if (confirm('Delete this snapshot?')) {
-                                  deleteSnapshot(snapshot.id);
-                                }
+                                if (!(await confirm("Delete this snapshot?", {
+                                  title: "Delete snapshot",
+                                  confirmText: "Delete",
+                                  variant: "destructive",
+                                }))) return;
+                                deleteSnapshot(snapshot.id);
                               }}
                             >
                               <Trash2 className="h-4 w-4 text-red-600" />

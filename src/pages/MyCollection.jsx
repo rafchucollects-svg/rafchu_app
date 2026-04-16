@@ -13,6 +13,8 @@ import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { CardLadderImport } from "@/components/CardLadderImport";
 import { CardImageReplacer } from "@/components/CardImageReplacer";
 import { needsImage } from "@/utils/imageHelpers";
+import { toast } from "@/components/ui/Toaster";
+import { confirm } from "@/components/ui/ConfirmDialog";
 
 /**
  * My Collection Page (Collector Toolkit)
@@ -313,7 +315,7 @@ export function MyCollection() {
       triggerQuickAddFeedback("Card removed from collection");
     } catch (error) {
       console.error("Failed to delete card", error);
-      alert("Failed to delete card. Please try again.");
+      toast.error("Failed to delete card. Please try again.");
     }
   };
 
@@ -368,14 +370,18 @@ export function MyCollection() {
       triggerQuickAddFeedback("Value updated");
     } catch (error) {
       console.error("Failed to update value", error);
-      alert("Failed to update value. Please try again.");
+      toast.error("Failed to update value. Please try again.");
     }
   };
 
   // Clear all
   const clearCollection = async () => {
     if (!user || !db) return;
-    const confirmed = window.confirm("Clear entire collection? This cannot be undone.");
+    const confirmed = await confirm("Clear entire collection? This cannot be undone.", {
+      title: "Clear collection",
+      confirmText: "Clear",
+      variant: "destructive",
+    });
     if (!confirmed) return;
 
     try {
@@ -383,7 +389,7 @@ export function MyCollection() {
       triggerQuickAddFeedback("Collection cleared");
     } catch (error) {
       console.error("Failed to clear collection", error);
-      alert("Failed to clear collection. Please try again.");
+      toast.error("Failed to clear collection. Please try again.");
     }
   };
 
@@ -472,7 +478,7 @@ export function MyCollection() {
     } catch (error) {
       console.error("Failed to update condition/grade", error);
       setUpdatingGradePrice(false);
-      alert("Failed to update. Please try again.");
+      toast.error("Failed to update. Please try again.");
     }
   };
 
@@ -492,7 +498,7 @@ export function MyCollection() {
   // Move selected cards to trade binder
   const moveToTradeBinder = useCallback(() => {
     if (selectedForTrade.size === 0) {
-      alert("Please select cards to move to trade binder");
+      toast.info("Please select cards to move to trade binder");
       return;
     }
 
@@ -530,7 +536,7 @@ export function MyCollection() {
       triggerQuickAddFeedback(enabled ? "Collection sharing enabled" : "Collection sharing disabled");
     } catch (err) {
       console.error("Failed to update sharing", err);
-      alert("Failed to update sharing preference");
+      toast.error("Failed to update sharing preference");
     }
   }, [user, db, triggerQuickAddFeedback]);
 
@@ -544,7 +550,7 @@ export function MyCollection() {
       triggerQuickAddFeedback("Shareable name updated");
     } catch (err) {
       console.error("Failed to update shareable name", err);
-      alert("Failed to update shareable name");
+      toast.error("Failed to update shareable name");
     }
   }, [user, db, shareUsername, triggerQuickAddFeedback]);
 
@@ -556,7 +562,7 @@ export function MyCollection() {
       triggerQuickAddFeedback("Collection share link copied to clipboard");
     } catch (err) {
       console.error("Failed to copy link", err);
-      alert("Failed to copy share link");
+      toast.error("Failed to copy share link");
     }
   }, [user, triggerQuickAddFeedback]);
 

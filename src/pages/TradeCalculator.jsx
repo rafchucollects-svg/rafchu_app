@@ -2,13 +2,15 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors } from "lucide-react";
+import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
+import { CardPhotoScanner } from "@/components/CardPhotoScanner";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { collection, addDoc, doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
+import { toast } from "@/components/ui/Toaster";
 
 /**
  * Trade Calculator Page (Vendor Toolkit)
@@ -58,6 +60,7 @@ export function TradeCalculator() {
   
   // Manual card entry state
   const [showManualEntry, setShowManualEntry] = useState(false);
+  const [showCardScanner, setShowCardScanner] = useState(false);
 
   // Threshold percentage state
   const [thresholdPrice, setThresholdPrice] = useState("");
@@ -296,11 +299,15 @@ export function TradeCalculator() {
     const selectedItems = tradeItems.filter(it => selectedIds.has(it.id));
     return selectedItems.reduce(
       (acc, item) => {
-        const { tcg, cmAvg, cmLowest, finalValue } = calculateItemValue(item);
-        acc.tcgMarket += tcg;
-        acc.cmAvg += cmAvg;
-        acc.cmLowest += cmLowest;
-        acc.finalValue += finalValue;
+        const values = calculateItemValue(item);
+        if (values.isGraded) {
+          acc.finalValue += values.finalValue;
+        } else {
+          acc.tcgMarket += values.tcg || 0;
+          acc.cmAvg += values.cmAvg || 0;
+          acc.cmLowest += values.cmLowest || 0;
+          acc.finalValue += values.finalValue;
+        }
         return acc;
       },
       { tcgMarket: 0, cmAvg: 0, cmLowest: 0, finalValue: 0 },
@@ -355,12 +362,12 @@ export function TradeCalculator() {
 
   const handleConfirmTrade = () => {
     if (selectedIds.size === 0) {
-      alert("Please select cards to confirm the trade.");
+      toast.info("Please select cards to confirm the trade.");
       return;
     }
 
     if (!user || !db) {
-      alert("Please sign in to confirm trades.");
+      toast.error("Please sign in to confirm trades.");
       return;
     }
 
@@ -377,7 +384,7 @@ export function TradeCalculator() {
   const handleCompleteTradeWithInventory = async () => {
     if (!pendingTradeConfirmation) return;
     if (selectedInventoryIds.size === 0) {
-      alert("Please select cards from your inventory to trade out.");
+      toast.info("Please select cards from your inventory to trade out.");
       return;
     }
 
@@ -397,7 +404,8 @@ export function TradeCalculator() {
           const tcgFull = computeTcgPrice(item, item.condition) || 0;
           const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
           const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
-          marketSuggested = Math.min(tcgFull, cmAvgFull, cmLowFull);
+          const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
+          marketSuggested = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }
         
         const cardData = {
@@ -525,7 +533,7 @@ export function TradeCalculator() {
       await recordTransaction(db, user.uid, transactionData);
 
       // Add incoming cards to inventory
-      const inventoryItems = selectedItems.map(item => {
+      const inventoryItems = selectedItems.map((item, idx) => {
         const inventoryItem = {
           entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           id: item.id || item.baseId || "",
@@ -537,7 +545,9 @@ export function TradeCalculator() {
           condition: item.condition || "NM",
           quantity: 1,
           prices: item.prices || {},
-          addedAt: Date.now()
+          addedAt: Date.now(),
+          buyPrice: itemsIn[idx]?.unitPrice || 0,
+          acquiredVia: "trade",
         };
         
         // Preserve manual entry information
@@ -595,18 +605,18 @@ export function TradeCalculator() {
       triggerQuickAddFeedback(`Trade completed! ${itemsIn.length} card(s) added, ${itemsOut.length} removed.`);
     } catch (error) {
       console.error("Failed to complete trade:", error);
-      alert("Failed to complete trade. Please try again.");
+      toast.error("Failed to complete trade. Please try again.");
     }
   };
 
   const handleSaveAsPending = () => {
     if (selectedIds.size === 0) {
-      alert("Please select cards to save as pending.");
+      toast.info("Please select cards to save as pending.");
       return;
     }
 
     if (pendingDeals.length >= 5) {
-      alert("Maximum 5 pending deals allowed. Please complete or delete existing deals first.");
+      toast.info("Maximum 5 pending deals allowed. Please complete or delete existing deals first.");
       return;
     }
 
@@ -683,6 +693,33 @@ export function TradeCalculator() {
     triggerQuickAddFeedback(`"${manualCard.name}" added to trade calculator`);
   }, [tradeDefaultPct, setTradeItems, triggerQuickAddFeedback]);
 
+  const handleScannedCardsAdd = useCallback((scannedCards) => {
+    const newItems = scannedCards.map((card) => ({
+      id: `${card.id}-trade-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      baseId: card.id,
+      name: card.name,
+      set: card.set,
+      number: card.number,
+      rarity: card.rarity,
+      image: card.image,
+      prices: card.prices || {},
+      condition: card.condition || 'NM',
+      tradePct: tradeDefaultPct,
+      addedAt: Date.now(),
+      isManualEntry: card.isManualEntry || false,
+      manualPrice: card.manualPrice,
+      manualPriceCurrency: card.manualPriceCurrency,
+      isGraded: card.isGraded || false,
+      gradingCompany: card.gradingCompany,
+      grade: card.grade,
+      gradedPrice: card.gradedPrice,
+      gradedPriceCurrency: card.gradedPriceCurrency,
+      notes: card.notes || "",
+    }));
+    setTradeItems(prev => [...prev, ...newItems]);
+    triggerQuickAddFeedback(`${newItems.length} card${newItems.length !== 1 ? 's' : ''} added from scan`);
+  }, [tradeDefaultPct, setTradeItems, triggerQuickAddFeedback]);
+
   // Generate text summary for sharing
   const generateTextSummary = useCallback(() => {
     const selectedItems = tradeItems.filter(it => selectedIds.has(it.id));
@@ -734,14 +771,14 @@ export function TradeCalculator() {
       setTimeout(() => setCopiedText(false), 2000);
     } catch (err) {
       console.error("Failed to copy:", err);
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
   // Generate shareable link by saving to Firestore
   const handleGenerateShareLink = async () => {
     if (!user || !db) {
-      alert("Please sign in to generate a share link.");
+      toast.error("Please sign in to generate a share link.");
       return;
     }
     
@@ -786,7 +823,7 @@ export function TradeCalculator() {
       
     } catch (err) {
       console.error("Failed to generate share link:", err);
-      alert("Failed to generate share link. Please try again.");
+      toast.error("Failed to generate share link. Please try again.");
     } finally {
       setShareLoading(false);
     }
@@ -800,14 +837,14 @@ export function TradeCalculator() {
       setTimeout(() => setCopiedLink(false), 2000);
     } catch (err) {
       console.error("Failed to copy:", err);
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
   // Open share modal
   const handleOpenShareModal = () => {
     if (selectedIds.size === 0) {
-      alert("Please select cards to share.");
+      toast.info("Please select cards to share.");
       return;
     }
     setShareLink(""); // Reset link
@@ -868,7 +905,7 @@ export function TradeCalculator() {
       setSplitCopied(prev => ({ ...prev, [pct]: 'text' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
     } catch (err) {
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
@@ -898,7 +935,7 @@ export function TradeCalculator() {
       const link = `${window.location.origin}/trade-offer?id=${docRef.id}`;
       setSplitShareLinks(prev => ({ ...prev, [pct]: link }));
     } catch (err) {
-      alert("Failed to generate share link.");
+      toast.error("Failed to generate share link.");
     } finally {
       setSplitShareLoading(prev => ({ ...prev, [pct]: false }));
     }
@@ -910,13 +947,13 @@ export function TradeCalculator() {
       setSplitCopied(prev => ({ ...prev, [pct]: 'link' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
     } catch (err) {
-      alert("Failed to copy to clipboard");
+      toast.error("Failed to copy to clipboard");
     }
   };
 
   const handleSaveSplitTierAsPending = (tierItems, pct, totalValue) => {
     if (pendingDeals.length >= 5) {
-      alert("Maximum 5 pending deals allowed. Delete existing deals first.");
+      toast.info("Maximum 5 pending deals allowed. Delete existing deals first.");
       return;
     }
     const desc = `${pct}% tier (${tierItems.length} cards)`;
@@ -1013,6 +1050,13 @@ export function TradeCalculator() {
           </div>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowCardScanner(true)}
+          >
+            <Camera className="h-4 w-4 mr-2" />
+            Scan Cards
+          </Button>
           <Button
             variant="outline"
             onClick={() => setShowManualEntry(true)}
@@ -1301,6 +1345,20 @@ export function TradeCalculator() {
           </div>
         ))}
       </div>
+
+      {/* Card Photo Scanner Modal */}
+      {showCardScanner && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <CardContent className="p-6">
+              <CardPhotoScanner
+                onAddCards={handleScannedCardsAdd}
+                onClose={() => setShowCardScanner(false)}
+              />
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Manual Card Entry Modal */}
       {showManualEntry && (

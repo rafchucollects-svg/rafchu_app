@@ -21,6 +21,8 @@ import {
   updateDoc
 } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { toast } from "@/components/ui/Toaster";
+import { confirm } from "@/components/ui/ConfirmDialog";
 
 /**
  * Messages Page
@@ -299,12 +301,12 @@ export function Messages() {
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
-      alert('Please select an image file');
+      toast.info("Please select an image file");
       return;
     }
 
     if (file.size > 5 * 1024 * 1024) {
-      alert('Image size must be less than 5MB');
+      toast.info("Image size must be less than 5MB");
       return;
     }
 
@@ -358,7 +360,7 @@ export function Messages() {
       setUploadingImage(false);
     } catch (error) {
       console.error("Failed to send message:", error);
-      alert("Failed to send message. Please try again.");
+      toast.error("Failed to send message. Please try again.");
       setUploadingImage(false);
     }
   };
@@ -386,7 +388,7 @@ export function Messages() {
           createdAt: serverTimestamp()
         });
         
-        alert("Transaction marked as completed on your end. Waiting for the other party to confirm.");
+        toast.info("Transaction marked as completed on your end. Waiting for the other party to confirm.");
         
         // Reload transaction
         const transDoc = await getDoc(doc(db, "transactions", newTransaction.id));
@@ -402,9 +404,9 @@ export function Messages() {
         await setDoc(transRef, updateData, { merge: true });
         
         if (updateData.status === "completed") {
-          alert("Transaction confirmed by both parties! You can now leave a rating.");
+          toast.success("Transaction confirmed by both parties! You can now leave a rating.");
         } else {
-          alert("Transaction marked as completed on your end. Waiting for the other party to confirm.");
+          toast.info("Transaction marked as completed on your end. Waiting for the other party to confirm.");
         }
         
         // Reload transaction
@@ -413,7 +415,7 @@ export function Messages() {
       }
     } catch (error) {
       console.error("Failed to mark transaction as completed:", error);
-      alert("Failed to mark transaction as completed. Please try again.");
+      toast.error("Failed to mark transaction as completed. Please try again.");
     }
   };
 
@@ -431,7 +433,7 @@ export function Messages() {
       const existingSnapshot = await getDocs(existingRatingQuery);
       
       if (!existingSnapshot.empty) {
-        alert("You have already rated this transaction.");
+        toast.info("You have already rated this transaction.");
         return;
       }
 
@@ -500,7 +502,7 @@ export function Messages() {
       });
     } catch (error) {
       console.error("Failed to submit rating:", error);
-      alert("Failed to submit rating. Please try again.");
+      toast.error("Failed to submit rating. Please try again.");
     }
   };
   
@@ -514,11 +516,15 @@ export function Messages() {
       (user.uid !== transaction.buyerId);
     
     if (!isVendor) {
-      alert("Only vendors can cancel transactions.");
+      toast.error("Only vendors can cancel transactions.");
       return;
     }
     
-    if (!confirm("Are you sure you want to cancel this transaction? This action cannot be undone and will prevent ratings.")) {
+    if (!(await confirm("Are you sure you want to cancel this transaction? This action cannot be undone and will prevent ratings.", {
+      title: "Cancel transaction",
+      confirmText: "Cancel transaction",
+      variant: "destructive",
+    }))) {
       return;
     }
     
@@ -533,10 +539,10 @@ export function Messages() {
       const transDoc = await getDoc(transRef);
       setTransaction({ id: transaction.id, ...transDoc.data() });
       
-      alert("Transaction cancelled successfully.");
+      toast.success("Transaction cancelled successfully.");
     } catch (error) {
       console.error("Failed to cancel transaction:", error);
-      alert("Failed to cancel transaction. Please try again.");
+      toast.error("Failed to cancel transaction. Please try again.");
     }
   };
   
@@ -569,10 +575,10 @@ export function Messages() {
         createdAt: serverTimestamp(),
       });
       
-      alert("New transaction started! You can now proceed with a new deal.");
+      toast.success("New transaction started! You can now proceed with a new deal.");
     } catch (error) {
       console.error("Failed to start new transaction:", error);
-      alert("Failed to start new transaction. Please try again.");
+      toast.error("Failed to start new transaction. Please try again.");
     }
   };
   
@@ -584,7 +590,7 @@ export function Messages() {
       await deleteDoc(doc(db, "conversations", selectedConversation.id, "messages", messageId));
     } catch (error) {
       console.error("Failed to delete message:", error);
-      alert("Failed to delete message. Please try again.");
+      toast.error("Failed to delete message. Please try again.");
     }
   };
   
@@ -600,10 +606,10 @@ export function Messages() {
       });
       
       setSelectedConversation(null);
-      alert("Conversation hidden successfully.");
+      toast.success("Conversation hidden successfully.");
     } catch (error) {
       console.error("Failed to delete conversation:", error);
-      alert("Failed to delete conversation. Please try again.");
+      toast.error("Failed to delete conversation. Please try again.");
     }
   };
 

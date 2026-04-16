@@ -23,6 +23,32 @@ export default defineConfig({
     pure: ["console.log", "console.debug", "console.info", "console.trace"],
     drop: ["debugger"],
   },
+  build: {
+    // Default is 500kb; we've been blowing past it on the main chunk. We now
+    // split vendors below, so the warning is only meaningful if the *app*
+    // chunk itself grows — bump the floor so we only bark on real regressions.
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        // Split heavy vendor libs into their own chunks so they cache
+        // independently from our app code. A change to a single page no longer
+        // invalidates Firebase/React/framer-motion in users' browser caches,
+        // which is a huge win for repeat visits.
+        manualChunks: (id) => {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("firebase/")) return "vendor-firebase";
+          if (id.includes("@firebase/")) return "vendor-firebase";
+          if (id.includes("framer-motion")) return "vendor-motion";
+          if (id.includes("lucide-react")) return "vendor-icons";
+          if (id.includes("jspdf") || id.includes("html2canvas")) return "vendor-pdf";
+          if (id.includes("signature_pad")) return "vendor-signature";
+          if (id.includes("react-router-dom") || id.includes("/react-router/")) return "vendor-router";
+          if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("scheduler")) return "vendor-react";
+          return "vendor-misc";
+        },
+      },
+    },
+  },
   test: {
     globals: true,
     environment: "jsdom",
