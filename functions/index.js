@@ -4,37 +4,69 @@ const nodemailer = require("nodemailer");
 const https = require("https");
 const https2 = require("https");
 const Papa = require("papaparse");
+const { parseReceipt } = require("./parseReceipt");
+const { parseCardPhoto } = require("./parseCardPhoto");
 
 // Initialize Firebase Admin
 admin.initializeApp();
 
 // ================================================================================
-// SECURE API KEY CONFIGURATION
+// SECURE API KEY CONFIGURATION (Firebase Secrets / dotenv)
 // ================================================================================
-// API keys are stored securely in Firebase Functions config (not in code)
-// Set them using Firebase CLI:
-//   firebase functions:config:set pricecharting.key="YOUR_KEY"
-//   firebase functions:config:set pokeprice.key="YOUR_KEY"
-//   firebase functions:config:set rapidapi.key="YOUR_KEY"
-//   firebase functions:config:set gmail.email="your-email@gmail.com"
-//   firebase functions:config:set gmail.password="your-app-password"
+// The legacy `functions.config()` API is deprecated (shutdown in March 2026).
+// Secrets now live in Google Secret Manager and are injected as environment
+// variables at function invocation time. For local development, values come
+// from functions/.env.local (gitignored).
 //
-// For local development, create .runtimeconfig.json with the same structure
+// ONE-TIME SETUP — run each of these and paste the real key when prompted:
+//   firebase functions:secrets:set POKEPRICE_KEY
+//   firebase functions:secrets:set RAPIDAPI_KEY
+//   firebase functions:secrets:set JUSTTCG_KEY
+//
+// Optional (only if you use the corresponding feature):
+//   firebase functions:secrets:set PRICECHARTING_KEY   (if you re-subscribe)
+//   firebase functions:secrets:set GEMINI_KEY          (receipt / card photo AI)
+//   firebase functions:secrets:set GMAIL_EMAIL         (message email notifications)
+//   firebase functions:secrets:set GMAIL_PASSWORD      (message email notifications)
+//
+// Then redeploy:
+//   firebase deploy --only functions
+//
+// For local development, copy functions/.env.local.example → .env.local
+// and fill in the values. The firebase-functions emulator will load it.
 // ================================================================================
 
-// Email configuration
-const gmailEmail = functions.config().gmail?.email;
-const gmailPassword = functions.config().gmail?.password;
+// Every function that needs an API key declares this array in runWith().
+// Firebase bundles access to these secrets with the function at deploy time
+// and injects them as process.env.<NAME> at runtime.
+//
+// PRICECHARTING_KEY, GMAIL_EMAIL, GMAIL_PASSWORD, and GEMINI_KEY are
+// intentionally NOT in this list — they're optional features. Deploys don't
+// block on them, and their feature paths return empty/fail gracefully if
+// the key isn't set.
+const API_SECRETS = [
+  'POKEPRICE_KEY',
+  'RAPIDAPI_KEY',
+  'JUSTTCG_KEY',
+];
 
-// API Keys (loaded from secure config, with fallbacks for backwards compatibility during migration)
-const PRICECHARTING_API_KEY = functions.config().pricecharting?.key || '2c26ecc62aab254587236b2d91a82a89a289c0bd';
-const POKEPRICE_API_KEY = functions.config().pokeprice?.key || 'pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894';
-const RAPIDAPI_KEY = functions.config().rapidapi?.key || "3f1d6d1f79mshd8247af36109787p17ad74jsn078c111f9c8e";
+// Lazy getters — do NOT read at module scope because secrets aren't populated
+// until a request comes in and the function is invoked.
+const getPriceChartingKey = () => process.env.PRICECHARTING_KEY || '';
+const getPokePriceKey = () => process.env.POKEPRICE_KEY || '';
+const getRapidApiKey = () => process.env.RAPIDAPI_KEY || '';
+const getJustTcgKey = () => process.env.JUSTTCG_KEY || '';
+const getGmailEmail = () => process.env.GMAIL_EMAIL || '';
+const getGmailPassword = () => process.env.GMAIL_PASSWORD || '';
+
+// Backward-compatible aliases so existing code keeps working. These are
+// accessed where needed; the key-name constants below are plain strings.
 const RAPIDAPI_HOST = "cardmarket-api-tcg.p.rapidapi.com";
-
-// JustTCG API for Japanese cards (18,000+ Japanese Pokemon cards)
-const JUSTTCG_API_KEY = functions.config().justtcg?.key || 'tcg_a6f7312e9a51438fb830df77c26cf5d4';
 const JUSTTCG_API_URL = 'https://api.justtcg.com/v1';
+
+// Helper to wrap functions.runWith with our standard secrets declaration.
+// Usage: withSecrets({ memory: '512MB', timeoutSeconds: 60 }).https.onRequest(...)
+const withSecrets = (opts = {}) => functions.runWith({ ...opts, secrets: API_SECRETS });
 
 // TCGdex API (free, no key required) — used as fallback when CardMarket/PriceCharting are unavailable
 const TCGDEX_API_URL = 'https://api.tcgdex.net/v2/en';
@@ -90,21 +122,37 @@ async function searchCardsFromTCGdex(query) {
   }
 }
 
-const mailTransport = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: gmailEmail,
-    pass: gmailPassword,
-  },
-});
+// Lazy mail transport — secrets aren't populated until a function is invoked,
+// so we can't build the transport at module scope. Cache it per cold start.
+let _mailTransport = null;
+function getMailTransport() {
+  if (_mailTransport) return _mailTransport;
+  const user = getGmailEmail();
+  const pass = getGmailPassword();
+  if (!user || !pass) {
+    throw new Error(
+      "Email is not configured. Set GMAIL_EMAIL and GMAIL_PASSWORD secrets: " +
+      "firebase functions:secrets:set GMAIL_EMAIL (and GMAIL_PASSWORD)"
+    );
+  }
+  _mailTransport = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user, pass },
+  });
+  return _mailTransport;
+}
 
 /**
  * Sends an email notification when a new message is sent
  * Triggers on: /conversations/{conversationId}/messages/{messageId}
  */
-exports.sendMessageNotification = functions.firestore
+exports.sendMessageNotification = withSecrets().firestore
   .document("conversations/{conversationId}/messages/{messageId}")
   .onCreate(async (snapshot, context) => {
+    // Skip entirely if Gmail isn't configured — avoids useless Firestore reads.
+    if (!getGmailEmail() || !getGmailPassword()) {
+      return null;
+    }
     try {
       const message = snapshot.data();
       const { conversationId } = context.params;
@@ -159,7 +207,7 @@ exports.sendMessageNotification = functions.firestore
         : message.text?.substring(0, 100) || "(message)";
 
       const mailOptions = {
-        from: `Rafchu TCG <${gmailEmail}>`,
+        from: `Rafchu TCG <${getGmailEmail()}>`,
         to: recipientEmail,
         subject: `New message from ${senderName} on Rafchu TCG`,
         html: `
@@ -260,7 +308,7 @@ exports.sendMessageNotification = functions.firestore
       };
 
       // Send email
-      await mailTransport.sendMail(mailOptions);
+      await getMailTransport().sendMail(mailOptions);
       console.log(`Email sent to ${recipientEmail} for message from ${senderName}`);
 
       return null;
@@ -276,7 +324,7 @@ exports.sendMessageNotification = functions.firestore
  * 
  * Usage: GET /getPsaGradedPrice?name=Charizard&set=Base%20Set&grade=10&cardNumber=4
  */
-exports.getPsaGradedPrice = functions.https.onRequest(async (req, res) => {
+exports.getPsaGradedPrice = withSecrets().https.onRequest(async (req, res) => {
   // Enable CORS for your app
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET');
@@ -304,7 +352,7 @@ exports.getPsaGradedPrice = functions.https.onRequest(async (req, res) => {
     console.log(`Fetching PSA ${grade} price for: ${name} from ${set} #${cardNumber || 'unknown'}`);
 
     // Make request to Pokemon Price Tracker API
-    const apiKey = 'pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894';
+    const apiKey = getPokePriceKey();
     
     // Normalize set name for better matching
     // Pokemon TCG API often returns abbreviated set names (e.g., "SVP" or "SV Black Star Promos")
@@ -503,7 +551,7 @@ async function cachePriceChartingCSVCore() {
   console.log('🔄 Starting PriceCharting CSV cache update...');
     
     try {
-      const csvUrl = `https://www.pricecharting.com/price-guide/download-custom?t=${PRICECHARTING_API_KEY}&category=pokemon-cards`;
+      const csvUrl = `https://www.pricecharting.com/price-guide/download-custom?t=${getPriceChartingKey()}&category=pokemon-cards`;
       
       // Download CSV
       console.log('📥 Downloading CSV from PriceCharting...');
@@ -577,7 +625,7 @@ async function cachePriceChartingCSVCore() {
  * Scheduled function to download and cache PriceCharting CSV daily
  * Runs every day at 2 AM UTC
  */
-exports.cachePriceChartingCSV = functions.runWith({
+exports.cachePriceChartingCSV = withSecrets({
   timeoutSeconds: 540,
   memory: '2GB',
 }).pubsub
@@ -591,7 +639,7 @@ exports.cachePriceChartingCSV = functions.runWith({
  * Manual trigger endpoint for CSV cache initialization
  * Usage: GET /triggerCsvCache
  */
-exports.triggerCsvCache = functions.runWith({
+exports.triggerCsvCache = withSecrets({
   timeoutSeconds: 540,
   memory: '2GB',
 }).https.onRequest(async (req, res) => {
@@ -627,7 +675,7 @@ exports.triggerCsvCache = functions.runWith({
  * Prices are fetched on-demand via fetchMarketPrices when user interacts with card
  * Usage: GET /searchPriceChartingCards?query=pikachu&limit=50
  */
-exports.searchPriceChartingCards = functions.https.onRequest(async (req, res) => {
+exports.searchPriceChartingCards = withSecrets().https.onRequest(async (req, res) => {
   // Enable CORS
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET');
@@ -650,9 +698,9 @@ exports.searchPriceChartingCards = functions.https.onRequest(async (req, res) =>
     console.log(`🔍 Searching PriceCharting API for: "${query}"`);
     
     // Use PriceCharting API search endpoint
-    const searchUrl = `https://www.pricecharting.com/api/products?t=${PRICECHARTING_API_KEY}&q=${encodeURIComponent(query)}&type=videogames&console=pokemon-cards&limit=${limit}`;
+    const searchUrl = `https://www.pricecharting.com/api/products?t=${getPriceChartingKey()}&q=${encodeURIComponent(query)}&type=videogames&console=pokemon-cards&limit=${limit}`;
     
-    console.log('📡 Calling PriceCharting API:', searchUrl.replace(PRICECHARTING_API_KEY, 'API_KEY'));
+    console.log('📡 Calling PriceCharting API:', searchUrl.replace(getPriceChartingKey(), 'API_KEY'));
     
     const response = await fetch(searchUrl);
     
@@ -735,7 +783,7 @@ exports.searchPriceChartingCards = functions.https.onRequest(async (req, res) =>
  * Called when user selects graded option in AddCardModal
  * Usage: GET /fetchGradedPrices?priceChartingId=12345&grade=10&company=PSA
  */
-exports.fetchGradedPrices = functions.https.onRequest(async (req, res) => {
+exports.fetchGradedPrices = withSecrets().https.onRequest(async (req, res) => {
   // Enable CORS
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET');
@@ -759,14 +807,14 @@ exports.fetchGradedPrices = functions.https.onRequest(async (req, res) => {
     // Fetch from PriceCharting API
     let pcUrl;
     if (priceChartingId) {
-      pcUrl = `https://www.pricecharting.com/api/product?t=${PRICECHARTING_API_KEY}&id=${priceChartingId}`;
+      pcUrl = `https://www.pricecharting.com/api/product?t=${getPriceChartingKey()}&id=${priceChartingId}`;
     } else {
       // Build search query with name, set, and number for better matching
       let searchQuery = name;
       if (set) searchQuery += ` ${set}`;
       if (number) searchQuery += ` #${number}`;
       
-      pcUrl = `https://www.pricecharting.com/api/products?t=${PRICECHARTING_API_KEY}&q=${encodeURIComponent(searchQuery)}&type=videogames&console=pokemon-cards&limit=1`;
+      pcUrl = `https://www.pricecharting.com/api/products?t=${getPriceChartingKey()}&q=${encodeURIComponent(searchQuery)}&type=videogames&console=pokemon-cards&limit=1`;
       console.log(`🔍 Searching PriceCharting with: "${searchQuery}"`);
     }
     
@@ -850,7 +898,7 @@ exports.fetchGradedPrices = functions.https.onRequest(async (req, res) => {
  * Returns both US (TCGPlayer) and EU (CardMarket) prices
  * Usage: GET /fetchMarketPrices?name=Pikachu&set=Base%20Set&number=25
  */
-exports.fetchMarketPrices = functions.https.onRequest(async (req, res) => {
+exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
   // Enable CORS
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET');
@@ -897,7 +945,7 @@ exports.fetchMarketPrices = functions.https.onRequest(async (req, res) => {
         const parseResponse = await fetch('https://www.pokemonpricetracker.com/api/v2/parse-title', {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${POKEPRICE_API_KEY}`,
+            'Authorization': `Bearer ${getPokePriceKey()}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -918,7 +966,7 @@ exports.fetchMarketPrices = functions.https.onRequest(async (req, res) => {
             const cardResponse = await fetch(
               `https://www.pokemonpricetracker.com/api/v2/cards?tcgPlayerId=${match.tcgPlayerId}`,
               {
-                headers: { 'Authorization': `Bearer ${POKEPRICE_API_KEY}` },
+                headers: { 'Authorization': `Bearer ${getPokePriceKey()}` },
               }
             );
             
@@ -965,7 +1013,7 @@ exports.fetchMarketPrices = functions.https.onRequest(async (req, res) => {
       
       const cmResponse = await fetch(searchUrl, {
         headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Key': getRapidApiKey(),
           'X-RapidAPI-Host': 'cardmarket-api-tcg.p.rapidapi.com',
         },
       });
@@ -1092,7 +1140,7 @@ exports.fetchMarketPrices = functions.https.onRequest(async (req, res) => {
         if (number) searchQuery += ` #${number}`;
         
         // Get more results to find best match (increased from limit=1 to limit=10)
-        const pcUrl = `https://www.pricecharting.com/api/products?t=${PRICECHARTING_API_KEY}&q=${encodeURIComponent(searchQuery)}&type=videogames&console=pokemon-cards&limit=10`;
+        const pcUrl = `https://www.pricecharting.com/api/products?t=${getPriceChartingKey()}&q=${encodeURIComponent(searchQuery)}&type=videogames&console=pokemon-cards&limit=10`;
         
         console.log(`   Searching PriceCharting: "${searchQuery}"`);
         const pcResponse = await fetch(pcUrl);
@@ -1188,7 +1236,7 @@ exports.fetchMarketPrices = functions.https.onRequest(async (req, res) => {
  * DEPRECATED: Use fetchMarketPrices instead
  * Kept for backwards compatibility during transition
  */
-exports.fetchComprehensivePrices = functions.https.onRequest(async (req, res) => {
+exports.fetchComprehensivePrices = withSecrets().https.onRequest(async (req, res) => {
   // Enable CORS
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET');
@@ -1262,7 +1310,7 @@ exports.fetchComprehensivePrices = functions.https.onRequest(async (req, res) =>
       const parseResponse = await fetch('https://www.pokemonpricetracker.com/api/v2/parse-title', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${POKEPRICE_API_KEY}`,
+          'Authorization': `Bearer ${getPokePriceKey()}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -1281,7 +1329,7 @@ exports.fetchComprehensivePrices = functions.https.onRequest(async (req, res) =>
           const cardResponse = await fetch(
             `https://www.pokemonpricetracker.com/api/v2/cards?tcgPlayerId=${match.tcgPlayerId}&includeEbay=${isGraded === 'true'}`,
             {
-              headers: { 'Authorization': `Bearer ${POKEPRICE_API_KEY}` },
+              headers: { 'Authorization': `Bearer ${getPokePriceKey()}` },
             }
           );
           
@@ -1328,7 +1376,7 @@ exports.fetchComprehensivePrices = functions.https.onRequest(async (req, res) =>
       
       const cmResponse = await fetch(searchUrl, {
         headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Key': getRapidApiKey(),
           'X-RapidAPI-Host': 'cardmarket-api-tcg.p.rapidapi.com',
         },
       });
@@ -1639,7 +1687,7 @@ async function fetchJustTCGCards(query, limit = 20) {
     
     const response = await fetch(`${JUSTTCG_API_URL}/cards?${params}`, {
       headers: {
-        'x-api-key': JUSTTCG_API_KEY
+        'x-api-key': getJustTcgKey()
       }
     });
     
@@ -1672,7 +1720,7 @@ async function fetchJustTCGCardsBySet(setId, limit = 20) {
     
     const response = await fetch(`${JUSTTCG_API_URL}/cards?${params}`, {
       headers: {
-        'x-api-key': JUSTTCG_API_KEY
+        'x-api-key': getJustTcgKey()
       }
     });
     
@@ -2237,7 +2285,7 @@ async function updateAllUserCollections(db) {
  * Scheduled function: Daily card database update
  * Runs at 2 AM UTC every day
  */
-exports.scheduledCardDatabaseUpdate = functions.runWith({
+exports.scheduledCardDatabaseUpdate = withSecrets({
   timeoutSeconds: 540, // 9 minutes
   memory: '2GB'
 }).pubsub
@@ -2316,7 +2364,7 @@ exports.scheduledCardDatabaseUpdate = functions.runWith({
  * One-time initialization function to populate card database
  * Call this manually via HTTPS to initialize the system
  */
-exports.initializeCardDatabase = functions.runWith({
+exports.initializeCardDatabase = withSecrets({
   timeoutSeconds: 540, // 9 minutes
   memory: '2GB'
 }).https.onRequest(async (req, res) => {
@@ -2377,7 +2425,7 @@ exports.initializeCardDatabase = functions.runWith({
  * Runs Phase 3 only (assumes card_database is already up to date).
  * Usage: GET /triggerUserPriceRefresh
  */
-exports.triggerUserPriceRefresh = functions.runWith({
+exports.triggerUserPriceRefresh = withSecrets({
   timeoutSeconds: 300,
   memory: '1GB',
 }).https.onRequest(async (req, res) => {
@@ -2445,7 +2493,7 @@ async function searchCardsFromAPI(query) {
     const url = `https://${RAPIDAPI_HOST}/pokemon/cards/search?search=${encodeURIComponent(query)}`;
     const response = await fetch(url, {
       headers: {
-        'x-rapidapi-key': RAPIDAPI_KEY,
+        'x-rapidapi-key': getRapidApiKey(),
         'x-rapidapi-host': RAPIDAPI_HOST
       }
     });
@@ -2488,7 +2536,7 @@ async function searchCardsFromAPI(query) {
  * 3. Cache new cards automatically
  * 4. Return results
  */
-exports.searchCards = functions.runWith({
+exports.searchCards = withSecrets({
   timeoutSeconds: 60,
   memory: '512MB'
 }).https.onRequest(async (req, res) => {
@@ -2720,7 +2768,7 @@ exports.searchCards = functions.runWith({
  * Get cache statistics - count of cached cards and sample data
  * HTTPS callable function (GET/POST)
  */
-exports.getCacheStats = functions.runWith({
+exports.getCacheStats = withSecrets({
   timeoutSeconds: 60,
   memory: '512MB'
 }).https.onRequest(async (req, res) => {
@@ -2800,7 +2848,7 @@ exports.getCacheStats = functions.runWith({
  * Frontend calls this instead of directly calling RapidAPI
  * Usage: GET /searchCardMarket?q=pikachu&maxResults=50
  */
-exports.searchCardMarket = functions.runWith({
+exports.searchCardMarket = withSecrets({
   timeoutSeconds: 30,
   memory: '256MB'
 }).https.onRequest(async (req, res) => {
@@ -2839,7 +2887,7 @@ exports.searchCardMarket = functions.runWith({
       const response = await fetch(searchUrl, {
         headers: {
           'Accept': 'application/json',
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Key': getRapidApiKey(),
           'X-RapidAPI-Host': RAPIDAPI_HOST,
         },
         cache: 'no-store'
@@ -2899,7 +2947,7 @@ exports.searchCardMarket = functions.runWith({
  * Secure proxy for fetching card details by ID
  * Usage: GET /getCardDetails?id=12345
  */
-exports.getCardDetails = functions.runWith({
+exports.getCardDetails = withSecrets({
   timeoutSeconds: 30,
   memory: '256MB'
 }).https.onRequest(async (req, res) => {
@@ -2931,7 +2979,7 @@ exports.getCardDetails = functions.runWith({
     const response = await fetch(detailUrl, {
       headers: {
         'Accept': 'application/json',
-        'X-RapidAPI-Key': RAPIDAPI_KEY,
+        'X-RapidAPI-Key': getRapidApiKey(),
         'X-RapidAPI-Host': RAPIDAPI_HOST,
       },
       cache: 'no-store'
@@ -2973,7 +3021,7 @@ exports.getCardDetails = functions.runWith({
  *   - limit: number of logs to return (default: 20)
  *   - status: filter by status ('success', 'error', or 'all')
  */
-exports.getUpdateLogs = functions.https.onRequest(async (req, res) => {
+exports.getUpdateLogs = withSecrets().https.onRequest(async (req, res) => {
   // CORS headers
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -3036,7 +3084,7 @@ exports.getUpdateLogs = functions.https.onRequest(async (req, res) => {
  *   - limit: number of sync logs to return (default: 5)
  *   - minChange: minimum absolute price change to include (default: 0)
  */
-exports.getPriceChanges = functions.https.onRequest(async (req, res) => {
+exports.getPriceChanges = withSecrets().https.onRequest(async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type');
@@ -3090,7 +3138,7 @@ exports.getPriceChanges = functions.https.onRequest(async (req, res) => {
  *   - userId: the user's Firebase UID (required)
  *   - collection: 'vendor' or 'collector' (default: 'vendor')
  */
-exports.checkInventoryPriceFreshness = functions.https.onRequest(async (req, res) => {
+exports.checkInventoryPriceFreshness = withSecrets().https.onRequest(async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type');
@@ -3225,7 +3273,7 @@ const TCG_POCKET_SETS = [
  *   - userId: the user's Firebase UID (required)
  *   - dryRun: if 'true', just report what would be changed without saving
  */
-exports.migrateTcgPocketCards = functions.runWith({
+exports.migrateTcgPocketCards = withSecrets({
   timeoutSeconds: 300,
   memory: '1GB'
 }).https.onRequest(async (req, res) => {
@@ -3297,7 +3345,7 @@ exports.migrateTcgPocketCards = functions.runWith({
           method: 'GET',
           headers: {
             'x-rapidapi-host': 'cardmarket-api-tcg.p.rapidapi.com',
-            'x-rapidapi-key': '3f1d6d1f79mshd8247af36109787p17ad74jsn078c111f9c8e'
+            'x-rapidapi-key': getRapidApiKey()
           }
         });
         
@@ -3455,7 +3503,7 @@ exports.migrateTcgPocketCards = functions.runWith({
  *   - batchSize: number of cards to process per batch (default: 10)
  *   - skipGraded: if 'true', skip graded price fetching (faster but no graded prices)
  */
-exports.forceUpdateAllCards = functions.runWith({
+exports.forceUpdateAllCards = withSecrets({
   timeoutSeconds: 540, // 9 minutes max
   memory: '2GB'
 }).https.onRequest(async (req, res) => {
@@ -3642,7 +3690,7 @@ exports.forceUpdateAllCards = functions.runWith({
  * Smart search: Handles combined name+number queries like "gengar ex 088"
  * by searching name only and filtering by number locally
  */
-exports.searchJapaneseCards = functions.runWith({
+exports.searchJapaneseCards = withSecrets({
   timeoutSeconds: 30,
   memory: '256MB'
 }).https.onRequest(async (req, res) => {
@@ -3764,7 +3812,7 @@ exports.searchJapaneseCards = functions.runWith({
  * Get Japanese card sets from JustTCG
  * Usage: GET /getJapaneseSets?limit=50
  */
-exports.getJapaneseSets = functions.runWith({
+exports.getJapaneseSets = withSecrets({
   timeoutSeconds: 30,
   memory: '256MB'
 }).https.onRequest(async (req, res) => {
@@ -3788,7 +3836,7 @@ exports.getJapaneseSets = functions.runWith({
     
     const response = await fetch(`${JUSTTCG_API_URL}/sets?${params}`, {
       headers: {
-        'x-api-key': JUSTTCG_API_KEY
+        'x-api-key': getJustTcgKey()
       }
     });
     
@@ -3819,7 +3867,7 @@ exports.getJapaneseSets = functions.runWith({
  * Sync popular Japanese cards to our database (runs weekly)
  * This caches the most popular Japanese promos for faster access
  */
-exports.syncJapaneseCards = functions.runWith({
+exports.syncJapaneseCards = withSecrets({
   timeoutSeconds: 540,
   memory: '2GB'
 }).pubsub
@@ -3916,7 +3964,7 @@ exports.syncJapaneseCards = functions.runWith({
  * Manually trigger Japanese card sync (for testing)
  * Usage: GET /triggerJapaneseSync?token=rafchu-force-update-2024
  */
-exports.triggerJapaneseSync = functions.runWith({
+exports.triggerJapaneseSync = withSecrets({
   timeoutSeconds: 540,
   memory: '2GB'
 }).https.onRequest(async (req, res) => {
@@ -4050,7 +4098,7 @@ async function syncSetCatalogCore() {
     const response = await fetch(url, {
       headers: {
         'Accept': 'application/json',
-        'X-RapidAPI-Key': RAPIDAPI_KEY,
+        'X-RapidAPI-Key': getRapidApiKey(),
         'X-RapidAPI-Host': RAPIDAPI_HOST,
       },
     });
@@ -4169,7 +4217,7 @@ async function syncSetCatalogCore() {
 /**
  * Scheduled function to sync set catalog weekly (Sunday 3AM UTC)
  */
-exports.syncSetCatalog = functions.runWith({
+exports.syncSetCatalog = withSecrets({
   timeoutSeconds: 120,
   memory: '256MB',
 }).pubsub
@@ -4183,7 +4231,7 @@ exports.syncSetCatalog = functions.runWith({
  * Manual trigger endpoint for set catalog sync
  * Usage: GET /triggerSetCatalogSync
  */
-exports.triggerSetCatalogSync = functions.runWith({
+exports.triggerSetCatalogSync = withSecrets({
   timeoutSeconds: 120,
   memory: '256MB',
 }).https.onRequest(async (req, res) => {
@@ -4213,3 +4261,13 @@ exports.triggerSetCatalogSync = functions.runWith({
     });
   }
 });
+
+// ================================================================================
+// EXPENSE RECEIPT OCR (Gemini Vision)
+// ================================================================================
+exports.parseReceipt = parseReceipt;
+
+// ================================================================================
+// CARD PHOTO SCANNER (Gemini Vision)
+// ================================================================================
+exports.parseCardPhoto = parseCardPhoto;

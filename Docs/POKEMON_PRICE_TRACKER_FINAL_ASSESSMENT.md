@@ -3,7 +3,7 @@
 **Date:** October 13, 2025  
 **API Version:** v2  
 **Your Subscription:** Pro  
-**API Key:** `pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894`
+**API Key:** `REDACTED_POKEPRICE_KEY`
 
 ---
 
@@ -12,7 +12,7 @@
 ```bash
 curl -X GET \
   https://www.pokemonpricetracker.com/api/v2/cards \
-  -H "Authorization: Bearer pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894"
+  -H "Authorization: Bearer REDACTED_POKEPRICE_KEY"
 ```
 
 ✅ This is working perfectly  

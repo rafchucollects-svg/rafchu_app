@@ -41,7 +41,7 @@ The Card Search is showing an API error. **The API key is correctly configured**
 3. Try searching for a card
 4. Check the Network tab for the actual error
 
-The API key is in the code: `3f1d6d1f79mshd8247af36109787p17ad74jsn078c111f9c8e`
+The API key is in the code: `REDACTED_RAPIDAPI_KEY`
 
 ---
 

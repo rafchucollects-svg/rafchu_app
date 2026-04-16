@@ -1,7 +1,7 @@
 # JustTCG.com API Investigation
 
 **Date:** October 13, 2025  
-**API Key Provided:** `tcg_a6f7312e9a51438fb830df77c26cf5d4`  
+**API Key Provided:** `REDACTED_JUSTTCG_KEY`  
 **Status:** ⚠️ Unable to Connect - Cloudflare Error 1014
 
 ---
@@ -66,7 +66,7 @@ From their documentation example:
 ```javascript
 import { JustTCG } from 'justtcg-js';
 
-const client = new JustTCG({ apiKey: 'tcg_a6f7312e9a51438fb830df77c26cf5d4' });
+const client = new JustTCG({ apiKey: 'REDACTED_JUSTTCG_KEY' });
 
 // Search for cards
 const results = await client.v1.cards.search({
@@ -264,7 +264,7 @@ Compare to Pokemon Price Tracker:
 const response = await fetch('https://api.justtcg.com/v2/cards', {
   method: 'GET',
   headers: {
-    'Authorization': 'Bearer tcg_a6f7312e9a51438fb830df77c26cf5d4'
+    'Authorization': 'Bearer REDACTED_JUSTTCG_KEY'
   },
   params: {
     game: 'Pokemon',

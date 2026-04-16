@@ -1,6 +1,6 @@
 # Pokemon Price Tracker API - COMPLETE GUIDE
 
-**Your API Key:** `pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894`  
+**Your API Key:** `REDACTED_POKEPRICE_KEY`  
 **Plan:** Pro  
 **Base URL:** `https://www.pokemonpricetracker.com/api/v2`
 

@@ -1,7 +1,7 @@
 # Pokemon Price Tracker API - What You Have Access To
 **Your Subscription is Active!** 🎉
 
-**API Key:** `pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894`  
+**API Key:** `REDACTED_POKEPRICE_KEY`  
 **Plan:** Pro (based on key prefix `pokeprice_pro_`)
 
 ---
@@ -62,7 +62,7 @@ https://www.pokemonpricetracker.com/api/v2
 
 ### Authentication
 ```bash
-Authorization: Bearer pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894
+Authorization: Bearer REDACTED_POKEPRICE_KEY
 ```
 
 ---
@@ -327,7 +327,7 @@ Based on standard Pro tier limits:
 
 1. **Test Your API Key:**
    ```bash
-   curl -H "Authorization: Bearer pokeprice_pro_53bd47a27e9398b64d62eb62228447390605bed10a7c7894" \
+   curl -H "Authorization: Bearer REDACTED_POKEPRICE_KEY" \
      https://www.pokemonpricetracker.com/api/v2/sets
    ```
 

@@ -8,3 +8,11 @@ typings/
 # Node.js dependency directory
 node_modules/
 *.local
+.runtimeconfig.json
+
+# Firebase Functions environment files (contain secrets)
+# Only the .env.local.example template is committed.
+.env
+.env.local
+.env.*.local
+.env.rafchu-tcg-app

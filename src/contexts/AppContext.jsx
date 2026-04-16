@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, onSnapshot, getDoc, setDoc } from "firebase/firestore";
 import { useCommunityImages } from "@/hooks/useCommunityImages";
@@ -24,6 +24,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
   
   // Track current path for collection selection
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
@@ -126,6 +127,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
         setUserProfile(null);
         setNeedsOnboarding(false);
       }
+      setAuthLoading(false);
     });
     return () => unsubscribe();
   }, [auth, db]);
@@ -231,7 +233,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
           }
         } else {
           setCollectionItems([]);
-          setCashData({ physical: [], digital: [] });
+          setCashData({ physical: [], digital: [], pending: [] });
         }
       },
       (error) => {
@@ -345,15 +347,41 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     }
   }, [user, db, defaultCondition, collectionItems, currentPath]);
 
-  const removeFromCollection = useCallback((entryId) => {
-    setCollectionItems(prev => prev.filter(item => item.entryId !== entryId));
-  }, []);
+  const removeFromCollection = useCallback(async (entryId) => {
+    if (!user || !db) return;
+    try {
+      const isCollectorPath = currentPath.includes('/collector/');
+      const collectionName = isCollectorPath ? "collector_collections" : "collections";
+      const ref = doc(db, collectionName, user.uid);
+      const snap = await getDoc(ref);
+      const latestData = snap.exists() ? snap.data() : {};
+      const latestItems = Array.isArray(latestData.items) ? latestData.items : [];
+      const updatedItems = latestItems.filter(item => item.entryId !== entryId);
+      await setDoc(ref, { items: updatedItems }, { merge: true });
+    } catch (error) {
+      console.error("Failed to remove from collection", error);
+      alert("Failed to remove card. Please try again.");
+    }
+  }, [user, db, currentPath]);
 
-  const updateCollectionItem = useCallback((entryId, updates) => {
-    setCollectionItems(prev =>
-      prev.map(item => (item.entryId === entryId ? { ...item, ...updates } : item))
-    );
-  }, []);
+  const updateCollectionItem = useCallback(async (entryId, updates) => {
+    if (!user || !db) return;
+    try {
+      const isCollectorPath = currentPath.includes('/collector/');
+      const collectionName = isCollectorPath ? "collector_collections" : "collections";
+      const ref = doc(db, collectionName, user.uid);
+      const snap = await getDoc(ref);
+      const latestData = snap.exists() ? snap.data() : {};
+      const latestItems = Array.isArray(latestData.items) ? latestData.items : [];
+      const updatedItems = latestItems.map(item =>
+        item.entryId === entryId ? { ...item, ...updates } : item
+      );
+      await setDoc(ref, { items: updatedItems }, { merge: true });
+    } catch (error) {
+      console.error("Failed to update collection item", error);
+      alert("Failed to update card. Please try again.");
+    }
+  }, [user, db, currentPath]);
 
   // Update cash data and save to Firestore
   const updateCashData = useCallback(async (newCashData) => {
@@ -451,20 +479,24 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     });
   }, []);
 
-  const value = {
+  // Memoize the context value so consumers only re-render when one of the
+  // underlying pieces of state actually changes, rather than on every render
+  // of AppProvider.
+  const value = useMemo(() => ({
     // Auth
     user,
     userProfile,
     setUserProfile,
     needsOnboarding,
     setNeedsOnboarding,
+    authLoading,
     auth,
     db,
-    
+
     // Navigation
     workspace,
     setWorkspace,
-    
+
     // Card search
     query,
     setQuery,
@@ -482,7 +514,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     setSelectedCards,
     toggleCardSelection,
     clearSelectedCards,
-    
+
     // Collection
     collectionItems,
     collection: collectionItems, // Alias for Insights pages
@@ -500,28 +532,28 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     addToCollection,
     removeFromCollection,
     updateCollectionItem,
-    
+
     // Cash balance
     cashData,
     updateCashData,
-    
+
     // Wishlist
     wishlistItems,
     setWishlistItems,
     addToWishlist,
     removeFromWishlist,
-    
+
     // Trade & Buy
     tradeItems,
     setTradeItems,
     buyItems,
     setBuyItems,
-    
+
     // Transactions
     transactions,
     setTransactions,
     addTransaction,
-    
+
     // UI
     quickAddFeedback,
     triggerQuickAddFeedback,
@@ -531,14 +563,14 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     setFeedbackModalOpen,
     loginModalOpen,
     setLoginModalOpen,
-    
+
     // Auth handlers
     authHandlers,
     defaultCondition,
     setDefaultCondition,
     roundUpPrices,
     setRoundUpPrices,
-    
+
     // Share
     shareEnabled,
     setShareEnabled,
@@ -558,13 +590,13 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     setCurrency,
     secondaryCurrency,
     setSecondaryCurrency,
-    
+
     // Community images
     communityImages: communityImagesHook.communityImages,
     getImageForCard: communityImagesHook.getImageForCard,
     refreshCommunityImages: communityImagesHook.refresh,
     invalidateCommunityImagesCache: communityImagesHook.invalidateCache,
-    
+
     // History & insights
     historyData,
     setHistoryData,
@@ -572,7 +604,42 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     setHistoryMetric,
     historyRange,
     setHistoryRange,
-  };
+  }), [
+    // Auth
+    user, userProfile, needsOnboarding, authLoading, auth, db,
+    // Navigation
+    workspace,
+    // Card search
+    query, suggestions, showAllSuggestions, loading, error, activeCard,
+    selectedCards, toggleCardSelection, clearSelectedCards,
+    // Collection
+    collectionItems, collectionSearch, collectionSortBy, collectionSortDir,
+    selectedCollectionIds, viewingUid,
+    addToCollection, removeFromCollection, updateCollectionItem,
+    // Cash balance
+    cashData, updateCashData,
+    // Wishlist
+    wishlistItems, addToWishlist, removeFromWishlist,
+    // Trade & Buy
+    tradeItems, buyItems,
+    // Transactions
+    transactions, addTransaction,
+    // UI
+    quickAddFeedback, triggerQuickAddFeedback,
+    vendorRequestModalOpen, feedbackModalOpen, loginModalOpen,
+    // Auth handlers & prefs
+    authHandlers, defaultCondition, roundUpPrices,
+    // Share
+    shareEnabled, shareUsernameInput, shareUsernameStored, shareOwnerTitle,
+    shareTargetUid, isShareView, marketSource, currency, secondaryCurrency,
+    // Community images
+    communityImagesHook.communityImages,
+    communityImagesHook.getImageForCard,
+    communityImagesHook.refresh,
+    communityImagesHook.invalidateCache,
+    // History
+    historyData, historyMetric, historyRange,
+  ]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
