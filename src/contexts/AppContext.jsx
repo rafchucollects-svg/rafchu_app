@@ -88,7 +88,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   const [shareTargetUid, setShareTargetUid] = useState(null);
   const [isShareView, setIsShareView] = useState(false);
   const [marketSource, setMarketSource] = useState("cardmarket"); // "tcg" or "cardmarket"
-  const [currency, setCurrency] = useState("EUR"); // EUR, USD, SEK, NOK, DKK, ISK
+  const [currency, setCurrency] = useState("EUR"); // EUR, USD, GBP, SEK, NOK, DKK, ISK
   const [secondaryCurrency, setSecondaryCurrency] = useState(null); // Optional secondary currency for vendors
   
   // History & insights

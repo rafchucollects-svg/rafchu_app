@@ -14,6 +14,7 @@ export const DEFAULT_CURRENCY = "EUR";
 export const SUPPORTED_CURRENCIES = [
   { code: "EUR", name: "Euro (€)", symbol: "€" },
   { code: "USD", name: "US Dollar ($)", symbol: "$" },
+  { code: "GBP", name: "British Pound (£)", symbol: "£" },
   { code: "SEK", name: "Swedish Krona (kr)", symbol: "kr" },
   { code: "NOK", name: "Norwegian Krone (kr)", symbol: "kr" },
   { code: "DKK", name: "Danish Krone (kr)", symbol: "kr" },
@@ -257,6 +258,7 @@ export function formatCurrency(n, currency = DEFAULT_CURRENCY) {
 let FX_RATES = {
   USD: 1.0,
   EUR: 0.92,
+  GBP: 0.79,
   SEK: 10.5,
   NOK: 10.8,
   DKK: 6.9,
@@ -281,6 +283,7 @@ async function fetchFXRates() {
       FX_RATES = {
         USD: 1.0,
         EUR: data.rates.EUR || 0.92,
+        GBP: data.rates.GBP || 0.79,
         SEK: data.rates.SEK || 10.5,
         NOK: data.rates.NOK || 10.8,
         DKK: data.rates.DKK || 6.9,
