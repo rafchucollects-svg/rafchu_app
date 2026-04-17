@@ -176,7 +176,14 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
       setSaving(true);
       setSaveError("");
       try {
-        await onImageUpdate(item.entryId, card.image);
+        let finalUrl = card.image;
+        try {
+          const blob = await fetchImageAsBlob(card.image);
+          finalUrl = await uploadBlobToStorage(blob, "png");
+        } catch (uploadErr) {
+          console.warn("Could not re-upload search image, saving URL directly:", uploadErr);
+        }
+        await onImageUpdate(item.entryId, finalUrl);
         setSaved(true);
         setTimeout(() => onClose(), 1200);
       } catch (err) {
@@ -186,7 +193,7 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
         setSelected(null);
       }
     },
-    [item, onImageUpdate, onClose]
+    [item, onImageUpdate, onClose, uploadBlobToStorage]
   );
 
   // ─── Upload ─────────────────────────────────────────────────────────

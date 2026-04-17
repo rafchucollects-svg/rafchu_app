@@ -235,34 +235,36 @@ export function SuggestionItem({
   const thumb = item.image;
   const isVendor = mode === "vendor";
   return (
-    <div className="flex items-center justify-between rounded-lg p-2 hover:bg-muted">
+    <div className="rounded-lg p-2 hover:bg-muted">
+      {/* Card info row: always full width */}
       <button
-        className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        className="flex w-full items-center gap-2.5 text-left"
         onClick={() => onPick(item)}
       >
         {thumb ? (
           <img
             src={thumb}
             alt={item.name}
-            className="h-14 w-10 rounded-md border object-cover"
+            className="h-14 w-10 rounded-md border object-cover flex-shrink-0"
           />
         ) : (
-          <div className="h-14 w-10 rounded-md border bg-slate-200 flex items-center justify-center text-[8px] text-gray-500 font-semibold text-center p-1 leading-tight">
-            IMAGE NOT FOUND
+          <div className="h-14 w-10 rounded-md border bg-slate-200 flex items-center justify-center text-[8px] text-gray-500 font-semibold text-center p-1 leading-tight flex-shrink-0">
+            NO IMG
           </div>
         )}
-        <div className="min-w-0">
-          <div className="truncate font-medium">{item.name}</div>
-          <div className="truncate text-xs opacity-70">
-            {(item.set || "—")} • {(item.rarity || "—")} • #
-            {item.number || "—"}
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium text-sm sm:text-base">{item.name}</div>
+          <div className="truncate text-[11px] sm:text-xs opacity-70">
+            {(item.set || "—")} • {(item.rarity || "—")} • #{item.number || "—"}
           </div>
         </div>
       </button>
-      <div className="ml-3 flex items-center gap-2">
+      {/* Action buttons row */}
+      <div className="flex items-center gap-1.5 mt-1.5 pl-[50px]">
         <Button
           size="sm"
           variant="secondary"
+          className="text-xs h-7 px-2.5"
           onClick={() => onQuickAddCollection(item)}
         >
           + {isVendor ? 'Inventory' : 'Collection'}
@@ -271,10 +273,10 @@ export function SuggestionItem({
           <Button
             size="sm"
             variant="ghost"
+            className="h-7 px-1.5"
             onClick={() => onQuickAddWishlist(item)}
-            className="text-pink-600 hover:text-pink-700 hover:bg-pink-50"
           >
-            <Heart className="h-4 w-4" />
+            <Heart className="h-3.5 w-3.5 text-pink-600" />
           </Button>
         )}
         {isVendor && (
@@ -282,6 +284,7 @@ export function SuggestionItem({
             <Button
               size="sm"
               variant="outline"
+              className="text-xs h-7 px-2.5"
               onClick={() => onQuickAddTrade(item)}
             >
               + Trade
@@ -289,6 +292,7 @@ export function SuggestionItem({
             <Button
               size="sm"
               variant="outline"
+              className="text-xs h-7 px-2.5"
               onClick={() => onQuickAddBuy(item)}
             >
               + Buy

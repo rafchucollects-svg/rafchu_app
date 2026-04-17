@@ -19,6 +19,82 @@ const RARITY_PHRASES = [
   { phrase: 'radiant', rarity: 'radiant' },
 ];
 
+// Words that commonly appear as prefixes in Pokemon card names.
+// When found standalone (not part of a recognized multi-word set phrase),
+// these stay in the Pokemon name rather than being classified as set filters.
+// e.g. "Shining Magikarp" keeps "shining" in the name,
+//      but "Shining Fates Pikachu" extracts "shining fates" as a set phrase.
+const POKEMON_NAME_PREFIXES = new Set([
+  'shining',    // Shining Magikarp, Shining Mew, Shining Charizard
+  'light',      // Light Dragonite, Light Flareon, Light Arcanine
+  'mega',       // Mega Charizard, Mega Mewtwo, Mega Rayquaza
+  'ancient',    // Ancient Mew, Ancient Booster Energy
+  'primal',     // Primal Kyogre, Primal Groudon
+  'roaring',    // Roaring Moon (Paradox Pokemon)
+  'team',       // Team Rocket's Mewtwo, Team Magma's Groudon
+  'ultra',      // Ultra Necrozma
+  'dragon',     // Dragon type context
+  'stellar',    // Stellar Tera type (SV mechanic)
+  'burning',    // Burning Energy
+  'hidden',     // Hidden card names
+  'phantom',    // Phantom Gate ability
+  'lost',       // Lost Zone context (Lost Vacuum, etc.)
+  'cosmic',     // Cosmic card names
+  'fusion',     // Fusion Strike Energy
+  'darkness',   // Darkness type/energy
+  'silver',     // Silver Bangle, etc.
+  'origin',     // Origin Forme Dialga/Palkia
+  'evolution',  // Mega Evolution Pokemon names
+  'shadow',     // Shadow Pokemon
+]);
+
+// Multi-word set name phrases detected BEFORE individual word classification.
+// Pre-sorted longest-first for greedy matching.
+const KNOWN_SET_PHRASES = [
+  // Classic sets
+  'base set', 'team rocket', 'gym heroes', 'gym challenge',
+  'neo genesis', 'neo discovery', 'neo revelation', 'neo destiny',
+  // EX era
+  'hidden legends', 'team rocket returns', 'unseen forces',
+  'delta species', 'legend maker', 'holon phantoms', 'crystal guardians',
+  'dragon frontiers', 'power keepers',
+  // Diamond & Pearl era
+  'diamond pearl', 'mysterious treasures', 'secret wonders', 'great encounters',
+  'majestic dawn', 'legends awakened',
+  // HeartGold SoulSilver era
+  'heartgold soulsilver', 'call of legends',
+  // Black & White era
+  'black white', 'dark explorers', 'dragons exalted', 'dragon vault',
+  'boundaries crossed', 'plasma storm', 'plasma freeze', 'plasma blast',
+  'legendary treasures',
+  // XY era
+  'phantom forces', 'primal clash', 'roaring skies', 'ancient origins',
+  'steam siege', 'fates collide',
+  // Sun & Moon era
+  'sun moon', 'guardians rising', 'burning shadows', 'crimson invasion',
+  'ultra prism', 'forbidden light', 'celestial storm', 'dragon majesty',
+  'team up', 'unbroken bonds', 'unified minds', 'hidden fates', 'cosmic eclipse',
+  // Sword & Shield era
+  'sword shield', 'rebel clash', 'darkness ablaze', 'vivid voltage',
+  "champion's path", 'shining fates', 'battle styles', 'chilling reign',
+  'evolving skies', 'fusion strike', 'brilliant stars', 'astral radiance',
+  'pokemon go', 'lost origin', 'silver tempest', 'crown zenith',
+  // Scarlet & Violet era
+  'scarlet violet', 'paldea evolved', 'obsidian flames', 'paradox rift',
+  'paldean fates', 'temporal forces', 'twilight masquerade', 'shrouded fable',
+  'stellar crown', 'surging sparks', 'prismatic evolutions',
+  'destined rivals', 'journey together', 'black bolt', 'white flare',
+  // Mega Evolution era
+  'mega evolution', 'phantasmal flames', 'ascended heroes',
+  // Special sets
+  'pokemon 151', 'classic collection', 'special delivery',
+  'celebrations classic',
+  // Promo sets
+  'sv promos', 'sv promo', 'swsh promos', 'swsh promo',
+  'sm promos', 'sm promo', 'bw promos', 'bw promo', 'xy promos', 'xy promo',
+  'coro coro',
+].sort((a, b) => b.length - a.length);
+
 // =============================================================================
 // QUERY PREPROCESSING - Typo Correction & Set Expansion
 // =============================================================================
@@ -316,6 +392,12 @@ export function expandSetAbbreviations(query) {
       continue;
     }
     
+    // Skip ambiguous single-word abbreviations that could be Pokemon name prefixes
+    // e.g. "roaring" should NOT expand to "Roaring Skies" when user searches "Roaring Moon"
+    if (!abbrev.includes(' ') && POKEMON_NAME_PREFIXES.has(abbrev)) {
+      continue;
+    }
+    
     // Match abbreviation as a word boundary (not part of another word)
     const regex = new RegExp(`\\b${escapeRegex(abbrev)}\\b`, 'gi');
     if (regex.test(queryLower)) {
@@ -341,6 +423,17 @@ export function expandSetAbbreviations(query) {
  */
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Check if a card type keyword appears as a whole word in text.
+ * "v" matches "Giratina V" but NOT "Giratina VSTAR".
+ * "ex" matches "Charizard ex" but NOT "example".
+ */
+function hasCardTypeAsWholeWord(text, type) {
+  if (!text || !type) return false;
+  const pattern = new RegExp(`\\b${escapeRegex(type)}\\b`, 'i');
+  return pattern.test(text);
 }
 
 /**
@@ -456,6 +549,8 @@ const SET_RELATED_WORDS = new Set([
   'mega', 'evolution', 'meg', 'phantasmal', 'pfl', 'ascended', 'asc',
   // Promo-related words
   'promo', 'promos', 'promotional',
+  // Promo set names (never Pokemon names)
+  'corocoro',
 ]);
 
 /**
@@ -503,6 +598,16 @@ export function parseQuery(query) {
     }
   }
   
+  // Phase 1.5: Detect multi-word set phrases BEFORE individual word classification.
+  // "shining fates pikachu" → extracts "shining fates" as set, keeps "pikachu" as name.
+  // "shining magikarp" → no set phrase found, "shining" stays in the Pokemon name.
+  for (const phrase of KNOWN_SET_PHRASES) {
+    if (queryLower.includes(phrase)) {
+      phrase.split(/\s+/).forEach(w => setWords.push(w));
+      queryLower = queryLower.replace(phrase, ' ').replace(/\s+/g, ' ').trim();
+    }
+  }
+  
   // Phase 2: Classify remaining individual words
   const queryWords = queryLower.split(/\s+/).filter(Boolean);
   
@@ -521,8 +626,11 @@ export function parseQuery(query) {
       continue;
     }
     
-    // Check if it's a set-related word (vivid, voltage, crown, zenith, etc.)
-    if (isSetRelatedWord(word)) {
+    // Only classify as set word if it's NOT an ambiguous Pokemon name prefix.
+    // Words like "celebrations", "evolutions" → always set words.
+    // Words like "shining", "mega", "roaring" → stay in name unless already
+    // extracted as part of a multi-word set phrase in Phase 1.5.
+    if (isSetRelatedWord(word) && !POKEMON_NAME_PREFIXES.has(word)) {
       setWords.push(word);
       continue;
     }
@@ -630,17 +738,17 @@ export function filterByRelevance(results, query) {
     }
     
     // RULE 2: If query has a card type (ex, gx, v), check name OR type fields
-    // Some APIs store "ex" in the name, others in supertype/product_type
+    // Uses whole-word matching so "v" matches "Giratina V" but not "Giratina VSTAR"
     if (cardTypes.length > 0) {
       const supertype = (card.supertype || '').toLowerCase();
       const productType = (card.product_type || '').toLowerCase();
       const rarity = (card.rarity || '').toLowerCase();
       
       const hasAnyType = cardTypes.some(type => 
-        nameLower.includes(type) || 
-        supertype.includes(type) || 
-        productType.includes(type) ||
-        rarity.includes(type)
+        hasCardTypeAsWholeWord(nameLower, type) || 
+        hasCardTypeAsWholeWord(supertype, type) || 
+        hasCardTypeAsWholeWord(productType, type) ||
+        hasCardTypeAsWholeWord(rarity, type)
       );
       if (!hasAnyType) {
         return false;
@@ -719,11 +827,13 @@ export function filterByRelevance(results, query) {
   // Helper to check set match
   // Also matches parent sets (e.g., "classic" also matches "celebrations" since Classic Collection is within Celebrations)
   const SET_FILTER_EXPANSIONS = {
-    'classic': ['classic', 'celebrations'], // Classic Collection is within Celebrations
-    'collection': ['collection'], // Don't expand generic "collection"
-    'promo': ['promo'], // Match any promo set (XY Promos, SWSH Promos, etc.)
+    'classic': ['classic', 'celebrations'],
+    'collection': ['collection'],
+    'promo': ['promo'],
     'promos': ['promo'],
     'promotional': ['promo'],
+    'corocoro': ['corocoro', 'coro'],
+    'coro': ['corocoro', 'coro'],
   };
   
   const matchesSet = (card) => {
@@ -813,16 +923,17 @@ export function scoreRelevance(card, query) {
   }
   
   // 7. CARD TYPE MATCH (10 points)
+  // Uses whole-word matching: "v" matches "Giratina V" but not "Giratina VSTAR"
   if (cardTypes.length > 0) {
     const supertype = (card.supertype || '').toLowerCase();
     const productType = (card.product_type || '').toLowerCase();
     const rarity = (card.rarity || '').toLowerCase();
     
     const hasType = cardTypes.some(type => 
-      nameLower.includes(type) || 
-      supertype.includes(type) || 
-      productType.includes(type) ||
-      rarity.includes(type)
+      hasCardTypeAsWholeWord(nameLower, type) || 
+      hasCardTypeAsWholeWord(supertype, type) || 
+      hasCardTypeAsWholeWord(productType, type) ||
+      hasCardTypeAsWholeWord(rarity, type)
     );
     if (hasType) {
       score += 10;

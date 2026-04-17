@@ -729,8 +729,10 @@ export function CardLadderImport({ onClose, collectionName }) {
         }
       }
 
-      const isUserUploadedImage = (url) =>
-        typeof url === "string" && url.includes("firebasestorage.googleapis.com");
+      const hasUserChosenImage = (item) =>
+        item.imageManuallySet === true ||
+        (typeof item.image === "string" &&
+          item.image.includes("firebasestorage.googleapis.com"));
 
       const mergedCards = enrichedCards.map((card) => {
         // Find matching old card by ladderId first, then composite key
@@ -750,9 +752,9 @@ export function CardLadderImport({ onClose, collectionName }) {
 
         const merged = { ...card, entryId: oldCard.entryId };
 
-        // Preserve image: always keep user-uploaded; otherwise keep as fallback
-        if (isUserUploadedImage(oldCard.image)) {
+        if (hasUserChosenImage(oldCard)) {
           merged.image = oldCard.image;
+          merged.imageManuallySet = true;
         } else if (!card.image && oldCard.image) {
           merged.image = oldCard.image;
         }

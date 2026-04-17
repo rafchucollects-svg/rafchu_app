@@ -11,15 +11,27 @@ import { useApp } from "@/contexts/AppContext";
  */
 
 export function VendorAccessGuard({ children }) {
-  const { user, userProfile } = useApp();
+  const { user, userProfile, authLoading } = useApp();
   const navigate = useNavigate();
 
-  // If no user, redirect to home
+  // If auth is resolved and no user, redirect to home
   useEffect(() => {
-    if (!user) {
+    if (!authLoading && !user) {
       navigate("/");
     }
-  }, [user, navigate]);
+  }, [user, authLoading, navigate]);
+
+  // Wait for auth to resolve
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[50vh]">
+        <div className="text-center">
+          <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-2"></div>
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return null;
