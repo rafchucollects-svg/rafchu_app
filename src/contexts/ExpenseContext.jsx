@@ -29,6 +29,7 @@ export function ExpenseProvider({ children }) {
 
   const [expenses, setExpenses] = useState([]);
   const [shows, setShows] = useState([]);
+  const [payouts, setPayouts] = useState([]);
   const [corrections, setCorrections] = useState([]);
   const [ecbRates, setEcbRates] = useState({});
   const [loading, setLoading] = useState(true);
@@ -37,12 +38,14 @@ export function ExpenseProvider({ children }) {
     if (!user || !db) {
       setExpenses([]);
       setShows([]);
+      setPayouts([]);
       setCorrections([]);
       setLoading(false);
       return;
     }
     loadExpenses();
     loadShows();
+    loadPayouts();
     loadCorrections();
   }, [user, db]);
 
@@ -159,6 +162,169 @@ export function ExpenseProvider({ children }) {
   );
 
   // =============================
+  // Payouts (reimbursements)
+  // =============================
+
+  const loadPayouts = useCallback(async () => {
+    if (!user || !db) return;
+    try {
+      const col = fsCollection(db, "expense_payouts", user.uid, "entries");
+      const q = query(col, orderBy("date", "desc"));
+      const snap = await getDocs(q);
+      setPayouts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      console.error("Failed to load payouts:", err);
+    }
+  }, [user, db]);
+
+  // Low-level patch that bypasses expense-level recompute logic (no FX refetch).
+  const patchExpenseFields = useCallback(
+    async (expenseId, fields) => {
+      if (!user || !db) return;
+      const patch = { ...fields, updatedAt: Date.now() };
+      await updateDoc(doc(db, "expenses", user.uid, "entries", expenseId), patch);
+      setExpenses((prev) =>
+        prev.map((e) => (e.id === expenseId ? { ...e, ...patch } : e))
+      );
+    },
+    [user, db]
+  );
+
+  const setExpenseSettlementStatus = useCallback(
+    async (expenseId, statusId) => {
+      if (!user || !db) return;
+      const patch = {
+        settlementStatus: statusId,
+      };
+      // Clear payout link when moving away from reimbursed.
+      if (statusId !== "reimbursed") {
+        patch.payoutId = null;
+        patch.reimbursedDate = null;
+      }
+      await patchExpenseFields(expenseId, patch);
+    },
+    [user, db, patchExpenseFields]
+  );
+
+  const addPayout = useCallback(
+    async (payout) => {
+      if (!user || !db) return;
+      const now = Date.now();
+      const expenseIds = payout.expenseIds || [];
+      const fullPayout = {
+        date: payout.date || new Date().toISOString().slice(0, 10),
+        method: payout.method || "Bank Transfer",
+        reference: payout.reference || "",
+        notes: payout.notes || "",
+        expenseIds,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      try {
+        const col = fsCollection(db, "expense_payouts", user.uid, "entries");
+        const docRef = await addDoc(col, fullPayout);
+        const newPayout = { id: docRef.id, ...fullPayout };
+        setPayouts((prev) => [newPayout, ...prev]);
+
+        // Mark linked expenses as reimbursed.
+        await Promise.all(
+          expenseIds.map((eid) =>
+            patchExpenseFields(eid, {
+              settlementStatus: "reimbursed",
+              payoutId: newPayout.id,
+              reimbursedDate: fullPayout.date,
+            })
+          )
+        );
+
+        return newPayout;
+      } catch (err) {
+        console.error("Failed to add payout:", err);
+        throw err;
+      }
+    },
+    [user, db, patchExpenseFields]
+  );
+
+  const updatePayout = useCallback(
+    async (payoutId, updates) => {
+      if (!user || !db) return;
+      const existing = payouts.find((p) => p.id === payoutId);
+      if (!existing) return;
+
+      try {
+        const patched = { ...updates, updatedAt: Date.now() };
+        await updateDoc(
+          doc(db, "expense_payouts", user.uid, "entries", payoutId),
+          patched
+        );
+        const next = { ...existing, ...patched };
+        setPayouts((prev) => prev.map((p) => (p.id === payoutId ? next : p)));
+
+        const prevIds = new Set(existing.expenseIds || []);
+        const nextIds = new Set(next.expenseIds || []);
+        const added = [...nextIds].filter((id) => !prevIds.has(id));
+        const removed = [...prevIds].filter((id) => !nextIds.has(id));
+
+        await Promise.all([
+          ...added.map((eid) =>
+            patchExpenseFields(eid, {
+              settlementStatus: "reimbursed",
+              payoutId,
+              reimbursedDate: next.date,
+            })
+          ),
+          ...removed.map((eid) =>
+            patchExpenseFields(eid, {
+              settlementStatus: "pending",
+              payoutId: null,
+              reimbursedDate: null,
+            })
+          ),
+          // If date changed, refresh reimbursedDate on still-linked expenses.
+          ...(updates.date && updates.date !== existing.date
+            ? [...nextIds]
+                .filter((id) => prevIds.has(id))
+                .map((eid) => patchExpenseFields(eid, { reimbursedDate: next.date }))
+            : []),
+        ]);
+      } catch (err) {
+        console.error("Failed to update payout:", err);
+        throw err;
+      }
+    },
+    [user, db, payouts, patchExpenseFields]
+  );
+
+  const deletePayout = useCallback(
+    async (payoutId) => {
+      if (!user || !db) return;
+      const existing = payouts.find((p) => p.id === payoutId);
+      try {
+        await deleteDoc(doc(db, "expense_payouts", user.uid, "entries", payoutId));
+        setPayouts((prev) => prev.filter((p) => p.id !== payoutId));
+
+        if (existing?.expenseIds?.length) {
+          await Promise.all(
+            existing.expenseIds.map((eid) =>
+              patchExpenseFields(eid, {
+                settlementStatus: "pending",
+                payoutId: null,
+                reimbursedDate: null,
+              })
+            )
+          );
+        }
+      } catch (err) {
+        console.error("Failed to delete payout:", err);
+        throw err;
+      }
+    },
+    [user, db, payouts, patchExpenseFields]
+  );
+
+  // =============================
   // Expense CRUD (must be defined before confirmPerDiem which depends on addExpense)
   // =============================
 
@@ -243,6 +409,9 @@ export function ExpenseProvider({ children }) {
         receiptStoragePath: entry.receiptStoragePath || null,
         ocrData: entry.ocrData || null,
         notes: entry.notes || "",
+        settlementStatus: entry.settlementStatus || "unsettled",
+        payoutId: entry.payoutId || null,
+        reimbursedDate: entry.reimbursedDate || null,
         createdAt: now,
         updatedAt: now,
       };
@@ -366,12 +535,30 @@ export function ExpenseProvider({ children }) {
         }
 
         setExpenses((prev) => prev.filter((e) => e.id !== entryId));
+
+        // Prune this expense from any payout that referenced it.
+        const linkedPayouts = payouts.filter((p) =>
+          (p.expenseIds || []).includes(entryId)
+        );
+        await Promise.all(
+          linkedPayouts.map(async (p) => {
+            const nextIds = (p.expenseIds || []).filter((id) => id !== entryId);
+            const patch = { expenseIds: nextIds, updatedAt: Date.now() };
+            await updateDoc(
+              doc(db, "expense_payouts", user.uid, "entries", p.id),
+              patch
+            );
+            setPayouts((prev) =>
+              prev.map((x) => (x.id === p.id ? { ...x, ...patch } : x))
+            );
+          })
+        );
       } catch (err) {
         console.error("Failed to delete expense:", err);
         throw err;
       }
     },
-    [user, db, expenses]
+    [user, db, expenses, payouts]
   );
 
   const uploadReceipt = useCallback(
@@ -406,10 +593,15 @@ export function ExpenseProvider({ children }) {
     [user, corrections]
   );
 
+  const refreshData = useCallback(async () => {
+    await Promise.all([loadExpenses(), loadShows(), loadPayouts()]);
+  }, [loadExpenses, loadShows, loadPayouts]);
+
   const value = {
     expenses,
     corrections,
     shows,
+    payouts,
     addExpense,
     updateExpense,
     deleteExpense,
@@ -419,9 +611,13 @@ export function ExpenseProvider({ children }) {
     updateShow,
     deleteShow,
     confirmPerDiem,
+    addPayout,
+    updatePayout,
+    deletePayout,
+    setExpenseSettlementStatus,
     ecbRates,
     loading,
-    refreshData: loadExpenses,
+    refreshData,
   };
 
   return <ExpenseContext.Provider value={value}>{children}</ExpenseContext.Provider>;

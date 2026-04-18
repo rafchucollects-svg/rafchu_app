@@ -43,6 +43,69 @@ export const PAYMENT_METHODS = [
 
 export const CURRENCIES = ["EUR", "USD", "GBP", "SEK", "NOK", "DKK", "JPY", "CHF"];
 
+export const SETTLEMENT_STATUSES = [
+  { id: "unsettled", label: "Unsettled" },
+  { id: "pending", label: "Pending reimbursement" },
+  { id: "reimbursed", label: "Reimbursed" },
+  { id: "company_card", label: "Paid with company card" },
+];
+
+export function getSettlementStatus(expense) {
+  return expense?.settlementStatus || "unsettled";
+}
+
+export function getSettlementLabel(statusId) {
+  return SETTLEMENT_STATUSES.find((s) => s.id === statusId)?.label || "Unsettled";
+}
+
+export function getSettlementColor(statusId) {
+  const colors = {
+    unsettled: "bg-gray-100 text-gray-700 border border-gray-200",
+    pending: "bg-amber-100 text-amber-800 border border-amber-200",
+    reimbursed: "bg-green-100 text-green-800 border border-green-200",
+    company_card: "bg-blue-100 text-blue-800 border border-blue-200",
+  };
+  return colors[statusId] || colors.unsettled;
+}
+
+export const PAYOUT_METHODS = [
+  "Bank Transfer",
+  "Wise",
+  "Cash",
+  "PayPal",
+  "MobilePay",
+  "Other",
+];
+
+export function computePayoutTotal(payout, expensesById) {
+  if (!payout?.expenseIds) return 0;
+  return payout.expenseIds.reduce((sum, id) => {
+    const e = expensesById[id];
+    return sum + (e?.amountEUR || 0);
+  }, 0);
+}
+
+export function computeReimbursementSummary(expenses) {
+  const buckets = {
+    unsettled: { count: 0, totalEUR: 0 },
+    pending: { count: 0, totalEUR: 0 },
+    reimbursed: { count: 0, totalEUR: 0 },
+    company_card: { count: 0, totalEUR: 0 },
+  };
+  for (const e of expenses) {
+    const status = getSettlementStatus(e);
+    if (!buckets[status]) continue;
+    buckets[status].count += 1;
+    buckets[status].totalEUR += e.amountEUR || 0;
+  }
+  const totalOwed = buckets.unsettled.totalEUR + buckets.pending.totalEUR;
+  return { buckets, totalOwed };
+}
+
+export function formatPayoutDate(dateStr) {
+  return formatExpenseDate(dateStr);
+}
+
 export function getCategoryColor(category) {
   const colors = {
     "Inventory / Stock Purchase": "bg-blue-100 text-blue-800",

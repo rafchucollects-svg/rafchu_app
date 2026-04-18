@@ -236,6 +236,11 @@ service cloud.firestore {
       allow read, write: if isOwner(userId);
     }
 
+    // Expense Payouts - subcollection for reimbursement payout records
+    match /expense_payouts/{userId}/entries/{payoutId} {
+      allow read, write: if isOwner(userId);
+    }
+
     // Tax Config - per-user tax settings
     match /tax_config/{userId} {
       allow read, write: if isOwner(userId);

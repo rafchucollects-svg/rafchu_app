@@ -26,10 +26,16 @@ import {
   ChevronRight,
   CalendarDays,
   Search,
+  Wallet,
+  CreditCard,
+  Clock,
+  CircleHelp,
+  CheckCircle2,
 } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { useExpenses } from "@/contexts/ExpenseContext";
 import { ShowScheduleTab } from "@/components/ShowScheduleTab";
+import { ReimbursementsTab } from "@/components/ReimbursementsTab";
 import {
   EXPENSE_CATEGORIES,
   PAYMENT_METHODS,
@@ -39,6 +45,9 @@ import {
   formatExpenseDate,
   exportExpenseCSV,
   exportExpensePDF,
+  getSettlementStatus,
+  getSettlementColor,
+  getSettlementLabel,
 } from "@/utils/expenseHelpers";
 
 export function ExpenseTracker() {
@@ -50,6 +59,7 @@ export function ExpenseTracker() {
     deleteExpense,
     uploadReceipt,
     scanReceipt,
+    setExpenseSettlementStatus,
     loading,
     refreshData,
   } = useExpenses();
@@ -59,6 +69,7 @@ export function ExpenseTracker() {
   const [editingId, setEditingId] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterCategory, setFilterCategory] = useState("all");
+  const [filterSettlement, setFilterSettlement] = useState("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [expandedId, setExpandedId] = useState(null);
@@ -90,6 +101,8 @@ export function ExpenseTracker() {
 
   const filteredExpenses = expenses.filter((e) => {
     if (filterCategory !== "all" && e.category !== filterCategory) return false;
+    if (filterSettlement !== "all" && getSettlementStatus(e) !== filterSettlement)
+      return false;
     if (filterDateFrom && e.date < filterDateFrom) return false;
     if (filterDateTo && e.date > filterDateTo) return false;
     if (searchQuery) {
@@ -162,6 +175,10 @@ export function ExpenseTracker() {
             <Receipt className="h-4 w-4 mr-1" />
             Expenses
           </TabsTrigger>
+          <TabsTrigger value="reimbursements">
+            <Wallet className="h-4 w-4 mr-1" />
+            Reimbursements
+          </TabsTrigger>
           <TabsTrigger value="shows">
             <CalendarDays className="h-4 w-4 mr-1" />
             Show Schedule
@@ -170,6 +187,10 @@ export function ExpenseTracker() {
 
         <TabsContent value="shows">
           <ShowScheduleTab />
+        </TabsContent>
+
+        <TabsContent value="reimbursements">
+          <ReimbursementsTab />
         </TabsContent>
 
         <TabsContent value="expenses">
@@ -246,7 +267,7 @@ export function ExpenseTracker() {
             <Filter className="h-4 w-4" />
             Filters
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Select
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
@@ -255,6 +276,16 @@ export function ExpenseTracker() {
               {EXPENSE_CATEGORIES.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
+            </Select>
+            <Select
+              value={filterSettlement}
+              onChange={(e) => setFilterSettlement(e.target.value)}
+            >
+              <option value="all">All Statuses</option>
+              <option value="unsettled">Unsettled</option>
+              <option value="pending">Pending reimbursement</option>
+              <option value="reimbursed">Reimbursed</option>
+              <option value="company_card">Paid with company card</option>
             </Select>
             <Input
               type="date"
@@ -269,7 +300,7 @@ export function ExpenseTracker() {
               placeholder="To date"
             />
           </div>
-          {(filterCategory !== "all" || filterDateFrom || filterDateTo || searchQuery) && (
+          {(filterCategory !== "all" || filterSettlement !== "all" || filterDateFrom || filterDateTo || searchQuery) && (
             <Button
               variant="ghost"
               size="sm"
@@ -277,6 +308,7 @@ export function ExpenseTracker() {
               onClick={() => {
                 setSearchQuery("");
                 setFilterCategory("all");
+                setFilterSettlement("all");
                 setFilterDateFrom("");
                 setFilterDateTo("");
               }}
@@ -350,6 +382,9 @@ export function ExpenseTracker() {
               onToggle={() => setExpandedId(expandedId === expense.id ? null : expense.id)}
               onEdit={() => handleEdit(expense)}
               onDelete={() => handleDelete(expense.id)}
+              onSetSettlement={(status) =>
+                setExpenseSettlementStatus(expense.id, status)
+              }
             />
           ))}
         </div>
@@ -364,7 +399,8 @@ export function ExpenseTracker() {
 // Expense Row
 // =============================
 
-function ExpenseRow({ expense, expanded, onToggle, onEdit, onDelete }) {
+function ExpenseRow({ expense, expanded, onToggle, onEdit, onDelete, onSetSettlement }) {
+  const settlementStatus = getSettlementStatus(expense);
   return (
     <Card className="overflow-hidden">
       <button
@@ -386,6 +422,12 @@ function ExpenseRow({ expense, expanded, onToggle, onEdit, onDelete }) {
             <span className={`text-xs px-2 py-0.5 rounded-full ${getCategoryColor(expense.category)}`}>
               {expense.category}
             </span>
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full ${getSettlementColor(settlementStatus)}`}
+              title={getSettlementLabel(settlementStatus)}
+            >
+              {getSettlementLabel(settlementStatus)}
+            </span>
             {expense.receiptUrl && (
               <Image className="h-3.5 w-3.5 text-muted-foreground" title="Has receipt" />
             )}
@@ -393,6 +435,11 @@ function ExpenseRow({ expense, expanded, onToggle, onEdit, onDelete }) {
           <div className="text-sm text-muted-foreground mt-0.5">
             {formatExpenseDate(expense.date)}
             {expense.vendor && ` · ${expense.vendor}`}
+            {settlementStatus === "reimbursed" && expense.reimbursedDate && (
+              <span className="text-green-700">
+                {" "}· Reimbursed {formatExpenseDate(expense.reimbursedDate)}
+              </span>
+            )}
           </div>
         </div>
         <div className="text-right flex-shrink-0">
@@ -455,6 +502,73 @@ function ExpenseRow({ expense, expanded, onToggle, onEdit, onDelete }) {
             </div>
           )}
 
+          {/* Settlement status quick-actions */}
+          <div className="mb-3 p-3 bg-white border rounded-lg">
+            <div className="flex items-center gap-2 mb-2">
+              <Wallet className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium text-muted-foreground">
+                Settlement status
+              </span>
+            </div>
+            {settlementStatus === "reimbursed" ? (
+              <div className="text-sm">
+                <p className="text-green-700 flex items-center gap-1">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Reimbursed
+                  {expense.reimbursedDate &&
+                    ` on ${formatExpenseDate(expense.reimbursedDate)}`}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Manage this reimbursement from the Reimbursements tab (edit
+                  the linked payout to re-allocate).
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  variant={
+                    settlementStatus === "unsettled" ? "default" : "outline"
+                  }
+                  size="sm"
+                  onClick={() => onSetSettlement("unsettled")}
+                >
+                  <CircleHelp className="h-3.5 w-3.5 mr-1" />
+                  Unsettled
+                </Button>
+                <Button
+                  variant={
+                    settlementStatus === "pending" ? "default" : "outline"
+                  }
+                  size="sm"
+                  className={
+                    settlementStatus === "pending"
+                      ? "bg-amber-600 hover:bg-amber-700"
+                      : ""
+                  }
+                  onClick={() => onSetSettlement("pending")}
+                >
+                  <Clock className="h-3.5 w-3.5 mr-1" />
+                  Pending reimbursement
+                </Button>
+                <Button
+                  variant={
+                    settlementStatus === "company_card" ? "default" : "outline"
+                  }
+                  size="sm"
+                  className={
+                    settlementStatus === "company_card"
+                      ? "bg-blue-600 hover:bg-blue-700"
+                      : ""
+                  }
+                  onClick={() => onSetSettlement("company_card")}
+                >
+                  <CreditCard className="h-3.5 w-3.5 mr-1" />
+                  Paid with company card
+                </Button>
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={onEdit}>
               <Pencil className="h-3.5 w-3.5 mr-1" />
@@ -489,7 +603,9 @@ function ExpenseForm({ expense, onSave, onClose, uploadReceipt, scanReceipt }) {
     notes: expense?.notes || "",
     receiptUrl: expense?.receiptUrl || null,
     ocrData: expense?.ocrData || null,
+    settlementStatus: expense?.settlementStatus || "unsettled",
   });
+  const isReimbursed = form.settlementStatus === "reimbursed";
 
   const [receiptFile, setReceiptFile] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(expense?.receiptUrl || null);
@@ -619,12 +735,24 @@ function ExpenseForm({ expense, onSave, onClose, uploadReceipt, scanReceipt }) {
         setUploading(false);
       }
 
-      await onSave({
+      // Preserve payout linkage if this expense is reimbursed (managed by
+      // the Reimbursements tab, not editable inline here).
+      const payload = {
         ...form,
         amount,
         receiptUrl,
         receiptStoragePath,
-      });
+      };
+      if (isReimbursed) {
+        payload.settlementStatus = "reimbursed";
+        payload.payoutId = expense?.payoutId ?? null;
+        payload.reimbursedDate = expense?.reimbursedDate ?? null;
+      } else {
+        payload.payoutId = null;
+        payload.reimbursedDate = null;
+      }
+
+      await onSave(payload);
     } catch (err) {
       console.error("Save error:", err);
       setSaveError(err.message || "Failed to save expense. Please try again.");
@@ -840,6 +968,32 @@ function ExpenseForm({ expense, onSave, onClose, uploadReceipt, scanReceipt }) {
                 onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
                 placeholder="Store or vendor name"
               />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium mb-1 block">
+                Settlement Status
+              </label>
+              <Select
+                value={form.settlementStatus}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, settlementStatus: e.target.value }))
+                }
+                disabled={isReimbursed}
+              >
+                <option value="unsettled">Unsettled</option>
+                <option value="pending">Pending reimbursement</option>
+                <option value="company_card">Paid with company card</option>
+                {isReimbursed && (
+                  <option value="reimbursed">Reimbursed</option>
+                )}
+              </Select>
+              {isReimbursed && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  This expense is linked to a payout. Edit or delete the payout
+                  in the Reimbursements tab to change its status.
+                </p>
+              )}
             </div>
 
             <div>
