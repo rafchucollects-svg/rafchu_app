@@ -331,6 +331,48 @@ describe("computeItemMetrics", () => {
     const metrics = computeItemMetrics(item);
     expect(metrics.suggested).toBe(25);
   });
+
+  it("override price wins over graded price", () => {
+    const item = {
+      isGraded: true,
+      gradedPrice: 500,
+      overridePrice: 750,
+      overridePriceCurrency: "USD",
+    };
+    const metrics = computeItemMetrics(item, "USD");
+    expect(metrics.suggested).toBe(750);
+    expect(metrics.tcg).toBe(750);
+    expect(metrics.cmAvg).toBe(750);
+    expect(metrics.cmLowest).toBe(750);
+  });
+
+  it("override price wins over standard pricing", () => {
+    const item = {
+      condition: "NM",
+      overridePrice: 99,
+      overridePriceCurrency: "USD",
+      prices: {
+        tcgplayer: { market_price: 10 },
+        cardmarket: { lowest7: 8, "30d_average": 12 },
+      },
+    };
+    const metrics = computeItemMetrics(item, "USD");
+    expect(metrics.suggested).toBe(99);
+  });
+
+  it("converts override price from stored currency to user currency", () => {
+    const item = {
+      overridePrice: 100,
+      overridePriceCurrency: "USD",
+    };
+    const usd = computeItemMetrics(item, "USD");
+    expect(usd.suggested).toBe(100);
+
+    const eur = computeItemMetrics(item, "EUR");
+    // Should not pass through 100 USD as 100 EUR
+    expect(eur.suggested).not.toBe(100);
+    expect(eur.suggested).toBeGreaterThan(0);
+  });
 });
 
 describe("computeInventoryTotals", () => {

@@ -6,6 +6,11 @@ import { Card, CardContent } from './ui/card';
 import { useApp } from '@/contexts/AppContext';
 import { convertCurrency, formatCurrency } from '@/utils/cardHelpers';
 import { apiFetchMarketPrices } from '@/utils/apiHelpers';
+import { ConsignmentFields } from './ConsignmentFields';
+import {
+  DEFAULT_CONSIGNOR_PCT,
+  buildConsignmentPayload,
+} from '@/utils/consignmentHelpers';
 
 /**
  * AddCardModal - v2.1
@@ -117,6 +122,17 @@ export function AddCardModal({
   const [sellPrice, setSellPrice] = useState('');
   
   const [notes, setNotes] = useState('');
+
+  // Consignment state (vendor-only)
+  const [consignment, setConsignment] = useState({
+    isConsigned: false,
+    consignorId: null,
+    consignorName: '',
+    consignorContact: '',
+    consignorPct: DEFAULT_CONSIGNOR_PCT,
+    consignorMinimumPrice: null,
+    agreementNotes: '',
+  });
   
   // Update language when card changes
   useEffect(() => {
@@ -378,8 +394,18 @@ export function AddCardModal({
       cardData.buyPrice = buyPrice ? parseFloat(buyPrice) : null;
       cardData.tradePrice = tradePrice ? parseFloat(tradePrice) : null;
       cardData.sellPrice = sellPrice ? parseFloat(sellPrice) : null;
+
+      if (consignment.isConsigned) {
+        if (!consignment.consignorName.trim()) {
+          alert('Please select or create a consignor for this consigned item.');
+          return;
+        }
+        cardData.isConsigned = true;
+        cardData.acquiredVia = 'consigned';
+        cardData.consignment = buildConsignmentPayload(consignment);
+      }
     }
-    
+
     onAdd(cardData);
     onClose();
   };
@@ -824,6 +850,16 @@ export function AddCardModal({
                   </div>
                 </div>
               </div>
+            )}
+
+            {/* Consignment (vendor only) */}
+            {mode === 'vendor' && (
+              <ConsignmentFields
+                value={consignment}
+                onChange={setConsignment}
+                previewPrice={sellPrice || manualPrice}
+                previewCurrency={currency}
+              />
             )}
 
             {/* Notes */}

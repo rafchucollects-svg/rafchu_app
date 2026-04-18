@@ -1,6 +1,17 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, doc, onSnapshot, getDoc, setDoc } from "firebase/firestore";
+import {
+  getFirestore,
+  doc,
+  onSnapshot,
+  getDoc,
+  setDoc,
+  collection as fsCollection,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  serverTimestamp,
+} from "firebase/firestore";
 import { useCommunityImages } from "@/hooks/useCommunityImages";
 import { initSetCatalog } from "@/utils/searchHelpers";
 import { toast } from "@/components/ui/Toaster";
@@ -52,6 +63,10 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   
   // Cash balance state (vendor toolkit)
   const [cashData, setCashData] = useState({ physical: [], digital: [], pending: [] });
+
+  // Consignors registry (vendor toolkit) — people who consign inventory to you
+  const [consignors, setConsignors] = useState([]);
+  const [consignorsLoading, setConsignorsLoading] = useState(false);
   
   // Wishlist state
   const [wishlistItems, setWishlistItems] = useState([]);
@@ -226,6 +241,85 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
 
   // Automatic price refresh DISABLED
   // This feature was causing data corruption and has been disabled until it can be properly fixed
+
+  // Load consignors registry (vendor-owned, at consignors/{uid}/entries)
+  useEffect(() => {
+    if (!db || !user?.uid) {
+      setConsignors([]);
+      return undefined;
+    }
+    setConsignorsLoading(true);
+    const col = fsCollection(db, "consignors", user.uid, "entries");
+    const unsub = onSnapshot(
+      col,
+      (snap) => {
+        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        rows.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        setConsignors(rows);
+        setConsignorsLoading(false);
+      },
+      (error) => {
+        console.error("Failed to load consignors", error);
+        setConsignors([]);
+        setConsignorsLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [db, user?.uid]);
+
+  const addConsignor = useCallback(async ({ name, contact = "", defaultConsignorPct = 80, notes = "" } = {}) => {
+    if (!user || !db) {
+      toast.error("Please sign in to add a consignor");
+      return null;
+    }
+    const trimmedName = (name || "").trim();
+    if (!trimmedName) {
+      toast.error("Consignor name is required");
+      return null;
+    }
+    try {
+      const col = fsCollection(db, "consignors", user.uid, "entries");
+      const ref = await addDoc(col, {
+        name: trimmedName,
+        contact: (contact || "").trim(),
+        defaultConsignorPct: Number(defaultConsignorPct) || 80,
+        notes: (notes || "").trim(),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return ref.id;
+    } catch (error) {
+      console.error("Failed to add consignor", error);
+      toast.error("Failed to add consignor");
+      return null;
+    }
+  }, [user, db]);
+
+  const updateConsignor = useCallback(async (consignorId, updates = {}) => {
+    if (!user || !db || !consignorId) return false;
+    try {
+      const ref = doc(db, "consignors", user.uid, "entries", consignorId);
+      await updateDoc(ref, { ...updates, updatedAt: serverTimestamp() });
+      return true;
+    } catch (error) {
+      console.error("Failed to update consignor", error);
+      toast.error("Failed to update consignor");
+      return false;
+    }
+  }, [user, db]);
+
+  const removeConsignor = useCallback(async (consignorId) => {
+    if (!user || !db || !consignorId) return false;
+    try {
+      const ref = doc(db, "consignors", user.uid, "entries", consignorId);
+      await deleteDoc(ref);
+      return true;
+    } catch (error) {
+      console.error("Failed to delete consignor", error);
+      toast.error("Failed to delete consignor");
+      return false;
+    }
+  }, [user, db]);
 
   // Helper functions
   const triggerQuickAddFeedback = useCallback((message) => {
@@ -578,6 +672,13 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     secondaryCurrency,
     setSecondaryCurrency,
 
+    // Consignors
+    consignors,
+    consignorsLoading,
+    addConsignor,
+    updateConsignor,
+    removeConsignor,
+
     // Community images
     communityImages: communityImagesHook.communityImages,
     getImageForCard: communityImagesHook.getImageForCard,
@@ -619,6 +720,8 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     // Share
     shareEnabled, shareUsernameInput, shareUsernameStored, shareOwnerTitle,
     shareTargetUid, isShareView, marketSource, currency, secondaryCurrency,
+    // Consignors
+    consignors, consignorsLoading, addConsignor, updateConsignor, removeConsignor,
     // Community images
     communityImagesHook.communityImages,
     communityImagesHook.getImageForCard,

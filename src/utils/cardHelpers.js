@@ -412,6 +412,23 @@ export function computeSuggestedPrice({
 }
 
 export function computeItemMetrics(item, userCurrency = 'USD') {
+  // Manual override price always wins (graded or not). This is the price the
+  // user actively picked in the inventory editor and must be reflected in
+  // both per-row display AND header totals. Convert from the override's
+  // stored currency to the user's display currency when they differ.
+  if (item.overridePrice != null && !Number.isNaN(Number(item.overridePrice))) {
+    let overrideValue = Number(item.overridePrice);
+    if (item.overridePriceCurrency && item.overridePriceCurrency !== userCurrency) {
+      overrideValue = convertCurrency(overrideValue, userCurrency, item.overridePriceCurrency);
+    }
+    return {
+      tcg: overrideValue,
+      cmAvg: overrideValue,
+      cmLowest: overrideValue,
+      suggested: overrideValue,
+    };
+  }
+
   // For graded cards, use graded price as the primary value
   // API-fetched graded prices are in USD; manual entries store their own currency
   if (item.isGraded && item.gradedPrice) {

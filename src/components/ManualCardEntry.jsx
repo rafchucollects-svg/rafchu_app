@@ -8,6 +8,11 @@ import { findFuzzyMatches } from "@/utils/searchHelpers";
 import { apiSearchCardsHybrid } from "@/utils/apiHelpers";
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useApp } from '@/contexts/AppContext';
+import { ConsignmentFields } from './ConsignmentFields';
+import {
+  DEFAULT_CONSIGNOR_PCT,
+  buildConsignmentPayload,
+} from '@/utils/consignmentHelpers';
 
 /**
  * Debounce hook for search suggestions
@@ -50,6 +55,17 @@ export function ManualCardEntry({
   const [gradingCompany, setGradingCompany] = useState("PSA");
   const [grade, setGrade] = useState("");
   const [gradedPrice, setGradedPrice] = useState("");
+
+  // Consignment state (vendor-only)
+  const [consignment, setConsignment] = useState({
+    isConsigned: false,
+    consignorId: null,
+    consignorName: "",
+    consignorContact: "",
+    consignorPct: DEFAULT_CONSIGNOR_PCT,
+    consignorMinimumPrice: null,
+    agreementNotes: "",
+  });
   
   // Grading companies list
   const GRADING_COMPANIES = [
@@ -290,11 +306,21 @@ export function ManualCardEntry({
       gradedPrice: isGraded && gradedPrice ? parseFloat(gradedPrice) : null,
       gradedPriceCurrency: isGraded && gradedPrice ? (currency || 'EUR') : null, // Store currency for graded price too
     };
-    
+
+    if (isVendor && consignment.isConsigned) {
+      if (!consignment.consignorName.trim()) {
+        alert("Please select or create a consignor for this consigned item.");
+        return;
+      }
+      manualCard.isConsigned = true;
+      manualCard.acquiredVia = "consigned";
+      manualCard.consignment = buildConsignmentPayload(consignment);
+    }
+
     if (onAddCard) {
       onAddCard(manualCard, { fromSuggestion: false, isManual: true });
     }
-  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard, isGraded, gradingCompany, grade, gradedPrice, currency]);
+  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard, isGraded, gradingCompany, grade, gradedPrice, currency, isVendor, consignment]);
   
   // Check if form is valid
   const isFormValid = cardName.trim().length > 0 && (!isGraded || grade !== "");
@@ -642,7 +668,17 @@ export function ManualCardEntry({
           </span>
         </div>
       )}
-      
+
+      {/* Consignment (vendor only) */}
+      {isVendor && (
+        <ConsignmentFields
+          value={consignment}
+          onChange={setConsignment}
+          previewPrice={manualPrice}
+          previewCurrency={currency}
+        />
+      )}
+
       {/* Action Buttons */}
       <div className="flex justify-end gap-2 pt-4 border-t">
         {onCancel && (

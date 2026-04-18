@@ -6,6 +6,11 @@ import { Select } from "@/components/ui/select";
 import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { computeInventoryTotals, formatCurrency, computeItemMetrics, exportToCSV, getConditionColorClass, recordTransaction, convertCurrency } from "@/utils/cardHelpers";
+import {
+  isConsignedItem,
+  computeInventoryTotalsByOwnership,
+  computeSalePayout,
+} from "@/utils/consignmentHelpers";
 import { ConditionSelect, CardPrices, ExternalLinks } from "@/components/CardComponents";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
@@ -97,6 +102,7 @@ export function MyInventory() {
   const [filterSet, setFilterSet] = useState("all");
   const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded", "manualPrice"
   const [filterVisibility, setFilterVisibility] = useState("all"); // "all", "visible", "hidden"
+  const [filterOwnership, setFilterOwnership] = useState("all"); // "all", "owned", "consigned"
   const [showFilters, setShowFilters] = useState(false);
   
   // Image upload modal state
@@ -131,7 +137,7 @@ export function MyInventory() {
   // Reset "Select All" flag when filters change (since the visible set changed), but keep individual selections
   useEffect(() => {
     setSelectAll(false);
-  }, [filterGraded, filterVisibility, filterRarity, filterCondition, filterSet, collectionSearch]);
+  }, [filterGraded, filterVisibility, filterRarity, filterCondition, filterSet, filterOwnership, collectionSearch]);
 
   // Enriched collection items with community images
   const [enrichedItems, setEnrichedItems] = useState([]);
@@ -258,8 +264,15 @@ export function MyInventory() {
       items = items.filter(item => !item.excludeFromSale);
     }
 
+    // Ownership filter (owned vs consigned)
+    if (filterOwnership === "owned") {
+      items = items.filter(item => !isConsignedItem(item));
+    } else if (filterOwnership === "consigned") {
+      items = items.filter(item => isConsignedItem(item));
+    }
+
     return items;
-  }, [enrichedItems, deferredSearch, filterRarity, filterCondition, filterSet, filterGraded, filterVisibility]);
+  }, [enrichedItems, deferredSearch, filterRarity, filterCondition, filterSet, filterGraded, filterVisibility, filterOwnership]);
 
   const sortedItems = useMemo(() => {
     const items = [...filteredItems];
@@ -291,10 +304,38 @@ export function MyInventory() {
     return items;
   }, [filteredItems, collectionSortBy, collectionSortDir]);
 
-  // Calculate totals based on filtered items (respects All/Graded/Ungraded filter)
+  // Calculate totals based on filtered items (respects All/Graded/Ungraded filter).
+  // When roundUpPrices is on, each per-card display price is rounded up via
+  // formatPrice. Summing unrounded values and then rounding the sum (the old
+  // behavior) produces a header total that doesn't match the sum of the
+  // visible per-row prices. So when rounding is on, ceil per item before
+  // summing — that way the header always equals the sum of the row labels.
   const totals = useMemo(() => {
-    return computeInventoryTotals(filteredItems, currency);
-  }, [filteredItems, currency]);
+    if (!roundUpPrices) {
+      return computeInventoryTotals(filteredItems, currency);
+    }
+    return (Array.isArray(filteredItems) ? filteredItems : []).reduce(
+      (acc, item) => {
+        const stats = computeItemMetrics(item, currency);
+        const qty = Number(item.quantity) || 1;
+        acc.tcg += Math.ceil(stats.tcg) * qty;
+        acc.cmAvg += Math.ceil(stats.cmAvg) * qty;
+        acc.cmLowest += Math.ceil(stats.cmLowest) * qty;
+        acc.suggested += Math.ceil(stats.suggested) * qty;
+        acc.count += qty;
+        return acc;
+      },
+      { tcg: 0, cmAvg: 0, cmLowest: 0, suggested: 0, count: 0 },
+    );
+  }, [filteredItems, currency, roundUpPrices]);
+
+  // Ownership-split totals (always computed from the UNFILTERED enriched set so
+  // the "Your inventory vs Consigned" header is stable regardless of active filters).
+  const ownershipTotals = useMemo(() => {
+    return computeInventoryTotalsByOwnership(enrichedItems, currency);
+  }, [enrichedItems, currency]);
+
+  const hasConsignedItems = ownershipTotals.consigned.count > 0;
 
   // Format price with rounding and selected currency
   const formatPrice = (value) => formatCurrency(roundUpPrices ? Math.ceil(Number(value ?? 0)) : Number(value ?? 0), currency);
@@ -541,7 +582,7 @@ export function MyInventory() {
     if (!user || !db || collectionItems.length === 0) return;
     
     try {
-      const totals = computeInventoryTotals(collectionItems, currency, roundUpPrices);
+      const totals = computeInventoryTotals(collectionItems, currency);
       
       // Create snapshot with current inventory data and hard-coded prices
       // Filter out undefined values to prevent Firestore errors
@@ -609,7 +650,10 @@ export function MyInventory() {
         totalItems: collectionItems.length,
         totalValue: totals.suggested || 0,
         totals: {
-          tcgAvg: totals.tcgAvg || 0,
+          // Note: snapshot key is historically named `tcgAvg` but stores the
+          // summed TCG market total returned by computeInventoryTotals (`tcg`).
+          // Keep the key name for backwards compatibility with existing snapshots.
+          tcgAvg: totals.tcg || 0,
           cmAvg: totals.cmAvg || 0,
           cmLowest: totals.cmLowest || 0,
           suggested: totals.suggested || 0
@@ -1103,9 +1147,28 @@ export function MyInventory() {
         
         const imageUrl = c.image || c.imageUrl || null;
         console.log("Card image data:", { name: c.name, image: c.image, imageUrl: c.imageUrl, finalImageUrl: imageUrl });
-        
+
+        // If this line is consigned, compute the payout split so it's captured
+        // on the transaction record for later aggregation / payout tracking.
+        let consignmentLine = null;
+        if (isConsignedItem(c)) {
+          const payout = computeSalePayout(c, finalUnitPrice, c.quantity || 1);
+          consignmentLine = {
+            isConsigned: true,
+            consignorId: c.consignment?.consignorId || null,
+            consignorName: c.consignment?.consignorName || "",
+            consignorPct: payout.consignorPct,
+            consignorPayoutPerUnit: payout.consignorPayoutPerUnit,
+            vendorCommissionPerUnit: payout.vendorCommissionPerUnit,
+            consignorPayoutTotal: payout.consignorPayoutTotal,
+            vendorCommissionTotal: payout.vendorCommissionTotal,
+            payoutStatus: "pending",
+          };
+        }
+
         // Create object and filter out undefined values (Firestore doesn't accept undefined)
         const cardData = {
+          entryId: c.entryId || null,
           name: c.name || null,
           set: c.set || null,
           number: c.number || null,
@@ -1117,7 +1180,9 @@ export function MyInventory() {
           // Include graded card information for transaction log display
           isGraded: c.isGraded || false,
           gradingCompany: c.gradingCompany || null,
-          grade: c.grade || null
+          grade: c.grade || null,
+          // Consignment (only set when present)
+          ...(consignmentLine ? { consignment: consignmentLine } : {}),
         };
         
         // Filter out any remaining undefined values
@@ -1125,6 +1190,26 @@ export function MyInventory() {
           Object.entries(cardData).filter(([_, value]) => value !== undefined)
         );
       });
+
+      // Aggregate consignment totals across the sale for fast reporting.
+      const consignedLines = cardsWithFinalPrices
+        .filter((c) => c.consignment)
+        .map((c) => ({ ...c.consignment, name: c.name, quantity: c.quantity, entryId: c.entryId || null }));
+      const consignorPayoutTotal = consignedLines.reduce(
+        (sum, l) => sum + (l.consignorPayoutTotal || 0),
+        0
+      );
+      const vendorCommissionTotal = consignedLines.reduce(
+        (sum, l) => sum + (l.vendorCommissionTotal || 0),
+        0
+      );
+      // For fully-owned sales, commission = full sale price (vendor keeps everything).
+      const ownedRevenue = finalPrice - consignedLines.reduce(
+        (sum, l) =>
+          sum + (l.consignorPayoutTotal || 0) + (l.vendorCommissionTotal || 0),
+        0
+      );
+      const vendorTakeHome = ownedRevenue + vendorCommissionTotal;
       
       console.log("Logging sale with images:", { 
         cardsWithFinalPrices: cardsWithFinalPrices.map(c => ({ name: c.name, image: c.image })), 
@@ -1146,10 +1231,20 @@ export function MyInventory() {
         timestamp: serverTimestamp(),
         createdAt: serverTimestamp()
       };
-      
+
       // Only add inputCurrency if it's different from primary currency
       if (inputCurrency && inputCurrency !== currency) {
         transactionData.inputCurrency = inputCurrency;
+      }
+
+      // Attach consignment breakdown when at least one sold line was consigned.
+      if (consignedLines.length > 0) {
+        transactionData.hasConsignment = true;
+        transactionData.consignedLines = consignedLines;
+        transactionData.consignorPayoutTotal = consignorPayoutTotal;
+        transactionData.vendorCommissionTotal = vendorCommissionTotal;
+        transactionData.ownedRevenue = ownedRevenue;
+        transactionData.vendorTakeHome = vendorTakeHome;
       }
       
       const vendorTransDoc = await addDoc(transactionRef, transactionData);
@@ -1165,12 +1260,21 @@ export function MyInventory() {
           notes: `Sale of ${cards.length} card(s)`,
           currency: currency
         };
-        
+
         // Only add inputCurrency if it's different from primary currency
         if (inputCurrency && inputCurrency !== currency) {
           logData.inputCurrency = inputCurrency;
         }
-        
+
+        if (consignedLines.length > 0) {
+          logData.hasConsignment = true;
+          logData.consignedLines = consignedLines;
+          logData.consignorPayoutTotal = consignorPayoutTotal;
+          logData.vendorCommissionTotal = vendorCommissionTotal;
+          logData.ownedRevenue = ownedRevenue;
+          logData.vendorTakeHome = vendorTakeHome;
+        }
+
         await recordTransaction(db, user.uid, logData);
         console.log("Transaction log entry created");
       } catch (logError) {
@@ -1372,6 +1476,56 @@ export function MyInventory() {
               <div>Low: {formatPrice(totals.cmLowest)}</div>
               <div className="text-primary">Suggested: {formatPrice(totals.suggested)}</div>
             </div>
+
+            {/* Ownership breakdown — only shown when the vendor actually has consigned items */}
+            {hasConsignedItems && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t text-xs">
+                <div className="rounded-md bg-gray-50 border px-3 py-2">
+                  <div className="text-muted-foreground">Your inventory</div>
+                  <div className="font-semibold text-sm">
+                    {formatPrice(ownershipTotals.owned.suggested)}
+                    <span className="ml-2 text-muted-foreground font-normal">
+                      · {ownershipTotals.owned.count} cards
+                    </span>
+                  </div>
+                </div>
+                <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2">
+                  <div className="text-amber-700 flex items-center gap-1">
+                    <span>Consigned (not yours)</span>
+                  </div>
+                  <div className="font-semibold text-sm">
+                    {formatPrice(ownershipTotals.consigned.suggested)}
+                    <span className="ml-2 text-muted-foreground font-normal">
+                      · {ownershipTotals.consigned.count} cards
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Ownership filter chips — only render once at least one consigned item exists */}
+            {hasConsignedItems && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {[
+                  { id: "all", label: "All" },
+                  { id: "owned", label: "Owned only" },
+                  { id: "consigned", label: "Consigned only" },
+                ].map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setFilterOwnership(opt.id)}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition ${
+                      filterOwnership === opt.id
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground border-input hover:bg-accent"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
@@ -1749,6 +1903,14 @@ export function MyInventory() {
                       {item.condition || "NM"}
                     </span>
                   ))}
+                  {!isEditing && isConsignedItem(item) && (
+                    <span
+                      className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-300 bg-amber-100 text-amber-800"
+                      title={`Consigned${item.consignment?.consignorName ? ` · ${item.consignment.consignorName}` : ""}${item.consignment?.consignorPct != null ? ` (${100 - item.consignment.consignorPct}% commission)` : ""}`}
+                    >
+                      Consigned{item.consignment?.consignorName ? ` · ${item.consignment.consignorName}` : ""}
+                    </span>
+                  )}
                 </div>
 
                 {/* Row 3: exclude + markup buttons + actions */}
@@ -1889,6 +2051,58 @@ export function MyInventory() {
                   ))}
                 </div>
               </div>
+
+              {/* Consignment breakdown (shown when any line is consigned).
+                  Estimated from the default prices — the actual split is
+                  recomputed from final prices on Confirm. */}
+              {salesModal.cards.some(isConsignedItem) && (() => {
+                let consignorTotal = 0;
+                let commissionTotal = 0;
+                salesModal.cards.forEach((c, idx) => {
+                  if (!isConsignedItem(c)) return;
+                  const unit = salesModal.cardPrices[idx] ?? c.unitPrice ?? 0;
+                  const p = computeSalePayout(c, unit, c.quantity || 1);
+                  consignorTotal += p.consignorPayoutTotal;
+                  commissionTotal += p.vendorCommissionTotal;
+                });
+                const consigneeRows = salesModal.cards
+                  .map((c, idx) => ({ c, idx }))
+                  .filter(({ c }) => isConsignedItem(c));
+                return (
+                  <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                    <div className="text-sm font-semibold mb-2 flex items-center gap-1.5">
+                      Consignment breakdown
+                      <span className="text-xs font-normal text-muted-foreground">
+                        (estimated from current prices)
+                      </span>
+                    </div>
+                    <div className="space-y-1 text-xs">
+                      {consigneeRows.map(({ c, idx }) => {
+                        const unit = salesModal.cardPrices[idx] ?? c.unitPrice ?? 0;
+                        const p = computeSalePayout(c, unit, c.quantity || 1);
+                        return (
+                          <div key={`con-${idx}`} className="flex justify-between gap-2">
+                            <span className="truncate">
+                              {c.name} · {c.consignment?.consignorName || "Unknown"} ({p.consignorPct}%)
+                            </span>
+                            <span className="font-mono whitespace-nowrap">
+                              payout {formatCurrency(p.consignorPayoutTotal, currency)} · you {formatCurrency(p.vendorCommissionTotal, currency)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-amber-200 flex justify-between text-xs font-semibold">
+                      <span>Consignor payouts (tracked as liability)</span>
+                      <span className="font-mono">{formatCurrency(consignorTotal, currency)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs font-semibold text-green-700">
+                      <span>Your commission on consigned items</span>
+                      <span className="font-mono">{formatCurrency(commissionTotal, currency)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="mb-6 bg-green-50 p-4 rounded-lg border border-green-200">
                 <label className="text-sm font-semibold mb-2 block">

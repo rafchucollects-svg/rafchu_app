@@ -266,6 +266,16 @@ service cloud.firestore {
       allow read, write: if isOwner(userId);
     }
 
+    // Consignors - registry of people who consign inventory to the vendor
+    match /consignors/{userId}/entries/{consignorId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Consignor Payouts - ledger of payouts made to consignors
+    match /consignor_payouts/{userId}/entries/{payoutId} {
+      allow read, write: if isOwner(userId);
+    }
+
     // Default deny for all other documents unless explicitly allowed above.
     match /{document=**} {
       allow read, write: if false;
