@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,9 @@ import {
   Banknote,
   LinkIcon,
   Search,
+  Image as ImageIcon,
+  RotateCcw,
+  Eye,
 } from "lucide-react";
 import { useExpenses } from "@/contexts/ExpenseContext";
 import {
@@ -34,7 +37,7 @@ import {
   getCategoryColor,
 } from "@/utils/expenseHelpers";
 
-export function ReimbursementsTab() {
+export function ReimbursementsTab({ onEditExpense } = {}) {
   const {
     expenses,
     payouts,
@@ -50,6 +53,12 @@ export function ReimbursementsTab() {
   const [classifierFilter, setClassifierFilter] = useState("all");
   const [showClassifier, setShowClassifier] = useState(true);
   const [classifierSearch, setClassifierSearch] = useState("");
+  const [showSettled, setShowSettled] = useState(false);
+  const [settledFilter, setSettledFilter] = useState("all");
+  const [settledSearch, setSettledSearch] = useState("");
+  const [expandedSettledId, setExpandedSettledId] = useState(null);
+
+  const payoutSectionRef = useRef(null);
 
   const expensesById = useMemo(() => {
     const map = {};
@@ -82,6 +91,52 @@ export function ReimbursementsTab() {
     }
     return list;
   }, [expenses, classifierFilter, classifierSearch]);
+
+  const settledExpenses = useMemo(() => {
+    let list = expenses.filter((e) => {
+      const s = getSettlementStatus(e);
+      return s === "reimbursed" || s === "company_card";
+    });
+    if (settledFilter !== "all") {
+      list = list.filter((e) => getSettlementStatus(e) === settledFilter);
+    }
+    if (settledSearch.trim()) {
+      const q = settledSearch.toLowerCase();
+      list = list.filter((e) =>
+        [e.description, e.vendor, e.category, e.notes]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      );
+    }
+    return list;
+  }, [expenses, settledFilter, settledSearch]);
+
+  const settledTotalCount = useMemo(
+    () =>
+      expenses.filter((e) => {
+        const s = getSettlementStatus(e);
+        return s === "reimbursed" || s === "company_card";
+      }).length,
+    [expenses]
+  );
+
+  const jumpToPayout = (payoutId) => {
+    setExpandedPayoutId(payoutId);
+    if (payoutSectionRef.current) {
+      payoutSectionRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  };
+
+  const payoutsById = useMemo(() => {
+    const map = {};
+    for (const p of payouts) map[p.id] = p;
+    return map;
+  }, [payouts]);
 
   const editingPayout = editingPayoutId
     ? payouts.find((p) => p.id === editingPayoutId)
@@ -238,8 +293,94 @@ export function ReimbursementsTab() {
         </CardContent>
       </Card>
 
+      {/* Settled expenses */}
+      <Card>
+        <CardContent className="p-4">
+          <button
+            onClick={() => setShowSettled((v) => !v)}
+            className="w-full flex items-center justify-between mb-2"
+          >
+            <div className="flex items-center gap-2">
+              {showSettled ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+              <h3 className="font-semibold">Settled expenses</h3>
+              <span className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">
+                {settledTotalCount}
+              </span>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              View, edit, or revert already-classified expenses
+            </span>
+          </button>
+
+          {showSettled && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 mb-3">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={settledSearch}
+                    onChange={(e) => setSettledSearch(e.target.value)}
+                    placeholder="Search settled expenses..."
+                    className="pl-9"
+                  />
+                </div>
+                <Select
+                  value={settledFilter}
+                  onChange={(e) => setSettledFilter(e.target.value)}
+                >
+                  <option value="all">All settled</option>
+                  <option value="reimbursed">Reimbursed only</option>
+                  <option value="company_card">Company card only</option>
+                </Select>
+              </div>
+
+              {settledExpenses.length === 0 ? (
+                <div className="text-center py-6 text-sm text-muted-foreground">
+                  {settledTotalCount === 0
+                    ? "No settled expenses yet. Once you classify expenses above or attach them to a payout, they'll show up here."
+                    : "No settled expenses match your filters."}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {settledExpenses.map((expense) => (
+                    <SettledRow
+                      key={expense.id}
+                      expense={expense}
+                      payout={
+                        expense.payoutId ? payoutsById[expense.payoutId] : null
+                      }
+                      expanded={expandedSettledId === expense.id}
+                      onToggle={() =>
+                        setExpandedSettledId(
+                          expandedSettledId === expense.id ? null : expense.id
+                        )
+                      }
+                      onRevert={() =>
+                        setExpenseSettlementStatus(expense.id, "pending")
+                      }
+                      onViewPayout={
+                        expense.payoutId
+                          ? () => jumpToPayout(expense.payoutId)
+                          : null
+                      }
+                      onEdit={
+                        onEditExpense ? () => onEditExpense(expense.id) : null
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Payouts list */}
-      <div>
+      <div ref={payoutSectionRef}>
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-semibold">Payouts</h3>
           <Button size="sm" onClick={openNewPayout}>
@@ -392,6 +533,193 @@ function ClassifierRow({ expense, onSetStatus }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+// =============================
+// Settled expense row (view/edit/revert)
+// =============================
+
+function SettledRow({
+  expense,
+  payout,
+  expanded,
+  onToggle,
+  onRevert,
+  onViewPayout,
+  onEdit,
+}) {
+  const status = getSettlementStatus(expense);
+  const isReimbursed = status === "reimbursed";
+
+  const handleRevert = (e) => {
+    e.stopPropagation();
+    const msg = isReimbursed
+      ? "This expense is linked to a payout. Revert it to 'Pending reimbursement'? It will be removed from the payout."
+      : "Revert this expense back to 'Pending reimbursement'?";
+    if (!confirm(msg)) return;
+    onRevert();
+  };
+
+  return (
+    <Card className="overflow-hidden border">
+      <button
+        onClick={onToggle}
+        className="w-full text-left p-3 flex items-center gap-3 hover:bg-accent/40 transition-colors"
+      >
+        <div className="flex-shrink-0">
+          {expanded ? (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium truncate">
+              {expense.description || expense.vendor || "Untitled expense"}
+            </span>
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full ${getCategoryColor(
+                expense.category
+              )}`}
+            >
+              {expense.category}
+            </span>
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full ${getSettlementColor(
+                status
+              )}`}
+            >
+              {getSettlementLabel(status)}
+            </span>
+            {expense.receiptUrl && (
+              <ImageIcon
+                className="h-3.5 w-3.5 text-muted-foreground"
+                title="Has receipt"
+              />
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            {formatExpenseDate(expense.date)}
+            {expense.vendor && ` · ${expense.vendor}`}
+            {isReimbursed && expense.reimbursedDate && (
+              <span className="text-green-700">
+                {" "}· Reimbursed {formatExpenseDate(expense.reimbursedDate)}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="font-semibold">
+            EUR {expense.amountEUR?.toFixed(2)}
+          </p>
+          {expense.currency !== "EUR" && (
+            <p className="text-xs text-muted-foreground">
+              {expense.currency} {expense.amount?.toFixed(2)}
+            </p>
+          )}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 border-t bg-muted/30">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 py-3 text-sm">
+            <div>
+              <span className="text-muted-foreground">Date</span>
+              <p className="font-medium">{formatExpenseDate(expense.date)}</p>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Payment</span>
+              <p className="font-medium">{expense.paymentMethod || "—"}</p>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Amount</span>
+              <p className="font-medium">
+                EUR {expense.amountEUR?.toFixed(2)}
+                {expense.currency !== "EUR" && (
+                  <span className="text-xs text-muted-foreground ml-1">
+                    ({expense.currency} {expense.amount?.toFixed(2)})
+                  </span>
+                )}
+              </p>
+            </div>
+            {expense.currency !== "EUR" && (
+              <div>
+                <span className="text-muted-foreground">Exchange Rate</span>
+                <p className="font-medium">
+                  {expense.exchangeRate?.toFixed(4)}
+                </p>
+              </div>
+            )}
+            {expense.notes && (
+              <div className="col-span-2 sm:col-span-4">
+                <span className="text-muted-foreground">Notes</span>
+                <p className="font-medium">{expense.notes}</p>
+              </div>
+            )}
+          </div>
+
+          {isReimbursed && payout && (
+            <div className="mb-3 p-2 bg-green-50 border border-green-200 rounded-lg text-xs">
+              <div className="flex items-center gap-1 text-green-800 font-medium mb-1">
+                <LinkIcon className="h-3 w-3" />
+                Linked payout
+              </div>
+              <div className="text-green-700">
+                {formatExpenseDate(payout.date)} · {payout.method || "—"}
+                {payout.reference && ` · ${payout.reference}`}
+              </div>
+            </div>
+          )}
+
+          {isReimbursed && expense.payoutId && !payout && (
+            <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+              Linked payout no longer exists. You can revert this expense to
+              pending.
+            </div>
+          )}
+
+          {expense.receiptUrl && (
+            <div className="mb-3">
+              <a
+                href={expense.receiptUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline"
+              >
+                <ImageIcon className="h-4 w-4" />
+                View receipt
+              </a>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            {onEdit && (
+              <Button variant="outline" size="sm" onClick={onEdit}>
+                <Pencil className="h-3.5 w-3.5 mr-1" />
+                Edit details
+              </Button>
+            )}
+            {isReimbursed && onViewPayout && (
+              <Button variant="outline" size="sm" onClick={onViewPayout}>
+                <Eye className="h-3.5 w-3.5 mr-1" />
+                View payout
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-amber-700 hover:text-amber-800"
+              onClick={handleRevert}
+            >
+              <RotateCcw className="h-3.5 w-3.5 mr-1" />
+              Revert to pending
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }
 

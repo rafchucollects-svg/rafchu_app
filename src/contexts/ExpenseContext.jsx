@@ -193,6 +193,9 @@ export function ExpenseProvider({ children }) {
   const setExpenseSettlementStatus = useCallback(
     async (expenseId, statusId) => {
       if (!user || !db) return;
+      const existing = expenses.find((e) => e.id === expenseId);
+      const priorPayoutId = existing?.payoutId || null;
+
       const patch = {
         settlementStatus: statusId,
       };
@@ -202,8 +205,35 @@ export function ExpenseProvider({ children }) {
         patch.reimbursedDate = null;
       }
       await patchExpenseFields(expenseId, patch);
+
+      // If the expense was previously linked to a payout and we're no longer
+      // reimbursed, prune the expense ID from that payout too.
+      if (priorPayoutId && statusId !== "reimbursed") {
+        const payout = payouts.find((p) => p.id === priorPayoutId);
+        if (payout) {
+          const nextIds = (payout.expenseIds || []).filter(
+            (id) => id !== expenseId
+          );
+          if (nextIds.length !== (payout.expenseIds || []).length) {
+            const payoutPatch = { expenseIds: nextIds, updatedAt: Date.now() };
+            try {
+              await updateDoc(
+                doc(db, "expense_payouts", user.uid, "entries", priorPayoutId),
+                payoutPatch
+              );
+              setPayouts((prev) =>
+                prev.map((p) =>
+                  p.id === priorPayoutId ? { ...p, ...payoutPatch } : p
+                )
+              );
+            } catch (err) {
+              console.error("Failed to prune expense from payout:", err);
+            }
+          }
+        }
+      }
     },
-    [user, db, patchExpenseFields]
+    [user, db, expenses, payouts, patchExpenseFields]
   );
 
   const addPayout = useCallback(

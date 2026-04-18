@@ -190,7 +190,13 @@ export function ExpenseTracker() {
         </TabsContent>
 
         <TabsContent value="reimbursements">
-          <ReimbursementsTab />
+          <ReimbursementsTab
+            onEditExpense={(id) => {
+              setEditingId(id);
+              setShowForm(true);
+              setActiveTab("expenses");
+            }}
+          />
         </TabsContent>
 
         <TabsContent value="expenses">
