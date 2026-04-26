@@ -46,6 +46,7 @@ export function BuyCalculator() {
   const [pendingTradeConfirmation, setPendingTradeConfirmation] = useState(null);
   const [inventorySearchQuery, setInventorySearchQuery] = useState("");
   const [cashAmount, setCashAmount] = useState("");
+  const [cashCurrency, setCashCurrency] = useState(secondaryCurrency || currency);
   const [cashDirection, setCashDirection] = useState("in"); // "in" = receiving cash, "out" = paying cash
   
   // Share buy offer state
@@ -80,6 +81,13 @@ export function BuyCalculator() {
       setBuyDefaultPct(userProfile.defaultBuyPct);
     }
   }, [userProfile?.defaultBuyPct]);
+
+  useEffect(() => {
+    const validCashCurrencies = new Set([currency, secondaryCurrency].filter(Boolean));
+    if (!validCashCurrencies.has(cashCurrency)) {
+      setCashCurrency(secondaryCurrency || currency);
+    }
+  }, [currency, secondaryCurrency, cashCurrency]);
 
   useEffect(() => {
     if (importedLegacyTradeItems.current || tradeItems.length === 0) return;
@@ -627,8 +635,8 @@ export function BuyCalculator() {
       const cashValue = parseFloat(cashAmount) || 0;
       let cashInPrimaryCurrency = 0;
       if (cashValue > 0) {
-        cashInPrimaryCurrency = buyCurrency !== currency
-          ? convertCurrency(cashValue, currency, buyCurrency)
+        cashInPrimaryCurrency = cashCurrency !== currency
+          ? convertCurrency(cashValue, currency, cashCurrency)
           : cashValue;
       }
 
@@ -649,13 +657,19 @@ export function BuyCalculator() {
         itemsIn,
         itemsOut,
         valueGained,
-        notes: `Trade completed from buy calculator: ${itemsOut.length} card(s) out, ${itemsIn.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s) in${cashValue > 0 ? `, ${cashDirection === 'in' ? 'received' : 'paid'} ${formatCurrency(cashValue, buyCurrency)} cash` : ''}`,
+        notes: `Trade completed from deal calculator: ${itemsOut.length} card(s) out, ${itemsIn.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s) in${cashValue > 0 ? `, ${cashDirection === 'in' ? 'received' : 'paid'} ${formatCurrency(cashValue, cashCurrency)} cash` : ''}`,
         currency
       };
 
       if (cashValue > 0) {
         transactionData.cashAmount = cashInPrimaryCurrency;
         transactionData.cashDirection = cashDirection;
+        transactionData.cashCurrency = currency;
+        transactionData.cashOriginalAmount = cashValue;
+        transactionData.cashOriginalCurrency = cashCurrency;
+        transactionData.cashFxRateToPrimary = cashInPrimaryCurrency / cashValue;
+        transactionData.cashFxPrimaryCurrency = currency;
+        transactionData.cashFxCapturedAt = Date.now();
       }
 
       if (inputCurrency && inputCurrency !== currency) {
@@ -725,6 +739,7 @@ export function BuyCalculator() {
       setSelectedInventoryIds(new Set());
       setInventorySearchQuery("");
       setCashAmount("");
+      setCashCurrency(secondaryCurrency || currency);
       setCashDirection("in");
 
       triggerQuickAddFeedback(`Trade completed! ${itemsIn.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s) added, ${itemsOut.length} removed.`);
@@ -1162,6 +1177,7 @@ export function BuyCalculator() {
     setSelectedInventoryIds(new Set());
     setInventorySearchQuery("");
     setCashAmount("");
+    setCashCurrency(secondaryCurrency || currency);
     setCashDirection("in");
   };
 
@@ -1720,7 +1736,7 @@ export function BuyCalculator() {
               {secondaryCurrency && (
                 <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
                   <label className="block text-sm font-semibold mb-2">
-                    Enter trade value/cash in:
+                    Enter deal value in:
                   </label>
                   <div className="flex gap-3">
                     <label className="flex items-center gap-2 cursor-pointer">
@@ -1745,7 +1761,7 @@ export function BuyCalculator() {
                     </label>
                   </div>
                   <p className="text-xs text-blue-600 mt-2">
-                    Trade values will be converted to {currency} for storage
+                    Deal values will be converted to {currency} for storage.
                   </p>
                 </div>
               )}
@@ -1754,37 +1770,66 @@ export function BuyCalculator() {
                 <label className="block text-sm font-semibold mb-2">
                   Include Cash in Trade (Optional)
                 </label>
-                <div className="flex gap-3 items-center mb-3">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="buyTradeCashDirection"
-                      checked={cashDirection === "in"}
-                      onChange={() => setCashDirection("in")}
-                      className="w-4 h-4"
-                    />
-                    <span className="text-sm font-medium">Receiving Cash</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="buyTradeCashDirection"
-                      checked={cashDirection === "out"}
-                      onChange={() => setCashDirection("out")}
-                      className="w-4 h-4"
-                    />
-                    <span className="text-sm font-medium">Paying Cash</span>
-                  </label>
+                <div className="flex flex-wrap gap-3 items-center mb-3">
+                  <div className="flex gap-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="buyTradeCashDirection"
+                        checked={cashDirection === "in"}
+                        onChange={() => setCashDirection("in")}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm font-medium">Receiving Cash</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="buyTradeCashDirection"
+                        checked={cashDirection === "out"}
+                        onChange={() => setCashDirection("out")}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm font-medium">Paying Cash</span>
+                    </label>
+                  </div>
+                  {secondaryCurrency && (
+                    <div className="flex gap-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="dealCashCurrency"
+                          checked={cashCurrency === currency}
+                          onChange={() => setCashCurrency(currency)}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-sm font-medium">{currency}</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="dealCashCurrency"
+                          checked={cashCurrency === secondaryCurrency}
+                          onChange={() => setCashCurrency(secondaryCurrency)}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-sm font-medium">{secondaryCurrency}</span>
+                      </label>
+                    </div>
+                  )}
                 </div>
                 <Input
                   type="number"
                   step="0.01"
                   min="0"
-                  placeholder={`Cash amount (${buyCurrency})`}
+                  placeholder={`Cash amount (${cashCurrency})`}
                   value={cashAmount}
                   onChange={(e) => setCashAmount(e.target.value)}
                   className="w-full"
                 />
+                <p className="text-xs text-purple-600 mt-2">
+                  Cash is saved as entered in {cashCurrency}, with the converted {currency} amount and FX rate on the transaction.
+                </p>
               </div>
 
               <div className="mt-6 flex gap-3 justify-end">

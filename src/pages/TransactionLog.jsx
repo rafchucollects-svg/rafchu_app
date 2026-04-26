@@ -122,7 +122,6 @@ export function TransactionLog() {
 
     try {
       const txRef = doc(db, "transactions", user.uid, "entries", editingTx);
-      const tx = transactions.find(t => t.id === editingTx);
       
       // Calculate new total value based on edited items
       const newTotalValue = editedItemsIn.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
@@ -140,6 +139,26 @@ export function TransactionLog() {
       console.error("Failed to update transaction:", error);
       alert("Failed to update transaction. Please try again.");
     }
+  };
+
+  const getCashDetails = (tx) => {
+    const primaryAmount = Number(tx.cashAmount || 0);
+    if (!primaryAmount) return null;
+
+    const originalAmount = Number(tx.cashOriginalAmount ?? primaryAmount);
+    const originalCurrency = tx.cashOriginalCurrency || tx.cashCurrency || tx.currency || currency;
+    const primaryCurrency = tx.cashFxPrimaryCurrency || tx.cashCurrency || tx.currency || currency;
+    const fxRate = tx.cashFxRateToPrimary || (originalAmount ? primaryAmount / originalAmount : null);
+
+    return {
+      direction: tx.cashDirection === "out" ? "paid" : "received",
+      originalAmount,
+      originalCurrency,
+      primaryAmount,
+      primaryCurrency,
+      fxRate,
+      converted: originalCurrency !== primaryCurrency,
+    };
   };
 
   if (!user) {
@@ -187,6 +206,7 @@ export function TransactionLog() {
               {transactions.map(tx => {
                 const isExpanded = expandedTx === tx.id;
                 const hasCards = (tx.itemsOut && tx.itemsOut.length > 0) || (tx.itemsIn && tx.itemsIn.length > 0);
+                const cashDetails = getCashDetails(tx);
                 
                 return (
                   <div
@@ -235,6 +255,17 @@ export function TransactionLog() {
                         </div>
                         {tx.notes && !isExpanded && (
                           <div className="text-sm text-muted-foreground mt-1">{tx.notes}</div>
+                        )}
+                        {cashDetails && !isExpanded && (
+                          <div className="text-xs text-purple-700 mt-1">
+                            Cash {cashDetails.direction}: {formatCurrency(cashDetails.originalAmount, cashDetails.originalCurrency)}
+                            {cashDetails.converted && (
+                              <>
+                                {" "}→ {formatCurrency(cashDetails.primaryAmount, cashDetails.primaryCurrency)}
+                                {cashDetails.fxRate && ` @ ${cashDetails.fxRate.toFixed(4)}`}
+                              </>
+                            )}
+                          </div>
                         )}
                         
                         {/* Card Images Preview */}
@@ -310,6 +341,18 @@ export function TransactionLog() {
                     {/* Expanded Details */}
                     {isExpanded && hasCards && (
                       <div className="px-4 pb-4 border-t pt-3">
+                        {cashDetails && (
+                          <div className="mb-3 rounded-lg border border-purple-200 bg-purple-50 p-3 text-sm">
+                            <div className="font-semibold text-purple-800">Cash {cashDetails.direction}</div>
+                            <div className="text-purple-700">
+                              Original: {formatCurrency(cashDetails.originalAmount, cashDetails.originalCurrency)}
+                            </div>
+                            <div className="text-purple-700">
+                              Primary: {formatCurrency(cashDetails.primaryAmount, cashDetails.primaryCurrency)}
+                              {cashDetails.fxRate && ` · FX ${cashDetails.fxRate.toFixed(6)} ${cashDetails.primaryCurrency}/${cashDetails.originalCurrency}`}
+                            </div>
+                          </div>
+                        )}
                         {tx.itemsOut && tx.itemsOut.length > 0 && (
                           <div className="mb-3">
                             <div className="text-sm font-semibold mb-2 text-red-600">Cards Sold:</div>
