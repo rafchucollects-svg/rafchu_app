@@ -925,7 +925,7 @@ export const STOCK_PURCHASE_CATEGORY = "Inventory / Stock Purchase";
 /**
  * Calculate a Vero-compliant P&L for a Finnish Oy.
  * "Inventory / Stock Purchase" expenses go into Materials (alongside COGS)
- * to avoid double-counting with Buy Calculator purchases.
+ * to avoid double-counting with Deal Calculator purchases.
  */
 export function calculateProfitAndLoss(revenue, cogs, stockPurchaseExpenses, opexByCategory, otherRevenue = 0) {
   const totalRevenue = revenue + otherRevenue;

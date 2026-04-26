@@ -571,7 +571,7 @@ function PurchaseDiaryTab() {
   };
 
   const sourceLabel = (entry) => {
-    if (entry.source === "buy") return "Buy Calculator";
+    if (entry.source === "buy") return "Deal Calculator (Buy)";
     if (entry.source === "trade") return "Trade (In)";
     return null;
   };

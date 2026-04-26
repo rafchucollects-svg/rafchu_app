@@ -3,13 +3,11 @@ import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Package, Store, Plus, ShoppingBag, Heart, LayoutGrid, Calculator, TrendingUp, MessageSquare, Upload, ExternalLink, PlusCircle } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { Package, Store, Plus, ShoppingBag, Heart, LayoutGrid, Calculator, MessageSquare, Upload, ExternalLink, PlusCircle } from "lucide-react";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "@/contexts/AppContext";
-import { 
-  apiSearchCards, 
+import {
   apiSearchCardsHybrid,
-  apiSearchCardsCached,
   apiFetchCardDetails,
   apiFetchMarketPrices,
   apiFetchGradedPrices,
@@ -31,7 +29,6 @@ import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { GradedCardModal } from "@/components/GradedCardModal";
 import { ManualCardModal } from "@/components/ManualCardEntry";
 import { formatCurrency, convertCurrency } from "@/utils/cardHelpers";
-import { needsImage } from "@/utils/imageHelpers";
 import { toast } from "@/components/ui/Toaster";
 
 /**
@@ -74,14 +71,12 @@ export function CardSearch({ mode = "collector" }) {
     currency,
     addToCollection,
     addToWishlist,
-    tradeItems,
     setTradeItems,
     buyItems,
     setBuyItems,
     triggerQuickAddFeedback,
     setFeedbackModalOpen,
     userProfile,
-    db,
     communityImages,
     getImageForCard,
     refreshCommunityImages,
@@ -404,7 +399,7 @@ export function CardSearch({ mode = "collector" }) {
       setBuyItems(prev => prev.map(it =>
         it.entryId === exists.entryId ? { ...it, quantity: newQty } : it
       ));
-      triggerQuickAddFeedback(`${card.name} quantity → ${newQty}`);
+      triggerQuickAddFeedback(`${card.name} deal quantity → ${newQty}`);
       return;
     }
     
@@ -417,7 +412,7 @@ export function CardSearch({ mode = "collector" }) {
           cardWithPrices = enrichCardWithMarketPrices({ ...card }, marketPrices);
         }
       } catch (error) {
-        console.error("Failed to fetch prices for buy list:", error);
+      console.error("Failed to fetch prices for deal list:", error);
       }
     }
     
@@ -436,7 +431,7 @@ export function CardSearch({ mode = "collector" }) {
       buyPct: userProfile?.defaultBuyPct || 70,
       addedAt: Date.now(),
     }]);
-    triggerQuickAddFeedback(`${card.name} added to buy list`);
+    triggerQuickAddFeedback(`${card.name} added to deal`);
   }, [buyItems, setBuyItems, defaultCondition, triggerQuickAddFeedback, userProfile?.defaultBuyPct, isGradedFilter, setCardForGraded, setGradedModalOpen]);
 
   const handleQuickAddWishlist = useCallback(async (card) => {
@@ -584,41 +579,9 @@ export function CardSearch({ mode = "collector" }) {
       toast.error("Please sign in to add cards to your wishlist");
       return;
     }
-    const newItem = addToWishlist(activeCard);
+    addToWishlist(activeCard);
     triggerQuickAddFeedback(`${activeCard.name} added to wishlist`);
   }, [activeCard, user, addToWishlist, triggerQuickAddFeedback]);
-
-  const handleAddToTrade = useCallback(() => {
-    if (!activeCard) return;
-    
-    // If in graded mode with a price, add directly with graded info
-    if (isGradedFilter && gradedPrice?.success && gradedPrice?.graded?.price > 0) {
-      const priceInUSD = gradedPrice.graded.price;
-      
-      setTradeItems(prev => [...prev, {
-        id: `${activeCard.id}-trade-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        baseId: activeCard.id,
-        name: activeCard.name,
-        set: activeCard.set,
-        number: activeCard.number,
-        rarity: activeCard.rarity,
-        image: activeCard.image,
-        links: activeCard.links,
-        condition: 'NM',
-        prices: activeCard.prices,
-        tradePct: userProfile?.defaultTradePct || 90,
-        addedAt: Date.now(),
-        isGraded: true,
-        gradingCompany: selectedGradingCompany,
-        grade: selectedGrade,
-        gradedPrice: priceInUSD, // Store in USD
-      }]);
-      
-      triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) added to trade list`);
-    } else {
-      handleQuickAddTrade(activeCard);
-    }
-  }, [activeCard, isGradedFilter, gradedPrice, selectedGradingCompany, selectedGrade, currency, userProfile, setTradeItems, triggerQuickAddFeedback, handleQuickAddTrade]);
 
   const handleAddToBuy = useCallback(() => {
     if (!activeCard) return;
@@ -631,7 +594,7 @@ export function CardSearch({ mode = "collector" }) {
         setBuyItems(prev => prev.map(it =>
           it.entryId === exists.entryId ? { ...it, quantity: newQty } : it
         ));
-        triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) quantity → ${newQty}`);
+        triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) deal quantity → ${newQty}`);
         return;
       }
       
@@ -656,7 +619,7 @@ export function CardSearch({ mode = "collector" }) {
         gradedPrice: priceInUSD, // Store in USD
       }]);
       
-      triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) added to buy list`);
+      triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) added to deal`);
     } else {
       handleQuickAddBuy(activeCard);
     }
@@ -718,7 +681,7 @@ export function CardSearch({ mode = "collector" }) {
         buyPct: userProfile?.defaultBuyPct || 70,
         addedAt: Date.now(),
       }]);
-      triggerQuickAddFeedback(`${card.name} (${gradingCompany} ${grade}) added to buy list`);
+      triggerQuickAddFeedback(`${card.name} (${gradingCompany} ${grade}) added to deal`);
     } else {
       // Default: collection
       const newItem = await addToCollection(card, {
@@ -798,16 +761,10 @@ export function CardSearch({ mode = "collector" }) {
                 Inventory
               </Button>
             </Link>
-            <Link to="/vendor/trade-calculator">
+            <Link to="/vendor/deal-calculator">
               <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
                 <Calculator className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-                Trade
-              </Button>
-            </Link>
-            <Link to="/vendor/buy-calculator">
-              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
-                <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-                Buy
+                Deal
               </Button>
             </Link>
           </>
@@ -897,7 +854,7 @@ export function CardSearch({ mode = "collector" }) {
           
           {/* Can't find card? Add manually option */}
           {query.trim().length >= 3 && !loading && (
-            <motion.div
+            <Motion.div
               initial={{ opacity: 0, y: 5 }}
               animate={{ opacity: 1, y: 0 }}
               className="mt-4 pt-4 border-t"
@@ -918,14 +875,14 @@ export function CardSearch({ mode = "collector" }) {
                   Add Card Manually
                 </Button>
               </div>
-            </motion.div>
+            </Motion.div>
           )}
         </CardContent>
       </Card>
 
       {/* Active Card Details */}
       {activeCard && (
-        <motion.div
+        <Motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           className="mt-6"
@@ -1093,27 +1050,19 @@ export function CardSearch({ mode = "collector" }) {
                       </Button>
                     )}
                     {isVendor && (
-                      <>
-                        <Button
-                          variant="outline"
-                          onClick={handleAddToTrade}
-                        >
-                          <Plus className="mr-1 h-4 w-4" /> Add to Trade
-                        </Button>
-                        <Button
-                          variant="outline"
-                          onClick={handleAddToBuy}
-                        >
-                          <Plus className="mr-1 h-4 w-4" /> Add to Buy List
-                        </Button>
-                      </>
+                      <Button
+                        variant="outline"
+                        onClick={handleAddToBuy}
+                      >
+                        <Plus className="mr-1 h-4 w-4" /> Add to Deal
+                      </Button>
                     )}
                   </div>
                 </div>
               </div>
             </CardContent>
           </Card>
-        </motion.div>
+        </Motion.div>
       )}
 
       {/* Submit Feedback Button */}

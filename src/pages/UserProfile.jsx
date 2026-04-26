@@ -357,7 +357,7 @@ export function UserProfile() {
                 </div>
                 <div className="flex items-start gap-2 text-sm">
                   <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
-                  <span className="text-green-900">Trade & buy calculators</span>
+                  <span className="text-green-900">Unified deal calculator</span>
                 </div>
                 <div className="flex items-start gap-2 text-sm">
                   <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
@@ -487,7 +487,7 @@ export function UserProfile() {
                       <span className="text-sm text-muted-foreground">%</span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      Default percentage for trade calculator (40-120%)
+                      Default percentage for trade offers in the deal calculator (40-120%)
                     </p>
                   </div>
 
@@ -507,7 +507,7 @@ export function UserProfile() {
                       <span className="text-sm text-muted-foreground">%</span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      Default percentage for buy calculator (40-120%)
+                      Default percentage for cash offers in the deal calculator (40-120%)
                     </p>
                   </div>
 

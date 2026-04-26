@@ -125,10 +125,10 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   // Wishlist state
   const [wishlistItems, setWishlistItems] = useState([]);
   
-  // Trade Binder state (collector mode)
+  // Legacy trade calculator state; Deal Calculator migrates this into buyItems.
   const [tradeItems, setTradeItems] = useState([]);
   
-  // Buy List state (collector mode)
+  // Deal Calculator incoming-card list.
   const [buyItems, setBuyItems] = useState([]);
   
   // Transaction state

@@ -1,20 +1,20 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
+import { ShoppingCart, Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { CardPhotoScanner } from "@/components/CardPhotoScanner";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
-import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
+import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { collection, addDoc, doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
 import { toast } from "@/components/ui/Toaster";
 
 /**
- * Buy Calculator Page (Vendor Toolkit)
- * Plan purchases with quantity and buy percentage tracking
+ * Deal Calculator Page (Vendor Toolkit)
+ * Plan deals that can finish as purchases, trades, or trades with cash.
  */
 
 // Percent select component
@@ -35,12 +35,18 @@ function PercentSelect({ value, onChange, className = "" }) {
 }
 
 export function BuyCalculator() {
-  const { user, db, buyItems, setBuyItems, currency, secondaryCurrency, collectionItems, triggerQuickAddFeedback, userProfile } = useApp();
+  const { user, db, buyItems, setBuyItems, tradeItems, setTradeItems, currency, secondaryCurrency, collectionItems, setCollectionItems, triggerQuickAddFeedback, userProfile } = useApp();
   const [buyDefaultPct, setBuyDefaultPct] = useState(userProfile?.defaultBuyPct || 70);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [pendingDeals, setPendingDeals] = useState([]);
   const [showPendingModal, setShowPendingModal] = useState(false);
   const [buyCurrency, setBuyCurrency] = useState(currency); // Currency for purchase input
+  const [showInventoryModal, setShowInventoryModal] = useState(false);
+  const [selectedInventoryIds, setSelectedInventoryIds] = useState(new Set());
+  const [pendingTradeConfirmation, setPendingTradeConfirmation] = useState(null);
+  const [inventorySearchQuery, setInventorySearchQuery] = useState("");
+  const [cashAmount, setCashAmount] = useState("");
+  const [cashDirection, setCashDirection] = useState("in"); // "in" = receiving cash, "out" = paying cash
   
   // Share buy offer state
   const [showShareModal, setShowShareModal] = useState(false);
@@ -66,6 +72,7 @@ export function BuyCalculator() {
   const [splitShareLinks, setSplitShareLinks] = useState({});
   const [splitCopied, setSplitCopied] = useState({});
   const [splitShareLoading, setSplitShareLoading] = useState({});
+  const importedLegacyTradeItems = useRef(false);
 
   // Load default percentage from user profile
   useEffect(() => {
@@ -73,6 +80,25 @@ export function BuyCalculator() {
       setBuyDefaultPct(userProfile.defaultBuyPct);
     }
   }, [userProfile?.defaultBuyPct]);
+
+  useEffect(() => {
+    if (importedLegacyTradeItems.current || tradeItems.length === 0) return;
+    importedLegacyTradeItems.current = true;
+
+    const now = Date.now();
+    const migratedItems = tradeItems.map((item, index) => ({
+      ...item,
+      entryId: item.entryId || `${item.baseId || item.id || "deal"}-deal-${now}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+      baseId: item.baseId || item.id,
+      quantity: item.quantity || 1,
+      buyPct: item.buyPct ?? item.tradePct ?? buyDefaultPct,
+      addedAt: item.addedAt || now,
+    }));
+
+    setBuyItems(prev => [...prev, ...migratedItems]);
+    setTradeItems([]);
+    triggerQuickAddFeedback(`Moved ${migratedItems.length} trade item${migratedItems.length !== 1 ? 's' : ''} into Deal Calculator`);
+  }, [tradeItems, setBuyItems, setTradeItems, buyDefaultPct, triggerQuickAddFeedback]);
 
   // Helper function to save pending deals to Firestore
   const savePendingDealsToFirestore = useCallback(async (deals) => {
@@ -428,7 +454,7 @@ export function BuyCalculator() {
         itemsIn,
         itemsOut: [],
         valueGained,
-        notes: `Purchase of ${selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s)`,
+        notes: `Deal completed as purchase: ${selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s)`,
         currency
       };
       
@@ -482,7 +508,7 @@ export function BuyCalculator() {
           // Filter out undefined values before saving to Firestore
           inventoryItems.push(
             Object.fromEntries(
-              Object.entries(inventoryItem).filter(([_, value]) => value !== undefined)
+              Object.entries(inventoryItem).filter(([, value]) => value !== undefined)
             )
           );
         }
@@ -492,15 +518,219 @@ export function BuyCalculator() {
       const inventoryRef = doc(db, "collections", user.uid);
       await setDoc(inventoryRef, { items: updatedInventory }, { merge: true });
 
-      // Remove confirmed items from buy list
+      // Remove confirmed items from the deal list
       setBuyItems(prev => prev.filter(it => !selectedIds.has(it.entryId)));
       setSelectedIds(new Set());
 
       const totalCards = selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0);
-      triggerQuickAddFeedback(`Purchase confirmed! ${totalCards} card(s) added to inventory.`);
+      triggerQuickAddFeedback(`Deal completed as purchase! ${totalCards} card(s) added to inventory.`);
     } catch (error) {
       console.error("Failed to confirm purchase:", error);
       toast.error("Failed to confirm purchase. Please try again.");
+    }
+  };
+
+  const handleConfirmTradeFromBuy = () => {
+    if (selectedIds.size === 0) {
+      toast.info("Please select cards to confirm the trade.");
+      return;
+    }
+
+    if (!user || !db) {
+      toast.error("Please sign in to confirm trades.");
+      return;
+    }
+
+    const selectedItems = buyItems.filter(it => selectedIds.has(it.entryId));
+    setPendingTradeConfirmation({
+      selectedItems,
+      selectedIds: new Set(selectedIds)
+    });
+    setShowInventoryModal(true);
+  };
+
+  const handleCompleteTradeWithInventory = async () => {
+    if (!pendingTradeConfirmation) return;
+    if (selectedInventoryIds.size === 0) {
+      toast.info("Please select cards from your inventory to trade out.");
+      return;
+    }
+
+    try {
+      const { selectedItems } = pendingTradeConfirmation;
+      const selectedInventoryItems = collectionItems.filter(it => selectedInventoryIds.has(it.entryId));
+
+      const itemsIn = selectedItems.map(item => {
+        const qty = item.quantity || 1;
+        let unitPrice;
+        if (item.isGraded && item.gradedPrice) {
+          unitPrice = convertCurrency(item.gradedPrice, currency, item.gradedPriceCurrency || 'USD');
+        } else if (item.isManualEntry && item.manualPrice) {
+          unitPrice = convertCurrency(item.manualPrice, currency, item.manualPriceCurrency || 'USD');
+        } else {
+          const tcgFull = computeTcgPrice(item, item.condition) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
+          unitPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
+        }
+
+        return {
+          name: item.name || "",
+          set: item.set || "",
+          number: item.number || "",
+          condition: item.condition || "NM",
+          quantity: qty,
+          unitPrice: unitPrice || 0,
+          totalPrice: (unitPrice || 0) * qty,
+          marketValue: (unitPrice || 0) * qty,
+          image: item.image || item.imageUrl || "",
+          isGraded: item.isGraded || false,
+          gradingCompany: item.gradingCompany || "",
+          grade: item.grade || ""
+        };
+      });
+
+      const itemsOut = selectedInventoryItems.map(item => {
+        let vendorPrice;
+        if (item.overridePrice != null) {
+          vendorPrice = item.overridePriceCurrency && item.overridePriceCurrency !== currency
+            ? convertCurrency(Number(item.overridePrice), currency, item.overridePriceCurrency)
+            : Number(item.overridePrice);
+        } else {
+          const metrics = computeItemMetrics(item, currency);
+          vendorPrice = metrics.suggested;
+        }
+
+        const metrics = computeItemMetrics(item, currency);
+        const marketValue = metrics.suggested;
+
+        return {
+          name: item.name || "",
+          set: item.set || "",
+          number: item.number || "",
+          condition: item.condition || "NM",
+          quantity: 1,
+          unitPrice: vendorPrice || 0,
+          totalPrice: vendorPrice || 0,
+          marketValue: marketValue || 0,
+          image: item.image || item.imageUrl || "",
+          isGraded: item.isGraded || false,
+          gradingCompany: item.gradingCompany || "",
+          grade: item.grade || ""
+        };
+      });
+
+      const totalValueIn = itemsIn.reduce((sum, item) => sum + (item.marketValue || 0), 0);
+      const totalValueOut = itemsOut.reduce((sum, item) => sum + (item.marketValue || 0), 0);
+
+      const cashValue = parseFloat(cashAmount) || 0;
+      let cashInPrimaryCurrency = 0;
+      if (cashValue > 0) {
+        cashInPrimaryCurrency = buyCurrency !== currency
+          ? convertCurrency(cashValue, currency, buyCurrency)
+          : cashValue;
+      }
+
+      let valueGained = totalValueIn - totalValueOut;
+      if (cashValue > 0) {
+        valueGained += cashDirection === "in" ? cashInPrimaryCurrency : -cashInPrimaryCurrency;
+      }
+
+      let totalValue = selectedTotals.finalValue;
+      const inputCurrency = buyCurrency;
+      if (inputCurrency !== currency) {
+        totalValue = convertCurrency(totalValue, currency, inputCurrency);
+      }
+
+      const transactionData = {
+        type: "trade",
+        totalValue,
+        itemsIn,
+        itemsOut,
+        valueGained,
+        notes: `Trade completed from buy calculator: ${itemsOut.length} card(s) out, ${itemsIn.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s) in${cashValue > 0 ? `, ${cashDirection === 'in' ? 'received' : 'paid'} ${formatCurrency(cashValue, buyCurrency)} cash` : ''}`,
+        currency
+      };
+
+      if (cashValue > 0) {
+        transactionData.cashAmount = cashInPrimaryCurrency;
+        transactionData.cashDirection = cashDirection;
+      }
+
+      if (inputCurrency && inputCurrency !== currency) {
+        transactionData.inputCurrency = inputCurrency;
+      }
+
+      await recordTransaction(db, user.uid, transactionData);
+
+      const inventoryItems = [];
+      selectedItems.forEach(item => {
+        const qty = item.quantity || 1;
+        const values = calculateItemValue(item);
+        const perUnitBuyPrice = values.finalUnit || 0;
+        for (let i = 0; i < qty; i++) {
+          const inventoryItem = {
+            entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            id: item.id || item.baseId || "",
+            name: item.name || "",
+            set: item.set || "",
+            number: item.number || "",
+            rarity: item.rarity || "",
+            image: item.image || item.imageUrl || "",
+            condition: item.condition || "NM",
+            quantity: 1,
+            prices: item.prices || {},
+            addedAt: Date.now(),
+            buyPrice: perUnitBuyPrice,
+            acquiredVia: "trade",
+          };
+
+          if (item.isManualEntry) {
+            inventoryItem.isManualEntry = true;
+            inventoryItem.manualPrice = item.manualPrice;
+            inventoryItem.manualPriceCurrency = item.manualPriceCurrency;
+            inventoryItem.notes = item.notes || "";
+          }
+
+          if (item.isGraded) {
+            inventoryItem.isGraded = true;
+            inventoryItem.gradingCompany = item.gradingCompany || "";
+            inventoryItem.grade = item.grade || "";
+            inventoryItem.gradedPrice = item.gradedPrice || 0;
+            inventoryItem.gradedPriceCurrency = item.gradedPriceCurrency || "USD";
+          }
+
+          inventoryItems.push(
+            Object.fromEntries(
+              Object.entries(inventoryItem).filter(([, value]) => value !== undefined)
+            )
+          );
+        }
+      });
+
+      const updatedInventory = [
+        ...collectionItems.filter(it => !selectedInventoryIds.has(it.entryId)),
+        ...inventoryItems
+      ];
+
+      const inventoryRef = doc(db, "collections", user.uid);
+      await setDoc(inventoryRef, { items: updatedInventory }, { merge: true });
+      setCollectionItems(updatedInventory);
+
+      setBuyItems(prev => prev.filter(it => !pendingTradeConfirmation.selectedIds.has(it.entryId)));
+      setSelectedIds(new Set());
+      setShowInventoryModal(false);
+      setPendingTradeConfirmation(null);
+      setSelectedInventoryIds(new Set());
+      setInventorySearchQuery("");
+      setCashAmount("");
+      setCashDirection("in");
+
+      triggerQuickAddFeedback(`Trade completed! ${itemsIn.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s) added, ${itemsOut.length} removed.`);
+    } catch (error) {
+      console.error("Failed to complete trade from buy calculator:", error);
+      toast.error("Failed to complete trade. Please try again.");
     }
   };
 
@@ -814,7 +1044,7 @@ export function BuyCalculator() {
       await navigator.clipboard.writeText(text);
       setSplitCopied(prev => ({ ...prev, [pct]: 'text' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
-    } catch (err) {
+    } catch {
       toast.error("Failed to copy to clipboard");
     }
   };
@@ -844,7 +1074,7 @@ export function BuyCalculator() {
       const docRef = await addDoc(collection(db, "tradeOffers"), buyOffer);
       const link = `${window.location.origin}/trade-offer?id=${docRef.id}`;
       setSplitShareLinks(prev => ({ ...prev, [pct]: link }));
-    } catch (err) {
+    } catch {
       toast.error("Failed to generate share link.");
     } finally {
       setSplitShareLoading(prev => ({ ...prev, [pct]: false }));
@@ -856,7 +1086,7 @@ export function BuyCalculator() {
       await navigator.clipboard.writeText(splitShareLinks[pct]);
       setSplitCopied(prev => ({ ...prev, [pct]: 'link' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
-    } catch (err) {
+    } catch {
       toast.error("Failed to copy to clipboard");
     }
   };
@@ -880,12 +1110,67 @@ export function BuyCalculator() {
     triggerQuickAddFeedback(`Saved ${pct}% tier (${tierItems.length} cards) to pending`);
   };
 
+  const filteredInventoryItems = useMemo(() => {
+    if (!inventorySearchQuery.trim()) return collectionItems;
+
+    const query = inventorySearchQuery.toLowerCase();
+    return collectionItems.filter(item => {
+      const name = (item.name || "").toLowerCase();
+      const set = (item.set || "").toLowerCase();
+      const number = (item.number || "").toString().toLowerCase();
+      const condition = (item.condition || "").toLowerCase();
+      const grade = item.isGraded ? `${item.gradingCompany} ${item.grade}`.toLowerCase() : "";
+
+      return name.includes(query) ||
+             set.includes(query) ||
+             number.includes(query) ||
+             condition.includes(query) ||
+             grade.includes(query);
+    });
+  }, [collectionItems, inventorySearchQuery]);
+
+  const toggleInventorySelection = (entryId) => {
+    setSelectedInventoryIds(prev => {
+      const updated = new Set(prev);
+      if (updated.has(entryId)) {
+        updated.delete(entryId);
+      } else {
+        updated.add(entryId);
+      }
+      return updated;
+    });
+  };
+
+  const handleSelectAllInventory = () => {
+    const filteredIds = new Set(filteredInventoryItems.map(it => it.entryId));
+    const allFilteredSelected = filteredInventoryItems.every(it => selectedInventoryIds.has(it.entryId));
+
+    if (allFilteredSelected) {
+      setSelectedInventoryIds(prev => {
+        const newSet = new Set(prev);
+        filteredIds.forEach(id => newSet.delete(id));
+        return newSet;
+      });
+    } else {
+      setSelectedInventoryIds(prev => new Set([...prev, ...filteredIds]));
+    }
+  };
+
+  const handleCancelInventorySelection = () => {
+    setShowInventoryModal(false);
+    setPendingTradeConfirmation(null);
+    setSelectedInventoryIds(new Set());
+    setInventorySearchQuery("");
+    setCashAmount("");
+    setCashDirection("in");
+  };
+
   if (!user) {
     return (
       <div className="max-w-6xl mx-auto">
         <Card>
           <CardContent className="p-6 text-center">
-            <p className="text-muted-foreground">Please sign in to use the Buy Calculator.</p>
+            <p className="text-muted-foreground">Please sign in to use the Deal Calculator.</p>
           </CardContent>
         </Card>
       </div>
@@ -898,8 +1183,8 @@ export function BuyCalculator() {
         <div className="flex items-center gap-3">
           <ShoppingCart className="h-8 w-8 text-blue-600" />
           <div>
-            <h1 className="text-3xl font-bold">Buy Calculator</h1>
-            <p className="text-muted-foreground">Vendor Toolkit</p>
+            <h1 className="text-3xl font-bold">Deal Calculator</h1>
+            <p className="text-muted-foreground">Vendor Toolkit · Finish as buy, trade, or mixed deal</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -932,7 +1217,7 @@ export function BuyCalculator() {
         <CardContent className="p-0">
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-3 text-sm">
-              <label className="text-sm font-semibold">Default Buy %</label>
+              <label className="text-sm font-semibold">Default Cash Offer %</label>
               <PercentSelect
                 value={buyDefaultPct}
                 onChange={handleBuyDefaultChange}
@@ -987,7 +1272,7 @@ export function BuyCalculator() {
               </Button>
             </div>
             <div className="text-sm">
-              <div className="font-semibold mb-1">Total Buy Value:</div>
+              <div className="font-semibold mb-1">Total Deal Value:</div>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
                 <span>TCG: {formatPrice(buyTotals.tcgMarket)}</span>
                 <span>CM Avg: {formatPrice(buyTotals.cmAvg)}</span>
@@ -1017,7 +1302,7 @@ export function BuyCalculator() {
             {secondaryCurrency && selectedIds.size > 0 && (
               <div className="mb-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
                 <label className="block text-sm font-semibold mb-2">
-                  Enter purchase amount in:
+                  Enter deal amount in:
                 </label>
                 <div className="flex gap-3">
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -1042,7 +1327,7 @@ export function BuyCalculator() {
                   </label>
                 </div>
                 <p className="text-xs text-blue-600 mt-2">
-                  💡 Purchase amount will be converted to {currency} for storage
+                  Deal amount will be converted to {currency} for storage
                 </p>
               </div>
             )}
@@ -1072,7 +1357,17 @@ export function BuyCalculator() {
                 disabled={selectedIds.size === 0}
                 className="bg-blue-600 hover:bg-blue-700"
               >
-                Confirm Buy ({selectedIds.size})
+                Finish as Buy ({selectedIds.size})
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleConfirmTradeFromBuy}
+                disabled={selectedIds.size === 0}
+                className="border-green-300 text-green-700 hover:bg-green-50"
+              >
+                <Calculator className="h-4 w-4 mr-2" />
+                Finish as Trade ({selectedIds.size})
               </Button>
               <Button
                 size="sm"
@@ -1120,7 +1415,7 @@ export function BuyCalculator() {
         {buyItems.length === 0 && (
           <Card>
             <CardContent className="p-6 text-center text-muted-foreground">
-              No buy items yet. Add cards from Card Search (Vendor Toolkit → Search).
+              No deal items yet. Add cards from Card Search (Vendor Toolkit → Search).
             </CardContent>
           </Card>
         )}
@@ -1278,7 +1573,7 @@ export function BuyCalculator() {
           <Card className="max-w-2xl w-full max-h-[80vh] overflow-auto">
             <CardContent className="p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold">Pending Buy Deals</h2>
+                <h2 className="text-xl font-bold">Pending Deals</h2>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1324,6 +1619,189 @@ export function BuyCalculator() {
                   ))}
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Inventory Selection Modal */}
+      {showInventoryModal && pendingTradeConfirmation && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="max-w-4xl w-full max-h-[80vh] overflow-auto">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-xl font-bold">Select Cards to Trade Out</h2>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Choose cards from your inventory to give away in this trade
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleCancelInventorySelection}
+                >
+                  ×
+                </Button>
+              </div>
+
+              <div className="mb-4">
+                <Input
+                  type="text"
+                  placeholder="Search inventory (card name, set, number, condition, grade...)"
+                  value={inventorySearchQuery}
+                  onChange={(e) => setInventorySearchQuery(e.target.value)}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="mb-4 flex items-center justify-between">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSelectAllInventory}
+                >
+                  {filteredInventoryItems.length > 0 && filteredInventoryItems.every(it => selectedInventoryIds.has(it.entryId)) ? "Deselect All" : "Select All"}
+                </Button>
+                <div className="text-sm text-muted-foreground">
+                  {selectedInventoryIds.size} card{selectedInventoryIds.size !== 1 ? 's' : ''} selected
+                  {inventorySearchQuery && ` • ${filteredInventoryItems.length} match${filteredInventoryItems.length !== 1 ? 'es' : ''}`}
+                </div>
+              </div>
+
+              {collectionItems.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">No cards in inventory</p>
+              ) : filteredInventoryItems.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">No cards match your search</p>
+              ) : (
+                <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+                  {filteredInventoryItems.map(item => {
+                    const isSelected = selectedInventoryIds.has(item.entryId);
+                    const metrics = computeItemMetrics(item, currency);
+                    const vendorPrice = item.overridePrice ?? item.calculatedSuggestedPrice ?? metrics.suggested;
+
+                    return (
+                      <div
+                        key={item.entryId}
+                        onClick={() => toggleInventorySelection(item.entryId)}
+                        className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                          isSelected ? 'border-blue-500 bg-blue-50' : 'border-border hover:bg-muted'
+                        }`}
+                      >
+                        <div className="flex-shrink-0">
+                          {isSelected ? (
+                            <CheckSquare className="h-5 w-5 text-blue-600" />
+                          ) : (
+                            <Square className="h-5 w-5 text-muted-foreground" />
+                          )}
+                        </div>
+                        {item.image && (
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            className="h-16 w-12 rounded object-cover flex-shrink-0"
+                          />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium truncate">{item.name}</div>
+                          <div className="text-sm text-muted-foreground truncate">
+                            {item.set} • #{item.number} • {item.condition}
+                          </div>
+                          <div className="text-sm font-semibold text-green-600 mt-1">
+                            Vendor Price: {formatPrice(vendorPrice)}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {secondaryCurrency && (
+                <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                  <label className="block text-sm font-semibold mb-2">
+                    Enter trade value/cash in:
+                  </label>
+                  <div className="flex gap-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="buyTradeCurrency"
+                        checked={buyCurrency === currency}
+                        onChange={() => setBuyCurrency(currency)}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm font-medium">{currency} (Primary)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="buyTradeCurrency"
+                        checked={buyCurrency === secondaryCurrency}
+                        onChange={() => setBuyCurrency(secondaryCurrency)}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm font-medium">{secondaryCurrency} (Secondary)</span>
+                    </label>
+                  </div>
+                  <p className="text-xs text-blue-600 mt-2">
+                    Trade values will be converted to {currency} for storage
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-4 p-3 bg-purple-50 rounded-lg border border-purple-200">
+                <label className="block text-sm font-semibold mb-2">
+                  Include Cash in Trade (Optional)
+                </label>
+                <div className="flex gap-3 items-center mb-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="buyTradeCashDirection"
+                      checked={cashDirection === "in"}
+                      onChange={() => setCashDirection("in")}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm font-medium">Receiving Cash</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="buyTradeCashDirection"
+                      checked={cashDirection === "out"}
+                      onChange={() => setCashDirection("out")}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm font-medium">Paying Cash</span>
+                  </label>
+                </div>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder={`Cash amount (${buyCurrency})`}
+                  value={cashAmount}
+                  onChange={(e) => setCashAmount(e.target.value)}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="mt-6 flex gap-3 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={handleCancelInventorySelection}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleCompleteTradeWithInventory}
+                  disabled={selectedInventoryIds.size === 0}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  Complete Trade
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -1616,3 +2094,5 @@ export function BuyCalculator() {
     </div>
   );
 }
+
+export const DealCalculator = BuyCalculator;

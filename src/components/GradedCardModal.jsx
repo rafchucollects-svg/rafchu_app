@@ -20,7 +20,7 @@ export function GradedCardModal({ isOpen, onClose, card, onSubmit, mode = "colle
   // Determine button text based on target
   const getButtonText = () => {
     if (target === 'trade') return 'Add to Trade';
-    if (target === 'buy') return 'Add to Buy';
+    if (target === 'buy') return 'Add to Deal';
     return `Add to ${mode === "vendor" ? "Inventory" : "Collection"}`;
   };
 

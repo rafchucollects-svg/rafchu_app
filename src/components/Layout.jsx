@@ -7,7 +7,7 @@ import { OnboardingModal } from "./OnboardingModal";
 import { VendorAccessRequestModal } from "./VendorAccessRequestModal";
 import { FeedbackModal } from "./FeedbackModal";
 import { LoginModal } from "./LoginModal";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 
 /**
  * Layout component with hamburger navigation drawer
@@ -140,14 +140,14 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
       <AnimatePresence>
         {drawerOpen && (
           <>
-            <motion.div
+            <Motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="fixed inset-0 z-40 bg-black/30"
               onClick={() => setDrawerOpen(false)}
             />
-            <motion.div
+            <Motion.div
               initial={{ x: -300 }}
               animate={{ x: 0 }}
               exit={{ x: -300 }}
@@ -211,7 +211,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                   </button>
                   <AnimatePresence>
                     {expandedSection === 'user' && (
-                      <motion.div
+                      <Motion.div
                         initial={{ height: 0, opacity: 0 }}
                         animate={{ height: 'auto', opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
@@ -229,7 +229,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                             Profile & Settings
                           </Link>
                         </div>
-                      </motion.div>
+                      </Motion.div>
                     )}
                   </AnimatePresence>
                 </div>
@@ -254,7 +254,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                   </button>
                   <AnimatePresence>
                     {expandedSection === 'collector' && (
-                      <motion.div
+                      <Motion.div
                         initial={{ height: 0, opacity: 0 }}
                         animate={{ height: 'auto', opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
@@ -310,7 +310,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                           </Link>
                           */}
                         </div>
-                      </motion.div>
+                      </Motion.div>
                     )}
                   </AnimatePresence>
                 </div>
@@ -341,7 +341,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                     </button>
                     <AnimatePresence>
                       {expandedSection === 'vendor' && (
-                        <motion.div
+                        <Motion.div
                           initial={{ height: 0, opacity: 0 }}
                           animate={{ height: 'auto', opacity: 1 }}
                           exit={{ height: 0, opacity: 0 }}
@@ -377,22 +377,13 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                               Wishlist Insights
                             </Link>
                             <Link
-                              to="/vendor/trade-calculator"
+                              to="/vendor/deal-calculator"
                               onClick={() => setDrawerOpen(false)}
                               className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/trade-calculator') ? 'bg-accent font-medium' : ''
+                                isActive('/vendor/deal-calculator') || isActive('/vendor/trade-calculator') || isActive('/vendor/buy-calculator') ? 'bg-accent font-medium' : ''
                               }`}
                             >
-                              Trade Calculator
-                            </Link>
-                            <Link
-                              to="/vendor/buy-calculator"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/buy-calculator') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              Buy Calculator
+                              Deal Calculator
                             </Link>
                             <Link
                               to="/vendor/transaction-log"
@@ -443,7 +434,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                               Story Sale Generator
                             </Link>
                           </div>
-                        </motion.div>
+                        </Motion.div>
                       )}
                     </AnimatePresence>
                   </div>
@@ -498,7 +489,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
                   </button>
                 </div>
               </div>
-            </motion.div>
+            </Motion.div>
           </>
         )}
       </AnimatePresence>
@@ -506,14 +497,14 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
       {/* Quick Add Feedback Toast */}
       <AnimatePresence>
         {quickAddFeedback && (
-          <motion.div
+          <Motion.div
             initial={{ opacity: 0, y: 50 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 50 }}
             className="fixed bottom-4 right-4 z-50 bg-primary text-primary-foreground px-4 py-2 rounded-lg shadow-lg"
           >
             {quickAddFeedback}
-          </motion.div>
+          </Motion.div>
         )}
       </AnimatePresence>
 

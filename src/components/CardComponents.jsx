@@ -227,7 +227,6 @@ export function SuggestionItem({
   item,
   onPick,
   onQuickAddCollection,
-  onQuickAddTrade,
   onQuickAddBuy = () => {},
   onQuickAddWishlist = () => {},
   mode = "vendor",
@@ -280,24 +279,14 @@ export function SuggestionItem({
           </Button>
         )}
         {isVendor && (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-xs h-7 px-2.5"
-              onClick={() => onQuickAddTrade(item)}
-            >
-              + Trade
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-xs h-7 px-2.5"
-              onClick={() => onQuickAddBuy(item)}
-            >
-              + Buy
-            </Button>
-          </>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-xs h-7 px-2.5"
+            onClick={() => onQuickAddBuy(item)}
+          >
+            + Deal
+          </Button>
         )}
       </div>
     </div>

@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
+import { Calculator, ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { CardPhotoScanner } from "@/components/CardPhotoScanner";
 import { useApp } from "@/contexts/AppContext";
@@ -379,6 +379,141 @@ export function TradeCalculator() {
       selectedIds: new Set(selectedIds)
     });
     setShowInventoryModal(true);
+  };
+
+  const handleConfirmBuyFromTrade = async () => {
+    if (selectedIds.size === 0) {
+      toast.info("Please select cards to confirm the purchase.");
+      return;
+    }
+
+    if (!user || !db) {
+      toast.error("Please sign in to confirm purchases.");
+      return;
+    }
+
+    const selectedItems = tradeItems.filter(it => selectedIds.has(it.id));
+
+    try {
+      const itemsIn = selectedItems.map(item => {
+        const qty = item.quantity || 1;
+        let unitPrice;
+        if (item.isGraded && item.gradedPrice) {
+          unitPrice = convertCurrency(item.gradedPrice, currency, item.gradedPriceCurrency || 'USD');
+        } else if (item.isManualEntry && item.manualPrice) {
+          unitPrice = convertCurrency(item.manualPrice, currency, item.manualPriceCurrency || 'USD');
+        } else {
+          const tcgFull = computeTcgPrice(item, item.condition) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
+          unitPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
+        }
+
+        return {
+          name: item.name || "",
+          set: item.set || "",
+          number: item.number || "",
+          condition: item.condition || "NM",
+          quantity: qty,
+          unitPrice: unitPrice || 0,
+          totalPrice: (unitPrice || 0) * qty,
+          image: item.image || item.imageUrl || "",
+          isGraded: item.isGraded || false,
+          gradingCompany: item.gradingCompany || null,
+          grade: item.grade || null,
+        };
+      });
+
+      let totalCost = selectedTotals.finalValue;
+      const inputCurrency = tradeCurrency;
+      if (inputCurrency !== currency) {
+        totalCost = convertCurrency(totalCost, currency, inputCurrency);
+      }
+
+      const totalMarketValue = itemsIn.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
+      const transactionData = {
+        type: "buy",
+        totalValue: totalCost,
+        itemsIn,
+        itemsOut: [],
+        valueGained: totalMarketValue - totalCost,
+        notes: `Purchase completed from trade calculator: ${selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s)`,
+        currency,
+      };
+
+      if (inputCurrency && inputCurrency !== currency) {
+        transactionData.inputCurrency = inputCurrency;
+      }
+
+      await recordTransaction(db, user.uid, transactionData);
+
+      const inventoryItems = [];
+      selectedItems.forEach(item => {
+        const qty = item.quantity || 1;
+        const values = calculateItemValue(item);
+        const perUnitBuyPrice = values.finalValue || 0;
+        for (let i = 0; i < qty; i++) {
+          const inventoryItem = {
+            entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            id: item.id || item.baseId || "",
+            name: item.name || "",
+            set: item.set || "",
+            number: item.number || "",
+            rarity: item.rarity || "",
+            image: item.image || item.imageUrl || "",
+            condition: item.condition || "NM",
+            quantity: 1,
+            prices: item.prices || {},
+            addedAt: Date.now(),
+            buyPrice: perUnitBuyPrice,
+            acquiredVia: "buy",
+          };
+
+          if (item.isManualEntry) {
+            inventoryItem.isManualEntry = true;
+            inventoryItem.manualPrice = item.manualPrice;
+            inventoryItem.manualPriceCurrency = item.manualPriceCurrency;
+            inventoryItem.notes = item.notes || "";
+          }
+
+          if (item.isGraded) {
+            inventoryItem.isGraded = true;
+            inventoryItem.gradingCompany = item.gradingCompany || "";
+            inventoryItem.grade = item.grade || "";
+            inventoryItem.gradedPrice = item.gradedPrice || 0;
+            inventoryItem.gradedPriceCurrency = item.gradedPriceCurrency || "USD";
+          }
+
+          inventoryItems.push(
+            Object.fromEntries(
+              Object.entries(inventoryItem).filter(([_, value]) => value !== undefined)
+            )
+          );
+        }
+      });
+
+      const updatedInventory = [...collectionItems, ...inventoryItems];
+      const inventoryRef = doc(db, "collections", user.uid);
+      await setDoc(inventoryRef, { items: updatedInventory }, { merge: true });
+      setCollectionItems(updatedInventory);
+
+      setTradeItems(prev => prev.filter(it => !selectedIds.has(it.id)));
+      setSelectedIds(new Set());
+
+      if (loadedFromPendingDealId) {
+        const updated = pendingDeals.filter(d => d.id !== loadedFromPendingDealId);
+        setPendingDeals(updated);
+        savePendingDealsToFirestore(updated);
+        setLoadedFromPendingDealId(null);
+      }
+
+      const totalCards = selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0);
+      triggerQuickAddFeedback(`Purchase confirmed! ${totalCards} card(s) added to inventory.`);
+    } catch (error) {
+      console.error("Failed to confirm purchase from trade calculator:", error);
+      toast.error("Failed to confirm purchase. Please try again.");
+    }
   };
 
   const handleCompleteTradeWithInventory = async () => {
@@ -1189,6 +1324,16 @@ export function TradeCalculator() {
                 className="bg-green-600 hover:bg-green-700"
               >
                 Confirm Trade ({selectedIds.size})
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleConfirmBuyFromTrade}
+                disabled={selectedIds.size === 0}
+                className="border-blue-300 text-blue-700 hover:bg-blue-50"
+              >
+                <ShoppingCart className="h-4 w-4 mr-2" />
+                Confirm Buy ({selectedIds.size})
               </Button>
               <Button
                 size="sm"

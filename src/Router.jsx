@@ -35,8 +35,7 @@ const Messages = lazyPage(() => import("./pages/Messages"), "Messages");
 const MyInventory = lazyPage(() => import("./pages/MyInventory"), "MyInventory");
 const InventoryInsights = lazyPage(() => import("./pages/InventoryInsights"), "InventoryInsights");
 const WishlistInsights = lazyPage(() => import("./pages/WishlistInsights"), "WishlistInsights");
-const TradeCalculator = lazyPage(() => import("./pages/TradeCalculator"), "TradeCalculator");
-const BuyCalculator = lazyPage(() => import("./pages/BuyCalculator"), "BuyCalculator");
+const DealCalculator = lazyPage(() => import("./pages/BuyCalculator"), "DealCalculator");
 const TransactionLog = lazyPage(() => import("./pages/TransactionLog"), "TransactionLog");
 const TransactionSummary = lazyPage(() => import("./pages/TransactionSummary"), "TransactionSummary");
 const TaxReporting = lazyPage(() => import("./pages/TaxReporting"), "TaxReporting");
@@ -194,12 +193,16 @@ export function createAppRouter(authHandlers) {
               element: <Route><VendorAccessGuard><WishlistInsights /></VendorAccessGuard></Route>,
             },
             {
+              path: "deal-calculator",
+              element: <Route><VendorAccessGuard><DealCalculator /></VendorAccessGuard></Route>,
+            },
+            {
               path: "trade-calculator",
-              element: <Route><VendorAccessGuard><TradeCalculator /></VendorAccessGuard></Route>,
+              element: <Navigate to="/vendor/deal-calculator" replace />,
             },
             {
               path: "buy-calculator",
-              element: <Route><VendorAccessGuard><BuyCalculator /></VendorAccessGuard></Route>,
+              element: <Navigate to="/vendor/deal-calculator" replace />,
             },
             {
               path: "transaction-log",

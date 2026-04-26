@@ -96,7 +96,7 @@ export function VendorAccessGuard({ children }) {
               </div>
               <div className="flex items-start gap-2">
                 <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
-                <span>Trade & buy calculators</span>
+                <span>Unified deal calculator</span>
               </div>
               <div className="flex items-start gap-2">
                 <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />

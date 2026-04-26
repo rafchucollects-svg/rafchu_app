@@ -108,8 +108,7 @@ export function Home() {
             <li>• <strong>Card Search:</strong> Find any Pokémon card and view real-time pricing from CardMarket</li>
             <li>• <strong>Collections & Inventory:</strong> Track cards you own with condition tracking and custom pricing</li>
             <li>• <strong>Wishlists:</strong> Keep track of cards you want to acquire</li>
-            <li>• <strong>Trade Calculator:</strong> Calculate fair trade values with customizable percentages</li>
-            <li>• <strong>Buy Calculator:</strong> Make purchase offers and track acquisitions</li>
+            <li>• <strong>Deal Calculator:</strong> Plan purchases, trades, and mixed deals with customizable percentages</li>
             <li>• <strong>Insights:</strong> Analyze your collection value, rarity distribution, and trends</li>
             <li>• <strong>Transaction Logs:</strong> Keep detailed records of all trades and purchases</li>
           </ul>
