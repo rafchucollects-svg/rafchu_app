@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,42 +30,125 @@ function getDisplayPriceForItem(item, currency, roundUp) {
   return price;
 }
 
-function matchDetectedToInventory(detected, inventoryItems) {
-  const detectedName = (detected.name || "").toLowerCase().trim();
-  const detectedNum = (detected.collectorNumber || "").replace(/^#/, "").trim();
-  const detectedSet = (detected.setName || "").toLowerCase().trim();
+const DEFAULT_LABEL_COLOR = "#16a34a";
+const DEFAULT_LABEL_POSITION = { x: 0.5, y: 0.9 };
+const SCAN_MAX_DIMENSION = 1600;
+const SCAN_JPEG_QUALITY = 0.82;
+const BATCH_SCAN_CONCURRENCY = 3;
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeText(value) {
+  return String(value || "").toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function normalizeCardNumber(value) {
+  return String(value || "").replace(/^#/, "").trim().toLowerCase();
+}
+
+function normalizeCardNumberBase(value) {
+  return normalizeCardNumber(value).split("/")[0].replace(/^0+(\d)/, "$1");
+}
+
+function buildInventoryIndex(inventoryItems, currency, roundUp) {
+  const entries = inventoryItems.map((item, index) => {
+    const name = normalizeText(item.name);
+    const set = normalizeText(item.set);
+    const number = normalizeCardNumber(item.number);
+    const numberBase = normalizeCardNumberBase(item.number);
+    const grade = item.grade ? String(item.grade).trim() : "";
+    const gradingCompany = normalizeText(item.gradingCompany);
+
+    return {
+      item,
+      name,
+      set,
+      number,
+      numberBase,
+      grade,
+      gradingCompany,
+      key: item.entryId || item.cardId || item.id || `${name}|${set}|${number}|${index}`,
+      price: getDisplayPriceForItem(item, currency, roundUp),
+      searchText: `${name} ${set} ${number} ${grade} ${gradingCompany}`,
+    };
+  });
+
+  const byNumberBase = new Map();
+  const byName = new Map();
+  entries.forEach((entry) => {
+    if (entry.numberBase) {
+      const bucket = byNumberBase.get(entry.numberBase) || [];
+      bucket.push(entry);
+      byNumberBase.set(entry.numberBase, bucket);
+    }
+    if (entry.name) {
+      const bucket = byName.get(entry.name) || [];
+      bucket.push(entry);
+      byName.set(entry.name, bucket);
+    }
+  });
+
+  return { entries, byNumberBase, byName };
+}
+
+function matchDetectedToInventory(detected, inventoryIndex) {
+  const detectedName = normalizeText(detected.name);
+  const detectedNum = normalizeCardNumber(detected.collectorNumber);
+  const detectedNumBase = normalizeCardNumberBase(detected.collectorNumber);
+  const detectedSet = normalizeText(detected.setName);
   const detectedGrade = detected.grade ? String(detected.grade).trim() : null;
-  const detectedCompany = (detected.gradingCompany || "").toLowerCase().trim();
+  const detectedCompany = normalizeText(detected.gradingCompany);
 
-  const scored = inventoryItems.map((item) => {
+  const candidateMap = new Map();
+  const addCandidates = (entries) => {
+    entries.forEach((entry) => candidateMap.set(entry.key, entry));
+  };
+
+  if (detectedNumBase && inventoryIndex.byNumberBase.has(detectedNumBase)) {
+    addCandidates(inventoryIndex.byNumberBase.get(detectedNumBase));
+  }
+  if (detectedName && inventoryIndex.byName.has(detectedName)) {
+    addCandidates(inventoryIndex.byName.get(detectedName));
+  }
+
+  const candidateEntries = candidateMap.size > 0
+    ? Array.from(candidateMap.values())
+    : inventoryIndex.entries;
+
+  const scored = candidateEntries.map((entry) => {
+    const { item } = entry;
     let score = 0;
-    const itemName = (item.name || "").toLowerCase();
-    const itemNum = String(item.number || "").trim();
-    const itemSet = (item.set || "").toLowerCase();
 
-    if (detectedName && itemName) {
-      if (itemName === detectedName) score += 30;
-      else if (itemName.includes(detectedName) || detectedName.includes(itemName)) score += 10;
+    if (detectedName && entry.name) {
+      if (entry.name === detectedName) score += 35;
+      else if (entry.name.includes(detectedName) || detectedName.includes(entry.name)) score += 12;
     }
-    if (detectedNum && itemNum) {
-      const normDetected = detectedNum.split("/")[0];
-      const normItem = itemNum.split("/")[0];
-      if (normDetected === normItem) score += 25;
+    if (detectedNum && entry.number) {
+      if (detectedNum === entry.number) score += 30;
+      else if (detectedNumBase && detectedNumBase === entry.numberBase) score += 25;
     }
-    if (detectedSet && itemSet) {
-      if (itemSet === detectedSet) score += 15;
-      else if (itemSet.includes(detectedSet) || detectedSet.includes(itemSet)) score += 5;
+    if (detectedSet && entry.set) {
+      if (entry.set === detectedSet) score += 18;
+      else if (entry.set.includes(detectedSet) || detectedSet.includes(entry.set)) score += 7;
     }
     if (detected.isGraded && item.isGraded) {
       score += 10;
-      if (detectedGrade && item.grade && String(item.grade).trim() === detectedGrade) score += 15;
-      if (detectedCompany && item.gradingCompany && item.gradingCompany.toLowerCase().includes(detectedCompany)) score += 5;
+      if (detectedGrade && entry.grade === detectedGrade) score += 15;
+      if (detectedCompany && entry.gradingCompany.includes(detectedCompany)) score += 5;
     }
-    return { item, score };
+    return { item, score, price: entry.price };
   });
 
   scored.sort((a, b) => b.score - a.score);
   return scored.filter((s) => s.score >= 20).slice(0, 5);
+}
+
+function shouldAutoConfirm(detected, bestMatch) {
+  if (!bestMatch) return false;
+  const confidence = typeof detected.confidence === "number" ? detected.confidence : 0;
+  return confidence >= 0.85 && bestMatch.score >= 70;
 }
 
 function autoDetectGrid(cardCount) {
@@ -105,17 +188,90 @@ function fitText(ctx, text, weight, maxW, startSize) {
   return size;
 }
 
-function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secondaryCurrency, storyMode) {
+async function compressImageForScan(file) {
+  const img = new window.Image();
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = objectUrl;
+    });
+
+    const scale = Math.min(1, SCAN_MAX_DIMENSION / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (result) => (result ? resolve(result) : reject(new Error("Failed to compress image."))),
+        "image/jpeg",
+        SCAN_JPEG_QUALITY
+      );
+    });
+
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    return {
+      base64: dataUrl.split(",")[1],
+      mimeType: blob.type || "image/jpeg",
+    };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  const queue = [...items];
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const next = queue.shift();
+      await worker(next);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function canvasToBlob(canvas, type = "image/png", quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("Failed to export image."))),
+      type,
+      quality
+    );
+  });
+}
+
+function revokeImageUrls(imageEntry) {
+  if (imageEntry?.preview) URL.revokeObjectURL(imageEntry.preview);
+  if (imageEntry?.generatedImage) URL.revokeObjectURL(imageEntry.generatedImage);
+}
+
+async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secondaryCurrency, options) {
   const ctx = canvas.getContext("2d");
+  const { storyMode, labelColor, includeSecondaryCurrency } = options;
 
   let canvasW = img.naturalWidth;
   let canvasH = img.naturalHeight;
+  let drawW = img.naturalWidth;
+  let drawH = img.naturalHeight;
 
   if (storyMode) {
-    const targetRatio = 9 / 16;
-    const currentRatio = canvasW / canvasH;
-    if (currentRatio > targetRatio) canvasH = canvasW / targetRatio;
-    else canvasW = canvasH * targetRatio;
+    canvasW = 1080;
+    canvasH = 1920;
+    const scale = Math.min(canvasW / img.naturalWidth, canvasH / img.naturalHeight);
+    drawW = img.naturalWidth * scale;
+    drawH = img.naturalHeight * scale;
   }
 
   canvas.width = canvasW;
@@ -126,13 +282,13 @@ function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secondaryCu
     ctx.fillRect(0, 0, canvasW, canvasH);
   }
 
-  const imgX = (canvasW - img.naturalWidth) / 2;
-  const imgY = (canvasH - img.naturalHeight) / 2;
-  ctx.drawImage(img, imgX, imgY, img.naturalWidth, img.naturalHeight);
+  const imgX = (canvasW - drawW) / 2;
+  const imgY = (canvasH - drawH) / 2;
+  ctx.drawImage(img, imgX, imgY, drawW, drawH);
 
   const { cols, rows } = gridConfig;
-  const cellW = img.naturalWidth / cols;
-  const cellH = img.naturalHeight / rows;
+  const cellW = drawW / cols;
+  const cellH = drawH / rows;
 
   const boxW = cellW * 0.80;
   const boxH = cellH * 0.20;
@@ -150,18 +306,19 @@ function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secondaryCu
 
     const primaryText = formatWholePrice(price, currency);
     let secondaryText = null;
-    if (secondaryCurrency) {
+    if (secondaryCurrency && includeSecondaryCurrency) {
       const converted = convertCurrency(price, secondaryCurrency, currency);
       secondaryText = formatWholePrice(roundToNearest10(converted), secondaryCurrency);
     }
 
-    const boxX = cellX + (cellW - boxW) / 2;
-    const boxY = cellY + cellH - boxH;
+    const labelPosition = slot.labelPosition || DEFAULT_LABEL_POSITION;
+    const boxX = cellX + labelPosition.x * cellW - boxW / 2;
+    const boxY = cellY + labelPosition.y * cellH - boxH / 2;
 
     const radius = boxH * 0.18;
     ctx.beginPath();
-    ctx.roundRect(boxX, boxY, boxW, boxH, [radius, radius, 0, 0]);
-    ctx.fillStyle = "rgba(22, 163, 74, 0.93)";
+    ctx.roundRect(boxX, boxY, boxW, boxH, radius);
+    ctx.fillStyle = labelColor || DEFAULT_LABEL_COLOR;
     ctx.fill();
 
     ctx.fillStyle = "#ffffff";
@@ -189,7 +346,7 @@ function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secondaryCu
     }
   });
 
-  return canvas.toDataURL("image/png");
+  return canvasToBlob(canvas, "image/png");
 }
 
 // ── Per-image state structure ───────────────────────────────────
@@ -202,7 +359,10 @@ function createImageEntry(file) {
     cardSlots: [],
     gridConfig: null,
     generatedImage: null,
+    generatedBlob: null,
     storyMode: false,
+    labelColor: DEFAULT_LABEL_COLOR,
+    includeSecondaryCurrency: true,
     error: null,
     statusText: "",
   };
@@ -214,11 +374,13 @@ export function StorySaleGenerator() {
   const [images, setImages] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [draggingLabel, setDraggingLabel] = useState(null);
   const [globalError, setGlobalError] = useState(null);
 
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const canvasRef = useRef(null);
+  const imagesRef = useRef(images);
 
   const roundUp = false;
 
@@ -226,7 +388,22 @@ export function StorySaleGenerator() {
     return (collectionItems || []).filter((i) => !i.excludeFromSale);
   }, [collectionItems]);
 
+  const inventoryIndex = useMemo(
+    () => buildInventoryIndex(inventoryItems, currency, roundUp),
+    [inventoryItems, currency, roundUp]
+  );
+
   const activeImage = images.find((img) => img.id === activeId) || null;
+
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+
+  useEffect(() => {
+    return () => {
+      imagesRef.current.forEach(revokeImageUrls);
+    };
+  }, []);
 
   // ── Image management ──────────────────────────────────────────
 
@@ -251,25 +428,37 @@ export function StorySaleGenerator() {
   }, [addFiles]);
 
   const removeImage = useCallback((id) => {
-    setImages((prev) => prev.filter((img) => img.id !== id));
-    setActiveId((prev) => {
-      if (prev !== id) return prev;
-      const remaining = images.filter((img) => img.id !== id);
-      return remaining.length > 0 ? remaining[0].id : null;
+    setImages((prev) => {
+      const removed = prev.find((img) => img.id === id);
+      const remaining = prev.filter((img) => img.id !== id);
+      if (removed) revokeImageUrls(removed);
+      setActiveId((current) => (current === id ? remaining[0]?.id || null : current));
+      return remaining;
     });
-  }, [images]);
+  }, []);
 
   const updateImage = useCallback((id, updates) => {
     setImages((prev) =>
-      prev.map((img) => (img.id === id ? { ...img, ...updates } : img))
+      prev.map((img) => {
+        if (img.id !== id) return img;
+        if (
+          Object.prototype.hasOwnProperty.call(updates, "generatedImage") &&
+          img.generatedImage &&
+          img.generatedImage !== updates.generatedImage
+        ) {
+          URL.revokeObjectURL(img.generatedImage);
+        }
+        return { ...img, ...updates };
+      })
     );
   }, []);
 
   const resetAll = useCallback(() => {
+    images.forEach(revokeImageUrls);
     setImages([]);
     setActiveId(null);
     setGlobalError(null);
-  }, []);
+  }, [images]);
 
   // ── Scan a single image ───────────────────────────────────────
 
@@ -279,18 +468,13 @@ export function StorySaleGenerator() {
     updateImage(id, { phase: "scanning", error: null, statusText: "Analyzing photo with AI..." });
 
     try {
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(",")[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(imageEntry.file);
-      });
+      const compressed = await compressImageForScan(imageEntry.file);
 
       const functions = getFunctions();
       const parseCardPhotoFn = httpsCallable(functions, "parseCardPhoto");
       const result = await parseCardPhotoFn({
-        imageBase64: base64,
-        mimeType: imageEntry.file.type || "image/jpeg",
+        imageBase64: compressed.base64,
+        mimeType: compressed.mimeType,
       });
 
       const { cards } = result.data;
@@ -305,9 +489,10 @@ export function StorySaleGenerator() {
       const gridConfig = autoDetectGrid(cards.length);
 
       const slots = cards.slice(0, gridConfig.cols * gridConfig.rows).map((detected, i) => {
-        const matches = matchDetectedToInventory(detected, inventoryItems);
-        const bestMatch = matches.length > 0 ? matches[0].item : null;
-        const bestPrice = bestMatch ? getDisplayPriceForItem(bestMatch, currency, roundUp) : 0;
+        const matches = matchDetectedToInventory(detected, inventoryIndex);
+        const best = matches[0] || null;
+        const bestMatch = best?.item || null;
+        const bestPrice = best?.price || 0;
         return {
           index: i,
           detected,
@@ -315,7 +500,8 @@ export function StorySaleGenerator() {
           candidates: matches.map((m) => m.item),
           price: bestPrice,
           manualPrice: "",
-          confirmed: false,
+          confirmed: shouldAutoConfirm(detected, best),
+          labelPosition: DEFAULT_LABEL_POSITION,
           showSearch: false,
           searchQuery: "",
         };
@@ -329,7 +515,7 @@ export function StorySaleGenerator() {
         error: err.message || "Scan failed. Please try again.",
       });
     }
-  }, [user, inventoryItems, currency, roundUp, updateImage]);
+  }, [user, inventoryIndex, updateImage]);
 
   // ── Slot helpers (scoped to active image) ─────────────────────
 
@@ -361,16 +547,13 @@ export function StorySaleGenerator() {
 
   const filteredSearchResults = useCallback((query) => {
     if (!query || query.length < 2) return [];
-    const q = query.toLowerCase();
-    return inventoryItems
-      .filter(
-        (item) =>
-          (item.name || "").toLowerCase().includes(q) ||
-          (item.set || "").toLowerCase().includes(q) ||
-          String(item.number || "").includes(q)
-      )
+    const q = normalizeText(query);
+    const qNumber = normalizeCardNumber(query);
+    return inventoryIndex.entries
+      .filter((entry) => entry.searchText.includes(q) || (qNumber && entry.number.includes(qNumber)))
+      .map((entry) => entry.item)
       .slice(0, 10);
-  }, [inventoryItems]);
+  }, [inventoryIndex]);
 
   // ── Generate image for active entry ───────────────────────────
 
@@ -389,25 +572,21 @@ export function StorySaleGenerator() {
       });
 
       const canvas = canvasRef.current || document.createElement("canvas");
-      const dataUrl = drawPriceOverlays(
+      const blob = await drawPriceOverlays(
         canvas, img, imageEntry.cardSlots, imageEntry.gridConfig,
-        currency, secondaryCurrency, imageEntry.storyMode
+        currency, secondaryCurrency, {
+          storyMode: imageEntry.storyMode,
+          labelColor: imageEntry.labelColor,
+          includeSecondaryCurrency: imageEntry.includeSecondaryCurrency,
+        }
       );
-      updateImage(id, { phase: "done", generatedImage: dataUrl });
+      const objectUrl = URL.createObjectURL(blob);
+      updateImage(id, { phase: "done", generatedImage: objectUrl, generatedBlob: blob });
     } catch (err) {
       console.error("Image generation failed:", err);
       updateImage(id, { phase: "confirm", error: "Failed to generate image." });
     }
   }, [currency, secondaryCurrency, updateImage]);
-
-  const dataUrlToBlob = useCallback((dataUrl) => {
-    const [header, base64] = dataUrl.split(",");
-    const mime = header.match(/:(.*?);/)[1];
-    const bytes = atob(base64);
-    const buf = new Uint8Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
-    return new Blob([buf], { type: mime });
-  }, []);
 
   const canNativeShare = useMemo(() => {
     if (typeof navigator === "undefined" || !navigator.share || !navigator.canShare) return false;
@@ -420,15 +599,14 @@ export function StorySaleGenerator() {
   }, []);
 
   const handleShare = useCallback(async (imageEntry) => {
-    if (!imageEntry?.generatedImage) return;
-    const blob = dataUrlToBlob(imageEntry.generatedImage);
-    const file = new File([blob], `story-sale-${Date.now()}.png`, { type: "image/png" });
+    if (!imageEntry?.generatedBlob) return;
+    const file = new File([imageEntry.generatedBlob], `story-sale-${Date.now()}.png`, { type: "image/png" });
     try {
       await navigator.share({ files: [file] });
     } catch (err) {
       if (err.name !== "AbortError") console.error("Share failed:", err);
     }
-  }, [dataUrlToBlob]);
+  }, []);
 
   const handleDownload = useCallback((imageEntry) => {
     if (!imageEntry?.generatedImage) return;
@@ -454,9 +632,7 @@ export function StorySaleGenerator() {
 
   const scanAllPending = useCallback(async () => {
     const pending = images.filter((img) => img.phase === "pending");
-    for (const img of pending) {
-      await handleScan(img);
-    }
+    await runWithConcurrency(pending, BATCH_SCAN_CONCURRENCY, handleScan);
   }, [images, handleScan]);
 
   const generateAllConfirmed = useCallback(async () => {
@@ -467,6 +643,24 @@ export function StorySaleGenerator() {
       await generateImage(img);
     }
   }, [images, generateImage]);
+
+  const updateLabelPositionFromPointer = useCallback((event, slotIndex) => {
+    if (!activeImage?.gridConfig) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const px = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const py = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+    const { cols, rows } = activeImage.gridConfig;
+    const col = slotIndex % cols;
+    const row = Math.floor(slotIndex / cols);
+    const x = clamp(px * cols - col, 0.1, 0.9);
+    const y = clamp(py * rows - row, 0.1, 0.9);
+    updateSlot(slotIndex, { labelPosition: { x, y } });
+  }, [activeImage?.gridConfig, updateSlot]);
+
+  const handleLabelPointerMove = useCallback((event) => {
+    if (draggingLabel == null) return;
+    updateLabelPositionFromPointer(event, draggingLabel);
+  }, [draggingLabel, updateLabelPositionFromPointer]);
 
   const allSlots = activeImage?.cardSlots || [];
   const allConfirmed = allSlots.length > 0 && allSlots.every((s) => s.confirmed);
@@ -668,7 +862,7 @@ export function StorySaleGenerator() {
                       onChange={(e) => updateImage(activeImage.id, { storyMode: e.target.checked })}
                       className="rounded"
                     />
-                    Crop to 9:16 story format
+                    Export as 1080x1920 story
                   </label>
                 </div>
                 <Button className="w-full" size="lg" onClick={() => handleScan(activeImage)}>
@@ -711,6 +905,111 @@ export function StorySaleGenerator() {
                       {activeImage.error}
                     </div>
                   )}
+
+                  <div className="rounded-lg border bg-muted/20 p-3 mb-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">Export controls</p>
+                        <p className="text-xs text-muted-foreground">
+                          Drag price labels on the photo, then generate.
+                        </p>
+                      </div>
+                      <label className="flex items-center gap-2 text-xs font-medium">
+                        Label color
+                        <input
+                          type="color"
+                          value={activeImage.labelColor || DEFAULT_LABEL_COLOR}
+                          onChange={(e) => updateImage(activeImage.id, { labelColor: e.target.value })}
+                          className="h-8 w-10 cursor-pointer rounded border bg-background p-1"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex flex-wrap gap-3">
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={activeImage.storyMode}
+                          onChange={(e) => updateImage(activeImage.id, { storyMode: e.target.checked })}
+                          className="rounded"
+                        />
+                        1080x1920 story export
+                      </label>
+                      {secondaryCurrency && (
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={activeImage.includeSecondaryCurrency}
+                            onChange={(e) => updateImage(activeImage.id, { includeSecondaryCurrency: e.target.checked })}
+                            className="rounded"
+                          />
+                          Include {secondaryCurrency}
+                        </label>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          allSlots.forEach((slot) => updateSlot(slot.index, { labelPosition: DEFAULT_LABEL_POSITION }));
+                        }}
+                      >
+                        Reset Labels
+                      </Button>
+                    </div>
+
+                    {activeImage.gridConfig && allSlots.length > 0 && (
+                      <div
+                        className="relative overflow-hidden rounded-lg border bg-black/5 touch-none select-none"
+                        onPointerMove={handleLabelPointerMove}
+                        onPointerUp={() => setDraggingLabel(null)}
+                        onPointerCancel={() => setDraggingLabel(null)}
+                      >
+                        <img
+                          src={activeImage.preview}
+                          alt="Label placement preview"
+                          className="block w-full"
+                          draggable={false}
+                        />
+                        {allSlots.map((slot) => {
+                          const { cols, rows } = activeImage.gridConfig;
+                          const col = slot.index % cols;
+                          const row = Math.floor(slot.index / cols);
+                          const position = slot.labelPosition || DEFAULT_LABEL_POSITION;
+                          const left = ((col + position.x) / cols) * 100;
+                          const top = ((row + position.y) / rows) * 100;
+                          const price = slot.manualPrice ? parseFloat(slot.manualPrice) : slot.price;
+                          const primary = price > 0 ? formatWholePrice(price, currency) : "Set price";
+                          const secondary = price > 0 && secondaryCurrency && activeImage.includeSecondaryCurrency
+                            ? formatWholePrice(roundToNearest10(convertCurrency(price, secondaryCurrency, currency)), secondaryCurrency)
+                            : null;
+
+                          return (
+                            <button
+                              key={slot.index}
+                              type="button"
+                              className="absolute min-w-20 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md px-2 py-1 text-center text-[11px] font-extrabold leading-tight text-white shadow-lg active:cursor-grabbing"
+                              style={{
+                                left: `${left}%`,
+                                top: `${top}%`,
+                                backgroundColor: activeImage.labelColor || DEFAULT_LABEL_COLOR,
+                              }}
+                              onPointerDown={(e) => {
+                                e.preventDefault();
+                                e.currentTarget.setPointerCapture?.(e.pointerId);
+                                setDraggingLabel(slot.index);
+                                updateLabelPositionFromPointer(e, slot.index);
+                              }}
+                            >
+                              <span className="block">{primary}</span>
+                              {secondary && <span className="block text-[9px] font-semibold opacity-90">{secondary}</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
 
                   <div className="space-y-3">
                     {allSlots.map((slot) => (
@@ -810,9 +1109,9 @@ export function StorySaleGenerator() {
                                   {(slot.searchQuery
                                     ? filteredSearchResults(slot.searchQuery)
                                     : slot.candidates
-                                  ).map((item) => (
+                                  ).map((item, resultIndex) => (
                                     <button
-                                      key={item.entryId || item.cardId}
+                                      key={item.entryId || item.cardId || `${item.name}-${item.number}-${resultIndex}`}
                                       className="flex w-full items-center gap-2 rounded p-1.5 text-left hover:bg-muted/50 transition-colors"
                                       onClick={() => selectInventoryItem(slot.index, item)}
                                     >
@@ -854,18 +1153,6 @@ export function StorySaleGenerator() {
                   </div>
                 </CardContent>
               </Card>
-
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={activeImage.storyMode}
-                    onChange={(e) => updateImage(activeImage.id, { storyMode: e.target.checked })}
-                    className="rounded"
-                  />
-                  Crop to 9:16 story format
-                </label>
-              </div>
 
               <Button
                 className="w-full bg-green-600 hover:bg-green-700"
@@ -927,7 +1214,7 @@ export function StorySaleGenerator() {
                 <Button
                   variant="outline"
                   size="lg"
-                  onClick={() => updateImage(activeImage.id, { phase: "confirm", generatedImage: null })}
+                  onClick={() => updateImage(activeImage.id, { phase: "confirm", generatedImage: null, generatedBlob: null })}
                 >
                   <Pencil className="h-4 w-4 mr-2" /> Edit Prices
                 </Button>
