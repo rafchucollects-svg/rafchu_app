@@ -2,6 +2,12 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
+const CARD_SCAN_MODELS = [
+  "gemini-2.0-flash-lite",
+  "gemini-1.5-flash",
+  "gemini-2.5-flash",
+];
+
 const CARD_SCAN_PROMPT = `You are an expert Pokemon TCG card identifier. Analyze this photo and identify every visible Pokemon card.
 
 Return ONLY valid JSON with this structure:
@@ -95,17 +101,39 @@ exports.parseCardPhoto = functions
       }
 
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      let result = null;
+      const quotaErrors = [];
 
-      const result = await model.generateContent([
-        CARD_SCAN_PROMPT,
-        {
-          inlineData: {
-            data: imageData,
-            mimeType,
-          },
-        },
-      ]);
+      for (const modelName of CARD_SCAN_MODELS) {
+        try {
+          const model = genAI.getGenerativeModel({ model: modelName });
+          result = await model.generateContent([
+            CARD_SCAN_PROMPT,
+            {
+              inlineData: {
+                data: imageData,
+                mimeType,
+              },
+            },
+          ]);
+          break;
+        } catch (modelErr) {
+          if ([400, 404, 429].includes(modelErr?.status)) {
+            quotaErrors.push(`${modelName}: ${modelErr.message}`);
+            console.warn(`Gemini model ${modelName} unavailable or quota-limited; trying fallback model.`);
+            continue;
+          }
+          throw modelErr;
+        }
+      }
+
+      if (!result) {
+        console.error("All Gemini card scan models exhausted:", quotaErrors);
+        throw new functions.https.HttpsError(
+          "resource-exhausted",
+          "AI card scanning quota is temporarily exhausted. Please try again later."
+        );
+      }
 
       const responseText = result.response.text().trim();
 
@@ -142,6 +170,12 @@ exports.parseCardPhoto = functions
     } catch (err) {
       if (err instanceof functions.https.HttpsError) throw err;
       console.error("parseCardPhoto error:", err);
+      if (err?.status === 429) {
+        throw new functions.https.HttpsError(
+          "resource-exhausted",
+          "AI card scanning quota is temporarily exhausted. Please try again later."
+        );
+      }
       throw new functions.https.HttpsError(
         "internal",
         "Failed to process card photo."
