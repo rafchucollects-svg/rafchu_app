@@ -588,17 +588,21 @@ export function MyInventory() {
       // Filter out undefined values to prevent Firestore errors
       const cleanItems = collectionItems.map(item => {
         const metrics = computeItemMetrics(item, currency);
+        const quantity = Number(item.quantity) || 1;
+        const unitSuggestedPrice = metrics.suggested || 0;
         
         const itemData = {
           name: item.name || "",
           set: item.set || "",
           number: String(item.number || ""),
           condition: item.condition || "NM",
-          quantity: item.quantity || 1,
+          quantity,
           image: item.image || item.imageUrl || "",
-          // Hard-code the current prices
-          suggestedPrice: (item.overridePrice ?? item.calculatedSuggestedPrice ?? metrics.suggested) || 0,
-          tcgPrice: metrics.tcgPrice || 0,
+          // Hard-code the current vendor price in the snapshot currency.
+          suggestedPrice: unitSuggestedPrice,
+          unitSuggestedPrice,
+          lineSuggestedPrice: unitSuggestedPrice * quantity,
+          tcgPrice: metrics.tcg || 0,
           cmAvg: metrics.cmAvg || 0,
           cmLowest: metrics.cmLowest || 0,
           // Include graded info
@@ -618,9 +622,23 @@ export function MyInventory() {
         
         // Filter out undefined values
         return Object.fromEntries(
-          Object.entries(itemData).filter(([_, value]) => value !== undefined)
+          Object.entries(itemData).filter(([, value]) => value !== undefined)
         );
       });
+
+      const valueBreakdown = cleanItems.reduce(
+        (acc, item) => {
+          const lineValue = Number(item.lineSuggestedPrice) || 0;
+          if (item.isGraded) {
+            acc.gradedTotal += lineValue;
+          } else {
+            acc.ungradedTotal += lineValue;
+          }
+          acc.totalValue += lineValue;
+          return acc;
+        },
+        { ungradedTotal: 0, gradedTotal: 0, totalValue: 0 }
+      );
       
       // Include cash balance data
       const physicalCash = (cashData.physical || []).map(e => ({
@@ -649,6 +667,7 @@ export function MyInventory() {
         currency: currency || "EUR",
         totalItems: collectionItems.length,
         totalValue: totals.suggested || 0,
+        valueBreakdown,
         totals: {
           // Note: snapshot key is historically named `tcgAvg` but stores the
           // summed TCG market total returned by computeInventoryTotals (`tcg`).
@@ -829,8 +848,8 @@ export function MyInventory() {
           bVal = b.name || "";
           break;
         case "price":
-          aVal = a.suggestedPrice || 0;
-          bVal = b.suggestedPrice || 0;
+          aVal = getSnapshotItemLineValue(a);
+          bVal = getSnapshotItemLineValue(b);
           break;
         case "set":
           aVal = a.set || "";
@@ -862,6 +881,115 @@ export function MyInventory() {
     setSnapshotConditionFilter("all");
     setSnapshotGradedFilter("all");
     setSnapshotCurrentPrices(null);
+  };
+
+  const toSnapshotNumber = (value, fallback = 0) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  };
+
+  const getSnapshotCreatedAt = (snapshot) => {
+    if (!snapshot) return 0;
+    if (typeof snapshot.createdAt === "number") return snapshot.createdAt;
+    if (snapshot.createdAt?.toMillis) return snapshot.createdAt.toMillis();
+    if (snapshot.timestamp?.toMillis) return snapshot.timestamp.toMillis();
+    return 0;
+  };
+
+  const getSnapshotItemLineValue = (item) => {
+    if (!item) return 0;
+    if (item.lineSuggestedPrice != null) return toSnapshotNumber(item.lineSuggestedPrice);
+
+    const quantity = toSnapshotNumber(item.quantity, 1) || 1;
+    if (item.unitSuggestedPrice != null) {
+      return toSnapshotNumber(item.unitSuggestedPrice) * quantity;
+    }
+    return toSnapshotNumber(item.suggestedPrice) * quantity;
+  };
+
+  const getSnapshotValueBreakdown = (snapshot) => {
+    const itemBreakdown = (snapshot?.items || []).reduce(
+      (acc, item) => {
+        const lineValue = getSnapshotItemLineValue(item);
+        if (item.isGraded) {
+          acc.gradedTotal += lineValue;
+        } else {
+          acc.ungradedTotal += lineValue;
+        }
+        acc.totalValue += lineValue;
+        return acc;
+      },
+      { ungradedTotal: 0, gradedTotal: 0, totalValue: 0 }
+    );
+
+    const savedBreakdown = snapshot?.valueBreakdown || {};
+    const ungradedTotal = savedBreakdown.ungradedTotal != null
+      ? toSnapshotNumber(savedBreakdown.ungradedTotal)
+      : itemBreakdown.ungradedTotal;
+    const gradedTotal = savedBreakdown.gradedTotal != null
+      ? toSnapshotNumber(savedBreakdown.gradedTotal)
+      : itemBreakdown.gradedTotal;
+    const totalValue = savedBreakdown.totalValue != null
+      ? toSnapshotNumber(savedBreakdown.totalValue)
+      : toSnapshotNumber(snapshot?.totalValue, itemBreakdown.totalValue);
+
+    return { ungradedTotal, gradedTotal, totalValue };
+  };
+
+  const getSnapshotCashTotal = (snapshot) => {
+    const cashBalance = snapshot?.cashBalance;
+    if (!cashBalance) return 0;
+    if (cashBalance.grandTotal != null) return toSnapshotNumber(cashBalance.grandTotal);
+
+    const physicalTotal = cashBalance.physicalTotal != null
+      ? toSnapshotNumber(cashBalance.physicalTotal)
+      : (cashBalance.physical || []).reduce((sum, e) => (
+        sum + convertCurrency(toSnapshotNumber(e.amount), snapshot.currency, e.currency)
+      ), 0);
+    const digitalTotal = cashBalance.digitalTotal != null
+      ? toSnapshotNumber(cashBalance.digitalTotal)
+      : (cashBalance.digital || []).reduce((sum, e) => (
+        sum + convertCurrency(toSnapshotNumber(e.amount), snapshot.currency, e.currency)
+      ), 0);
+
+    return physicalTotal + digitalTotal;
+  };
+
+  const getSnapshotSummary = (snapshot) => {
+    const valueBreakdown = getSnapshotValueBreakdown(snapshot);
+    return {
+      ...valueBreakdown,
+      cashTotal: getSnapshotCashTotal(snapshot),
+    };
+  };
+
+  const getPreviousSnapshot = (snapshot) => {
+    const currentCreatedAt = getSnapshotCreatedAt(snapshot);
+    if (!currentCreatedAt) return null;
+
+    return snapshots
+      .filter(candidate => candidate.id !== snapshot.id && getSnapshotCreatedAt(candidate) < currentCreatedAt)
+      .sort((a, b) => getSnapshotCreatedAt(b) - getSnapshotCreatedAt(a))[0] || null;
+  };
+
+  const getSnapshotPercentChange = (currentValue, previousValue) => {
+    const previous = toSnapshotNumber(previousValue, NaN);
+    if (!Number.isFinite(previous) || previous <= 0) return null;
+    return ((toSnapshotNumber(currentValue) - previous) / previous) * 100;
+  };
+
+  const renderSnapshotPercentChange = (currentValue, previousValue) => {
+    const percentChange = getSnapshotPercentChange(currentValue, previousValue);
+    if (percentChange === null) {
+      return <div className="text-xs text-muted-foreground mt-1">No previous snapshot</div>;
+    }
+
+    const colorClass = percentChange >= 0 ? "text-green-600" : "text-red-600";
+    return (
+      <div className={`text-xs font-semibold mt-1 ${colorClass}`}>
+        {percentChange >= 0 ? "+" : ""}{percentChange.toFixed(1)}% vs last snapshot
+      </div>
+    );
   };
 
   // Load snapshots when opening the modal
@@ -1187,7 +1315,7 @@ export function MyInventory() {
         
         // Filter out any remaining undefined values
         return Object.fromEntries(
-          Object.entries(cardData).filter(([_, value]) => value !== undefined)
+          Object.entries(cardData).filter(([, value]) => value !== undefined)
         );
       });
 
@@ -1301,6 +1429,10 @@ export function MyInventory() {
       toast.error(`Failed to log sale: ${error.message || "Unknown error"}. Please try again.`);
     }
   };
+
+  const selectedSnapshotSummary = selectedSnapshot ? getSnapshotSummary(selectedSnapshot) : null;
+  const selectedPreviousSnapshot = selectedSnapshot ? getPreviousSnapshot(selectedSnapshot) : null;
+  const selectedPreviousSummary = selectedPreviousSnapshot ? getSnapshotSummary(selectedPreviousSnapshot) : null;
 
   if (!user) {
     return (
@@ -2735,22 +2867,30 @@ export function MyInventory() {
                     <h3 className={selectedSnapshot.name ? "text-sm text-muted-foreground mt-1" : "text-xl font-semibold"}>
                       Snapshot from {new Date(selectedSnapshot.createdAt).toLocaleString()}
                     </h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3 mb-4">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-3 mb-4">
                       <div className="bg-blue-50 p-3 rounded-lg">
                         <div className="text-sm text-muted-foreground">Total Items</div>
                         <div className="text-2xl font-bold">{selectedSnapshot.totalItems}</div>
                       </div>
                       <div className="bg-green-50 p-3 rounded-lg">
-                        <div className="text-sm text-muted-foreground">Total Value (Saved)</div>
-                        <div className="text-2xl font-bold">{formatCurrency(selectedSnapshot.totalValue, selectedSnapshot.currency)}</div>
+                        <div className="text-sm text-muted-foreground">Total Value</div>
+                        <div className="text-2xl font-bold">{formatCurrency(selectedSnapshotSummary?.totalValue || 0, selectedSnapshot.currency)}</div>
+                        {renderSnapshotPercentChange(selectedSnapshotSummary?.totalValue || 0, selectedPreviousSummary?.totalValue)}
+                      </div>
+                      <div className="bg-emerald-50 p-3 rounded-lg">
+                        <div className="text-sm text-muted-foreground">Ungraded Value</div>
+                        <div className="text-xl font-bold">{formatCurrency(selectedSnapshotSummary?.ungradedTotal || 0, selectedSnapshot.currency)}</div>
+                        {renderSnapshotPercentChange(selectedSnapshotSummary?.ungradedTotal || 0, selectedPreviousSummary?.ungradedTotal)}
                       </div>
                       <div className="bg-purple-50 p-3 rounded-lg">
-                        <div className="text-sm text-muted-foreground">TCG Avg</div>
-                        <div className="text-xl font-bold">{formatCurrency(selectedSnapshot.totals?.tcgAvg || 0, selectedSnapshot.currency)}</div>
+                        <div className="text-sm text-muted-foreground">Graded Value</div>
+                        <div className="text-xl font-bold">{formatCurrency(selectedSnapshotSummary?.gradedTotal || 0, selectedSnapshot.currency)}</div>
+                        {renderSnapshotPercentChange(selectedSnapshotSummary?.gradedTotal || 0, selectedPreviousSummary?.gradedTotal)}
                       </div>
-                      <div className="bg-orange-50 p-3 rounded-lg">
-                        <div className="text-sm text-muted-foreground">Market Avg</div>
-                        <div className="text-xl font-bold">{formatCurrency(selectedSnapshot.totals?.cmAvg || 0, selectedSnapshot.currency)}</div>
+                      <div className="bg-amber-50 p-3 rounded-lg">
+                        <div className="text-sm text-muted-foreground">Total Cash</div>
+                        <div className="text-xl font-bold">{formatCurrency(selectedSnapshotSummary?.cashTotal || 0, selectedSnapshot.currency)}</div>
+                        {renderSnapshotPercentChange(selectedSnapshotSummary?.cashTotal || 0, selectedPreviousSummary?.cashTotal)}
                       </div>
                     </div>
                   </div>
@@ -2887,8 +3027,10 @@ export function MyInventory() {
                   <div className="space-y-2">
                     {getFilteredAndSortedSnapshotItems(selectedSnapshot.items).map((item, idx) => {
                       const cardKey = `${item.name}-${item.set}-${item.number}`;
-                      const currentPrice = snapshotCurrentPrices?.[cardKey];
-                      const savedPrice = item.suggestedPrice || 0;
+                      const quantity = toSnapshotNumber(item.quantity, 1) || 1;
+                      const currentUnitPrice = snapshotCurrentPrices?.[cardKey];
+                      const currentPrice = currentUnitPrice !== null && currentUnitPrice !== undefined ? currentUnitPrice * quantity : null;
+                      const savedPrice = getSnapshotItemLineValue(item);
                       const priceDiff = currentPrice !== null && currentPrice !== undefined ? currentPrice - savedPrice : null;
                       const percentChange = savedPrice > 0 && priceDiff !== null ? ((priceDiff / savedPrice) * 100) : null;
 
@@ -2920,9 +3062,9 @@ export function MyInventory() {
                           </div>
                           <div className="text-right">
                             <div className="font-bold text-lg">{formatCurrency(savedPrice, selectedSnapshot.currency)}</div>
-                            {item.quantity > 1 && (
+                            {quantity > 1 && (
                               <div className="text-xs text-muted-foreground">
-                                {formatCurrency(savedPrice / item.quantity, selectedSnapshot.currency)} each
+                                {formatCurrency(savedPrice / quantity, selectedSnapshot.currency)} each
                               </div>
                             )}
                             
@@ -2968,7 +3110,12 @@ export function MyInventory() {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {snapshots.map((snapshot) => (
+                      {snapshots.map((snapshot) => {
+                        const snapshotSummary = getSnapshotSummary(snapshot);
+                        const previousSnapshot = getPreviousSnapshot(snapshot);
+                        const previousSummary = previousSnapshot ? getSnapshotSummary(previousSnapshot) : null;
+
+                        return (
                         <div
                           key={snapshot.id}
                           className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border hover:bg-gray-100 transition cursor-pointer"
@@ -3007,7 +3154,29 @@ export function MyInventory() {
                               </>
                             )}
                             <div className="text-sm text-muted-foreground mt-1">
-                              {snapshot.totalItems} items • Total Value: {formatCurrency(snapshot.totalValue, snapshot.currency)}
+                              {snapshot.totalItems} items • Total Value: {formatCurrency(snapshotSummary.totalValue, snapshot.currency)}
+                            </div>
+                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                              <div>
+                                <span className="text-muted-foreground">Total</span>{" "}
+                                <span className="font-semibold">{formatCurrency(snapshotSummary.totalValue, snapshot.currency)}</span>
+                                {renderSnapshotPercentChange(snapshotSummary.totalValue, previousSummary?.totalValue)}
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">Ungraded</span>{" "}
+                                <span className="font-semibold">{formatCurrency(snapshotSummary.ungradedTotal, snapshot.currency)}</span>
+                                {renderSnapshotPercentChange(snapshotSummary.ungradedTotal, previousSummary?.ungradedTotal)}
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">Graded</span>{" "}
+                                <span className="font-semibold">{formatCurrency(snapshotSummary.gradedTotal, snapshot.currency)}</span>
+                                {renderSnapshotPercentChange(snapshotSummary.gradedTotal, previousSummary?.gradedTotal)}
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">Cash</span>{" "}
+                                <span className="font-semibold">{formatCurrency(snapshotSummary.cashTotal, snapshot.currency)}</span>
+                                {renderSnapshotPercentChange(snapshotSummary.cashTotal, previousSummary?.cashTotal)}
+                              </div>
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
@@ -3040,7 +3209,8 @@ export function MyInventory() {
                             </Button>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
