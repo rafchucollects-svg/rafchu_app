@@ -132,6 +132,16 @@ async function reservePokemonPriceRequestSlot() {
   });
 }
 
+async function getPokemonPriceBlockedCooldownMs() {
+  const db = admin.firestore();
+  const ref = db.collection('system').doc(POKEPRICE_LIMIT_DOC_ID);
+  const snap = await ref.get();
+  if (!snap.exists) return 0;
+
+  const blockedUntilMs = Number(snap.data().blockedUntilMs) || 0;
+  return Math.max(0, blockedUntilMs - Date.now());
+}
+
 async function markPokemonPriceBlocked(retryAfterMs) {
   const cooldownMs = Math.max(retryAfterMs, 60000);
   const blockedUntilMs = Date.now() + cooldownMs;
@@ -192,6 +202,11 @@ async function fetchPokemonPriceTrackerWithRetry(url, options = {}) {
   const globalWaitMs = await reservePokemonPriceRequestSlot();
   if (globalWaitMs > 0) {
     await sleep(globalWaitMs);
+  }
+
+  const postWaitCooldownMs = await getPokemonPriceBlockedCooldownMs();
+  if (postWaitCooldownMs > 0) {
+    throw new PokemonPriceRateLimitError(postWaitCooldownMs);
   }
 
   const response = await fetch(url, {
