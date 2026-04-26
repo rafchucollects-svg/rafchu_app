@@ -664,7 +664,11 @@ export function StorySaleGenerator() {
 
   const allSlots = activeImage?.cardSlots || [];
   const allConfirmed = allSlots.length > 0 && allSlots.every((s) => s.confirmed);
-  const doneCount = images.filter((img) => img.phase === "done").length;
+  const doneImages = images.filter((img) => img.phase === "done" && img.generatedImage);
+  const doneCount = doneImages.length;
+  const activeDoneIndex = activeImage
+    ? doneImages.findIndex((img) => img.id === activeImage.id)
+    : -1;
   const hasImages = images.length > 0;
 
   // ── Render ────────────────────────────────────────────────────
@@ -755,8 +759,8 @@ export function StorySaleGenerator() {
                   }`}
                 >
                   <img
-                    src={img.preview}
-                    alt="Card photo"
+                    src={img.generatedImage || img.preview}
+                    alt={img.phase === "done" ? "Generated sale preview" : "Card photo"}
                     className="w-full h-full object-cover"
                   />
                   {img.phase === "done" && (
@@ -833,6 +837,51 @@ export function StorySaleGenerator() {
           )}
         </CardContent>
       </Card>
+
+      {doneCount > 1 && (
+        <Card className="mb-4">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <h3 className="font-semibold">Generated Previews</h3>
+                <p className="text-xs text-muted-foreground">
+                  Tap any generated image to preview, edit, share, or save it.
+                </p>
+              </div>
+              <Button size="sm" variant="outline" onClick={handleDownloadAll}>
+                <Download className="h-3.5 w-3.5 mr-1" />
+                Download All
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {doneImages.map((img, index) => (
+                <button
+                  key={img.id}
+                  type="button"
+                  onClick={() => setActiveId(img.id)}
+                  className={`overflow-hidden rounded-lg border-2 bg-muted/30 text-left transition-all ${
+                    img.id === activeId
+                      ? "border-green-500 ring-2 ring-green-300"
+                      : "border-transparent hover:border-green-300"
+                  }`}
+                >
+                  <img
+                    src={img.generatedImage}
+                    alt={`Generated sale preview ${index + 1}`}
+                    className="h-56 w-full object-contain"
+                  />
+                  <div className="flex items-center justify-between border-t bg-background px-2 py-1.5">
+                    <span className="text-xs font-medium">Preview {index + 1}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {img.cardSlots.length} card{img.cardSlots.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Active image detail ──────────────────────────────────── */}
       {activeImage && (
@@ -1183,7 +1232,16 @@ export function StorySaleGenerator() {
             <div className="space-y-4">
               <Card>
                 <CardContent className="pt-6">
-                  <h3 className="font-semibold mb-3">Preview</h3>
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <h3 className="font-semibold">
+                      Preview{activeDoneIndex >= 0 && doneCount > 1 ? ` ${activeDoneIndex + 1}/${doneCount}` : ""}
+                    </h3>
+                    {doneCount > 1 && (
+                      <p className="text-xs text-muted-foreground">
+                        Choose another preview above
+                      </p>
+                    )}
+                  </div>
                   <div className="rounded-xl overflow-hidden border bg-muted/30">
                     <img
                       src={activeImage.generatedImage}
@@ -1200,17 +1258,16 @@ export function StorySaleGenerator() {
                     size="lg"
                     onClick={() => handleShare(activeImage)}
                   >
-                    <Share2 className="h-4 w-4 mr-2" /> Save / Share
+                    <Share2 className="h-4 w-4 mr-2" /> Share
                   </Button>
-                ) : (
-                  <Button
-                    className="flex-1 bg-green-600 hover:bg-green-700"
-                    size="lg"
-                    onClick={() => handleDownload(activeImage)}
-                  >
-                    <Download className="h-4 w-4 mr-2" /> Download Image
-                  </Button>
-                )}
+                ) : null}
+                <Button
+                  className="flex-1 bg-green-600 hover:bg-green-700"
+                  size="lg"
+                  onClick={() => handleDownload(activeImage)}
+                >
+                  <Download className="h-4 w-4 mr-2" /> Add to Camera Roll
+                </Button>
                 <Button
                   variant="outline"
                   size="lg"
