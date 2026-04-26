@@ -660,13 +660,14 @@ export function MyInventory() {
       const cashPhysicalTotal = physicalCash.reduce((sum, e) => sum + convertCurrency(e.amount, currency, e.currency), 0);
       const cashDigitalTotal = digitalCash.reduce((sum, e) => sum + convertCurrency(e.amount, currency, e.currency), 0);
       const cashPendingTotal = pendingCash.reduce((sum, e) => sum + convertCurrency(e.amount, currency, e.currency), 0);
+      const cashGrandTotal = cashPhysicalTotal + cashDigitalTotal;
 
       const snapshotData = {
         timestamp: serverTimestamp(),
         createdAt: Date.now(),
         currency: currency || "EUR",
         totalItems: collectionItems.length,
-        totalValue: totals.suggested || 0,
+        totalValue: valueBreakdown.totalValue + cashGrandTotal,
         valueBreakdown,
         totals: {
           // Note: snapshot key is historically named `tcgAvg` but stores the
@@ -684,8 +685,8 @@ export function MyInventory() {
           physicalTotal: cashPhysicalTotal,
           digitalTotal: cashDigitalTotal,
           pendingTotal: cashPendingTotal,
-          grandTotal: cashPhysicalTotal + cashDigitalTotal,
-          projectedTotal: cashPhysicalTotal + cashDigitalTotal + cashPendingTotal,
+          grandTotal: cashGrandTotal,
+          projectedTotal: cashGrandTotal + cashPendingTotal,
         },
         items: cleanItems
       };
@@ -957,9 +958,12 @@ export function MyInventory() {
 
   const getSnapshotSummary = (snapshot) => {
     const valueBreakdown = getSnapshotValueBreakdown(snapshot);
+    const cashTotal = getSnapshotCashTotal(snapshot);
     return {
       ...valueBreakdown,
-      cashTotal: getSnapshotCashTotal(snapshot),
+      inventoryValue: valueBreakdown.totalValue,
+      cashTotal,
+      totalValue: valueBreakdown.totalValue + cashTotal,
     };
   };
 
@@ -989,6 +993,18 @@ export function MyInventory() {
       <div className={`text-xs font-semibold mt-1 ${colorClass}`}>
         {percentChange >= 0 ? "+" : ""}{percentChange.toFixed(1)}% vs last snapshot
       </div>
+    );
+  };
+
+  const renderSnapshotPercentChangeInline = (currentValue, previousValue) => {
+    const percentChange = getSnapshotPercentChange(currentValue, previousValue);
+    if (percentChange === null) return null;
+
+    const colorClass = percentChange >= 0 ? "text-green-600" : "text-red-600";
+    return (
+      <span className={`font-semibold ${colorClass}`}>
+        {percentChange >= 0 ? "+" : ""}{percentChange.toFixed(1)}% vs last snapshot
+      </span>
     );
   };
 
@@ -2873,7 +2889,7 @@ export function MyInventory() {
                         <div className="text-2xl font-bold">{selectedSnapshot.totalItems}</div>
                       </div>
                       <div className="bg-green-50 p-3 rounded-lg">
-                        <div className="text-sm text-muted-foreground">Total Value</div>
+                        <div className="text-sm text-muted-foreground">Total Value (Cards + Cash)</div>
                         <div className="text-2xl font-bold">{formatCurrency(selectedSnapshotSummary?.totalValue || 0, selectedSnapshot.currency)}</div>
                         {renderSnapshotPercentChange(selectedSnapshotSummary?.totalValue || 0, selectedPreviousSummary?.totalValue)}
                       </div>
@@ -3155,6 +3171,12 @@ export function MyInventory() {
                             )}
                             <div className="text-sm text-muted-foreground mt-1">
                               {snapshot.totalItems} items • Total Value: {formatCurrency(snapshotSummary.totalValue, snapshot.currency)}
+                              {previousSummary && (
+                                <>
+                                  {" • "}
+                                  {renderSnapshotPercentChangeInline(snapshotSummary.totalValue, previousSummary.totalValue)}
+                                </>
+                              )}
                             </div>
                             <div className="mt-2 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
                               <div>
