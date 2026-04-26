@@ -63,7 +63,9 @@ const getGmailPassword = () => process.env.GMAIL_PASSWORD || '';
 // accessed where needed; the key-name constants below are plain strings.
 const RAPIDAPI_HOST = "cardmarket-api-tcg.p.rapidapi.com";
 const JUSTTCG_API_URL = 'https://api.justtcg.com/v1';
-const POKEPRICE_MIN_REQUEST_INTERVAL_MS = 1100; // Stay below 60 requests/minute per key.
+const POKEPRICE_MIN_REQUEST_INTERVAL_MS = 1250; // Stay below 60 requests/minute per key.
+const POKEPRICE_MAX_QUEUE_WAIT_MS = 45000;
+const POKEPRICE_LIMIT_DOC_ID = 'pokemon_price_tracker_rate_limit';
 
 // Helper to wrap functions.runWith with our standard secrets declaration.
 // Usage: withSecrets({ memory: '512MB', timeoutSeconds: 60 }).https.onRequest(...)
@@ -90,9 +92,85 @@ function parseRetryAfterMs(retryAfter) {
   return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : 0;
 }
 
+function parseRateLimitRemaining(response) {
+  const remaining = Number(response.headers.get('x-ratelimit-remaining'));
+  return Number.isFinite(remaining) ? remaining : null;
+}
+
 let nextPokePriceRequestAt = 0;
 let pokePriceQueue = Promise.resolve();
 let pokePriceRateLimitedUntil = 0;
+
+async function reservePokemonPriceRequestSlot() {
+  const db = admin.firestore();
+  const ref = db.collection('system').doc(POKEPRICE_LIMIT_DOC_ID);
+
+  return db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    const state = snap.exists ? snap.data() : {};
+    const now = Date.now();
+    const blockedUntilMs = Number(state.blockedUntilMs) || 0;
+
+    if (blockedUntilMs > now) {
+      throw new PokemonPriceRateLimitError(blockedUntilMs - now);
+    }
+
+    const nextAvailableAtMs = Math.max(Number(state.nextAvailableAtMs) || 0, now);
+    const waitMs = nextAvailableAtMs - now;
+
+    if (waitMs > POKEPRICE_MAX_QUEUE_WAIT_MS) {
+      throw new PokemonPriceRateLimitError(waitMs);
+    }
+
+    transaction.set(ref, {
+      nextAvailableAtMs: nextAvailableAtMs + POKEPRICE_MIN_REQUEST_INTERVAL_MS,
+      blockedUntilMs: 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    return waitMs;
+  });
+}
+
+async function markPokemonPriceBlocked(retryAfterMs) {
+  const cooldownMs = Math.max(retryAfterMs, 60000);
+  const blockedUntilMs = Date.now() + cooldownMs;
+  pokePriceRateLimitedUntil = Math.max(pokePriceRateLimitedUntil, blockedUntilMs);
+
+  const db = admin.firestore();
+  const ref = db.collection('system').doc(POKEPRICE_LIMIT_DOC_ID);
+
+  await db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    const state = snap.exists ? snap.data() : {};
+    const existingBlockedUntilMs = Number(state.blockedUntilMs) || 0;
+    transaction.set(ref, {
+      blockedUntilMs: Math.max(existingBlockedUntilMs, blockedUntilMs),
+      nextAvailableAtMs: Math.max(Number(state.nextAvailableAtMs) || 0, blockedUntilMs),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+}
+
+async function updatePokemonPriceLimiterFromHeaders(response) {
+  const remaining = parseRateLimitRemaining(response);
+  const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+
+  if (response.status === 429) {
+    await markPokemonPriceBlocked(retryAfterMs);
+    return;
+  }
+
+  if (remaining !== null && remaining <= 3 && retryAfterMs > 0) {
+    const db = admin.firestore();
+    const ref = db.collection('system').doc(POKEPRICE_LIMIT_DOC_ID);
+    const nextAvailableAtMs = Date.now() + retryAfterMs;
+    await ref.set({
+      nextAvailableAtMs,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+}
 
 async function fetchPokemonPriceTrackerWithRetry(url, options = {}) {
   const apiKey = getPokePriceKey();
@@ -111,6 +189,11 @@ async function fetchPokemonPriceTrackerWithRetry(url, options = {}) {
   }
   nextPokePriceRequestAt = Date.now() + POKEPRICE_MIN_REQUEST_INTERVAL_MS;
 
+  const globalWaitMs = await reservePokemonPriceRequestSlot();
+  if (globalWaitMs > 0) {
+    await sleep(globalWaitMs);
+  }
+
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -120,9 +203,14 @@ async function fetchPokemonPriceTrackerWithRetry(url, options = {}) {
     },
   });
 
+  try {
+    await updatePokemonPriceLimiterFromHeaders(response);
+  } catch (err) {
+    console.warn('Failed to update Pokemon Price Tracker rate limiter:', err);
+  }
+
   if (response.status === 429) {
     const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after')) || 60000;
-    pokePriceRateLimitedUntil = Date.now() + retryAfterMs;
     throw new PokemonPriceRateLimitError(retryAfterMs);
   }
 
