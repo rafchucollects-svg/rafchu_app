@@ -23,6 +23,60 @@ import { toast } from "@/components/ui/Toaster";
 
 const AppContext = createContext(null);
 
+const normalizeInventoryValue = (value) =>
+  String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const normalizeInventoryNumber = (value) =>
+  String(value ?? "").trim().toLowerCase().replace(/^#/, "").replace(/^0+(\d)/, "$1");
+
+const normalizeOptionalNumber = (value) => {
+  if (value === null || value === undefined || value === "") return "";
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : normalizeInventoryValue(value);
+};
+
+const getMergeableInventoryKey = (item) => {
+  if (!item) return "";
+  return [
+    normalizeInventoryValue(item.name),
+    normalizeInventoryValue(item.set),
+    normalizeInventoryNumber(item.number),
+    normalizeInventoryValue(item.condition || "NM"),
+    item.isGraded ? "graded" : "raw",
+    normalizeInventoryValue(item.gradingCompany),
+    normalizeInventoryValue(item.grade),
+    normalizeInventoryValue(item.language || "English"),
+    normalizeInventoryValue(item.variant),
+    normalizeInventoryValue(item.variantSource),
+    item.isJapanese ? "jp" : "non-jp",
+    item.isManualEntry ? "manual" : "api",
+  ].join("|");
+};
+
+const canMergeInventoryItems = (existingItem, newItem) => {
+  if (!existingItem || !newItem) return false;
+  if (getMergeableInventoryKey(existingItem) !== getMergeableInventoryKey(newItem)) return false;
+
+  // Keep deliberately distinct rows separate when user-entered business data differs.
+  const guardedFields = [
+    "overridePrice",
+    "overridePriceCurrency",
+    "manualPrice",
+    "manualPriceCurrency",
+    "buyPrice",
+    "tradePrice",
+    "sellPrice",
+    "notes",
+  ];
+
+  return guardedFields.every((field) => {
+    if (field.toLowerCase().includes("price")) {
+      return normalizeOptionalNumber(existingItem[field]) === normalizeOptionalNumber(newItem[field]);
+    }
+    return normalizeInventoryValue(existingItem[field]) === normalizeInventoryValue(newItem[field]);
+  });
+};
+
 export const useApp = () => {
   const context = useContext(AppContext);
   if (!context) {
@@ -410,11 +464,27 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       const latestData = snap.exists() ? snap.data() : {};
       const latestItems = Array.isArray(latestData.items) ? latestData.items : [];
       
-      const updatedItems = [...latestItems, newItem];
+      const existingIndex = latestItems.findIndex((item) => canMergeInventoryItems(item, newItem));
+      const updatedItems = existingIndex >= 0
+        ? latestItems.map((item, index) => {
+            if (index !== existingIndex) return item;
+            const existingQuantity = Number(item.quantity) || 1;
+            const addedQuantity = Number(newItem.quantity) || 1;
+            return {
+              ...item,
+              quantity: existingQuantity + addedQuantity,
+              prices: Object.keys(newItem.prices || {}).length > 0 ? newItem.prices : item.prices,
+              links: Object.keys(newItem.links || {}).length > 0 ? newItem.links : item.links,
+              image: item.image || newItem.image,
+              updatedAt: Date.now(),
+            };
+          })
+        : [...latestItems, newItem];
+      const savedItem = existingIndex >= 0 ? updatedItems[existingIndex] : newItem;
       
       await setDoc(ref, { items: updatedItems }, { merge: true });
       // setCollectionItems will be updated by Firestore listener
-      return newItem;
+      return savedItem;
     } catch (error) {
       console.error("Failed to add to collection", error);
       toast.error("Failed to add card. Please try again.");

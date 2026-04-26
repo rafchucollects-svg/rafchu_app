@@ -63,10 +63,84 @@ const getGmailPassword = () => process.env.GMAIL_PASSWORD || '';
 // accessed where needed; the key-name constants below are plain strings.
 const RAPIDAPI_HOST = "cardmarket-api-tcg.p.rapidapi.com";
 const JUSTTCG_API_URL = 'https://api.justtcg.com/v1';
+const POKEPRICE_MIN_REQUEST_INTERVAL_MS = 1100; // Stay below 60 requests/minute per key.
 
 // Helper to wrap functions.runWith with our standard secrets declaration.
 // Usage: withSecrets({ memory: '512MB', timeoutSeconds: 60 }).https.onRequest(...)
 const withSecrets = (opts = {}) => functions.runWith({ ...opts, secrets: API_SECRETS });
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+class PokemonPriceRateLimitError extends Error {
+  constructor(retryAfterMs) {
+    super('Pokemon Price Tracker rate limit reached');
+    this.name = 'PokemonPriceRateLimitError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function parseRetryAfterMs(retryAfter) {
+  if (!retryAfter) return 0;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+
+  const retryAt = Date.parse(retryAfter);
+  return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : 0;
+}
+
+let nextPokePriceRequestAt = 0;
+let pokePriceQueue = Promise.resolve();
+let pokePriceRateLimitedUntil = 0;
+
+async function fetchPokemonPriceTrackerWithRetry(url, options = {}) {
+  const apiKey = getPokePriceKey();
+  if (!apiKey) {
+    throw new Error('POKEPRICE_KEY is not configured');
+  }
+
+  const cooldownMs = Math.max(0, pokePriceRateLimitedUntil - Date.now());
+  if (cooldownMs > 0) {
+    throw new PokemonPriceRateLimitError(cooldownMs);
+  }
+
+  const waitMs = Math.max(0, nextPokePriceRequestAt - Date.now());
+  if (waitMs > 0) {
+    await sleep(waitMs);
+  }
+  nextPokePriceRequestAt = Date.now() + POKEPRICE_MIN_REQUEST_INTERVAL_MS;
+
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      'Authorization': `Bearer ${apiKey}`,
+      'User-Agent': 'Rafchu-TCG-App/1.0',
+    },
+  });
+
+  if (response.status === 429) {
+    const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after')) || 60000;
+    pokePriceRateLimitedUntil = Date.now() + retryAfterMs;
+    throw new PokemonPriceRateLimitError(retryAfterMs);
+  }
+
+  if (!response.ok) {
+    console.warn(`Pokemon Price Tracker returned HTTP ${response.status}`);
+  }
+
+  return response;
+}
+
+async function fetchPokemonPriceTracker(url, options = {}) {
+  const queuedRequest = pokePriceQueue.then(
+    () => fetchPokemonPriceTrackerWithRetry(url, options),
+    () => fetchPokemonPriceTrackerWithRetry(url, options)
+  );
+  pokePriceQueue = queuedRequest.catch(() => {});
+  return queuedRequest;
+}
 
 // TCGdex API (free, no key required) — used as fallback when CardMarket/PriceCharting are unavailable
 const TCGDEX_API_URL = 'https://api.tcgdex.net/v2/en';
@@ -351,9 +425,6 @@ exports.getPsaGradedPrice = withSecrets().https.onRequest(async (req, res) => {
 
     console.log(`Fetching PSA ${grade} price for: ${name} from ${set} #${cardNumber || 'unknown'}`);
 
-    // Make request to Pokemon Price Tracker API
-    const apiKey = getPokePriceKey();
-    
     // Normalize set name for better matching
     // Pokemon TCG API often returns abbreviated set names (e.g., "SVP" or "SV Black Star Promos")
     let normalizedSet = set;
@@ -385,12 +456,10 @@ exports.getPsaGradedPrice = withSecrets().https.onRequest(async (req, res) => {
     
     console.log('Using parse-title with:', title);
 
-    const parseResponse = await fetch(parseUrl, {
+    const parseResponse = await fetchPokemonPriceTracker(parseUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'User-Agent': 'Rafchu-TCG-App/1.0'
       },
       body: JSON.stringify({
         title: title,
@@ -456,12 +525,10 @@ exports.getPsaGradedPrice = withSecrets().https.onRequest(async (req, res) => {
     const cardUrl = `https://www.pokemonpricetracker.com/api/v2/cards?tcgPlayerId=${matchedCard.tcgPlayerId}&includeEbay=true`;
     console.log('Fetching card with eBay data:', cardUrl);
 
-    const cardResponse = await fetch(cardUrl, {
+    const cardResponse = await fetchPokemonPriceTracker(cardUrl, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'User-Agent': 'Rafchu-TCG-App/1.0'
       }
     });
 
@@ -551,6 +618,11 @@ async function cachePriceChartingCSVCore() {
   console.log('🔄 Starting PriceCharting CSV cache update...');
     
     try {
+      if (!getPriceChartingKey()) {
+        console.log('⏭️ Skipping PriceCharting CSV cache update; PRICECHARTING_KEY is not configured');
+        return { success: true, skipped: true, reason: 'PRICECHARTING_KEY is not configured' };
+      }
+
       const csvUrl = `https://www.pricecharting.com/price-guide/download-custom?t=${getPriceChartingKey()}&category=pokemon-cards`;
       
       // Download CSV
@@ -911,6 +983,7 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
   
   try {
     const { name, set, number } = req.query;
+    const skipPokePrice = req.query.skipPokePrice === 'true';
     
     if (!name) {
       res.status(400).json({ error: 'Missing required parameter: name' });
@@ -926,6 +999,14 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
     
     // 1. Fetch US Market Prices (TCGPlayer via Pokemon Price Tracker)
     try {
+      if (skipPokePrice) {
+        console.log('⏭️ Skipping Pokemon Price Tracker for bulk/background request');
+        prices.us = {
+          found: false,
+          source: 'TCGPlayer',
+          reason: 'Skipped for bulk/background request',
+        };
+      } else {
       console.log('🇺🇸 Fetching TCGPlayer prices from Pokemon Price Tracker...');
       // Format: "Card Name (Set Code) Number" - e.g., "Shining Mew (SLG) 40"
       // Try multiple format variations for better matching
@@ -942,10 +1023,9 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
       for (const title of titleVariations) {
         console.log(`   → Trying: "${title}"`);
         
-        const parseResponse = await fetch('https://www.pokemonpricetracker.com/api/v2/parse-title', {
+        const parseResponse = await fetchPokemonPriceTracker('https://www.pokemonpricetracker.com/api/v2/parse-title', {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${getPokePriceKey()}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -963,10 +1043,10 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
             console.log(`     Best match: ${match.name || 'unknown'} (tcgPlayerId: ${match.tcgPlayerId})`);
             
             // Fetch detailed TCGPlayer pricing
-            const cardResponse = await fetch(
+            const cardResponse = await fetchPokemonPriceTracker(
               `https://www.pokemonpricetracker.com/api/v2/cards?tcgPlayerId=${match.tcgPlayerId}`,
               {
-                headers: { 'Authorization': `Bearer ${getPokePriceKey()}` },
+                headers: {},
               }
             );
             
@@ -980,6 +1060,7 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
                 prices.us = {
                   found: true,
                   source: 'TCGPlayer',
+                  tcgPlayerId: match.tcgPlayerId,
                   market: marketPrice,
                   low: cardData.data?.prices?.tcgPlayer?.lowPrice || 0,
                   mid: cardData.data?.prices?.tcgPlayer?.midPrice || 0,
@@ -999,10 +1080,16 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
         console.log('⚠️ No TCGPlayer prices found after trying all title variations');
         prices.us = { found: false, source: 'TCGPlayer' };
       }
+      }
       
     } catch (error) {
-      console.error('❌ TCGPlayer error:', error.message);
-      prices.us = { found: false, error: error.message };
+      if (error instanceof PokemonPriceRateLimitError) {
+        console.warn(`⏳ Pokemon Price Tracker rate-limited. Skipping this source for ${Math.ceil(error.retryAfterMs / 1000)}s.`);
+        prices.us = { found: false, source: 'TCGPlayer', rateLimited: true };
+      } else {
+        console.error('❌ TCGPlayer error:', error.message);
+        prices.us = { found: false, error: error.message };
+      }
     }
     
     // 2. Fetch EU Market Prices (CardMarket)
@@ -1130,7 +1217,7 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
     console.log(`   prices.us:`, JSON.stringify(prices.us));
     console.log(`   prices.eu:`, JSON.stringify(prices.eu));
     
-    if (!usHasRealPrice && !euHasRealPrice) {
+    if (!usHasRealPrice && !euHasRealPrice && getPriceChartingKey()) {
       try {
         console.log('🔄 Both markets failed, trying PriceCharting fallback...');
         
@@ -1213,6 +1300,8 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
       } catch (error) {
         console.error('❌ PriceCharting fallback error:', error.message);
       }
+    } else if (!usHasRealPrice && !euHasRealPrice) {
+      console.log('⏭️ Skipping PriceCharting fallback; PRICECHARTING_KEY is not configured');
     }
     
     // Return both market prices (with possible PriceCharting fallback)
@@ -1307,10 +1396,9 @@ exports.fetchComprehensivePrices = withSecrets().https.onRequest(async (req, res
       console.log('📈 Fetching Pokemon Price Tracker data...');
       const title = `${name}${set ? ` ${set}` : ''}${number ? ` #${number}` : ''}`;
       
-      const parseResponse = await fetch('https://www.pokemonpricetracker.com/api/v2/parse-title', {
+      const parseResponse = await fetchPokemonPriceTracker('https://www.pokemonpricetracker.com/api/v2/parse-title', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${getPokePriceKey()}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -1326,10 +1414,10 @@ exports.fetchComprehensivePrices = withSecrets().https.onRequest(async (req, res
           const match = parseData.data.matches[0];
           
           // Fetch detailed pricing
-          const cardResponse = await fetch(
+          const cardResponse = await fetchPokemonPriceTracker(
             `https://www.pokemonpricetracker.com/api/v2/cards?tcgPlayerId=${match.tcgPlayerId}&includeEbay=${isGraded === 'true'}`,
             {
-              headers: { 'Authorization': `Bearer ${getPokePriceKey()}` },
+              headers: {},
             }
           );
           
@@ -1471,13 +1559,16 @@ function generateSearchTerms(card) {
 }
 
 // Helper: Fetch market prices using existing fetchMarketPrices function
-async function fetchMarketPricesInternal(card) {
+async function fetchMarketPricesInternal(card, options = {}) {
   try {
     const params = new URLSearchParams({
       name: card.name || '',
       set: card.set || '',
       number: card.number || '',
     });
+    if (options.skipPokePrice) {
+      params.append('skipPokePrice', 'true');
+    }
     
     // Call the existing fetchMarketPrices endpoint internally
     const url = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchMarketPrices?${params}`;
@@ -1648,6 +1739,9 @@ function transformPriceStructure(apiPrices) {
       low_price: apiPrices.us.low || apiPrices.us.market,
       high_price: apiPrices.us.high || apiPrices.us.market,
       currency: apiPrices.us.currency || 'USD',
+      tcgPlayerId: apiPrices.us.tcgPlayerId || null,
+      source: apiPrices.us.source || 'TCGPlayer',
+      lastUpdated: new Date().toISOString(),
     };
   }
   
@@ -1665,6 +1759,107 @@ function transformPriceStructure(apiPrices) {
   
   // Return null if no valid prices found
   return Object.keys(transformed).length > 0 ? transformed : null;
+}
+
+function mergePriceStructures(existingPrices, freshPrices) {
+  if (!existingPrices && !freshPrices) return null;
+  if (!existingPrices) return freshPrices || null;
+  if (!freshPrices) return existingPrices;
+
+  return {
+    ...existingPrices,
+    ...freshPrices,
+    tcgplayer: freshPrices.tcgplayer || existingPrices.tcgplayer,
+    cardmarket: freshPrices.cardmarket || existingPrices.cardmarket,
+    pricecharting: freshPrices.pricecharting || existingPrices.pricecharting,
+    justtcg: freshPrices.justtcg || existingPrices.justtcg,
+  };
+}
+
+function getStoredTcgPlayerId(card, existingCard) {
+  return (
+    card?.tcgPlayerId ||
+    card?.tcgplayerId ||
+    existingCard?.tcgPlayerId ||
+    existingCard?.tcgplayerId ||
+    existingCard?.prices?.tcgplayer?.tcgPlayerId ||
+    existingCard?.prices?.tcgplayer?.tcgplayerId ||
+    null
+  );
+}
+
+function buildPokePriceTitle(card) {
+  return `${card.name || ''}${card.set ? ` (${card.set})` : ''}${card.number ? ` ${card.number}` : ''}`.trim();
+}
+
+function normalizeTcgPlayerPrices(cardData, tcgPlayerId) {
+  const tcgPlayer = cardData?.data?.prices?.tcgPlayer || {};
+  const marketPrice = Number(tcgPlayer.marketPrice) || 0;
+  const midPrice = Number(tcgPlayer.midPrice) || 0;
+  const lowPrice = Number(tcgPlayer.lowPrice) || 0;
+  const highPrice = Number(tcgPlayer.highPrice) || 0;
+
+  if (!marketPrice && !midPrice && !lowPrice && !highPrice) {
+    return null;
+  }
+
+  return {
+    tcgplayer: {
+      market_price: marketPrice,
+      low_price: lowPrice || marketPrice || midPrice,
+      mid_price: midPrice || marketPrice,
+      high_price: highPrice || marketPrice || midPrice,
+      currency: 'USD',
+      tcgPlayerId,
+      source: 'Pokemon Price Tracker',
+      lastUpdated: new Date().toISOString(),
+    },
+  };
+}
+
+async function fetchTcgPlayerPricesFromPokePrice(card, existingCard) {
+  let tcgPlayerId = getStoredTcgPlayerId(card, existingCard);
+
+  if (!tcgPlayerId) {
+    const title = buildPokePriceTitle(card);
+    if (!title) return null;
+
+    console.log(`   🔎 Resolving TCGPlayer ID via Pokemon Price Tracker: "${title}"`);
+    const parseResponse = await fetchPokemonPriceTracker('https://www.pokemonpricetracker.com/api/v2/parse-title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        options: { fuzzyMatching: true, maxSuggestions: 1 },
+      }),
+    });
+
+    if (!parseResponse.ok) {
+      return null;
+    }
+
+    const parseData = await parseResponse.json();
+    tcgPlayerId = parseData?.data?.matches?.[0]?.tcgPlayerId || null;
+    if (!tcgPlayerId) {
+      console.log(`   ⚠️ No TCGPlayer ID resolved for ${card.name}`);
+      return null;
+    }
+  }
+
+  const cardResponse = await fetchPokemonPriceTracker(
+    `https://www.pokemonpricetracker.com/api/v2/cards?tcgPlayerId=${tcgPlayerId}`,
+    { headers: {} }
+  );
+
+  if (!cardResponse.ok) {
+    return { tcgPlayerId, prices: null };
+  }
+
+  const cardData = await cardResponse.json();
+  return {
+    tcgPlayerId,
+    prices: normalizeTcgPlayerPrices(cardData, tcgPlayerId),
+  };
 }
 
 // ================================================================================
@@ -1889,10 +2084,10 @@ async function updateSingleCardInCache(db, card, existingCard) {
   const cardRef = db.collection('card_database').doc(cardKey);
   const isNew = !existingCard;
   
-  // Fetch fresh market prices
-  console.log(`   💰 Fetching prices for: ${card.name}...`);
-  const marketPricesRaw = await fetchMarketPricesInternal(card);
-  let marketPrices = transformPriceStructure(marketPricesRaw);
+  // Refresh the TCGPlayer prices we actually use while preserving other markets.
+  console.log(`   💰 Refreshing TCGPlayer prices for: ${card.name}...`);
+  const tcgRefresh = await fetchTcgPlayerPricesFromPokePrice(card, existingCard);
+  let marketPrices = mergePriceStructures(existingCard?.prices, tcgRefresh?.prices || null);
   
   // For Japanese cards, also fetch from JustTCG
   let justTcgData = null;
@@ -1901,7 +2096,7 @@ async function updateSingleCardInCache(db, card, existingCard) {
     justTcgData = await fetchJustTCGPricesForCard(card);
     if (justTcgData && justTcgData.prices) {
       marketPrices = {
-        ...marketPrices,
+        ...(marketPrices || {}),
         justtcg: justTcgData.prices.justtcg
       };
       console.log(`   ✅ JustTCG price found: $${justTcgData.prices.justtcg?.price || 0}`);
@@ -1910,7 +2105,7 @@ async function updateSingleCardInCache(db, card, existingCard) {
   
   // Fetch graded prices if we don't have them or they're old
   let gradedPrices = existingCard?.gradedPrices || {};
-  if (!existingCard || shouldUpdateGradedPrices(existingCard)) {
+  if (getPriceChartingKey() && (!existingCard || shouldUpdateGradedPrices(existingCard))) {
     console.log(`   🏆 Fetching graded prices for: ${card.name}...`);
     const freshGradedPrices = await fetchAllGradedPrices(card);
     if (Object.keys(freshGradedPrices).length > 0) {
@@ -1919,6 +2114,8 @@ async function updateSingleCardInCache(db, card, existingCard) {
         lastUpdated: admin.firestore.FieldValue.serverTimestamp()
       };
     }
+  } else if (!getPriceChartingKey()) {
+    console.log(`   ⏭️ Skipping graded PriceCharting refresh for ${card.name}; PRICECHARTING_KEY is not configured`);
   }
   
   // Check for community uploaded image
@@ -1959,6 +2156,8 @@ async function updateSingleCardInCache(db, card, existingCard) {
     // IDs
     cardMarketId: card.id || card.cardMarketId || existingCard?.cardMarketId || '',
     priceChartingId: card.priceChartingId || existingCard?.priceChartingId || '',
+    tcgPlayerId: tcgRefresh?.tcgPlayerId || getStoredTcgPlayerId(card, existingCard) || '',
+    tcgplayerId: tcgRefresh?.tcgPlayerId || getStoredTcgPlayerId(card, existingCard) || '',
     
     // Prices
     prices: marketPrices || existingCard?.prices || null,
@@ -2015,7 +2214,7 @@ async function updateCardDatabase(db, uniqueCards) {
   const stats = { updated: 0, new: 0, failed: 0 };
   const priceChanges = [];
   const cardArray = Array.from(uniqueCards.values());
-  const batchSize = 10; // Smaller batches to avoid rate limits
+  const batchSize = 25; // Pokemon Price Tracker requests are serialized by fetchPokemonPriceTracker().
   
   // Get existing cards from database for reference
   const existingCardsSnapshot = await db.collection('card_database').get();
@@ -2024,7 +2223,7 @@ async function updateCardDatabase(db, uniqueCards) {
     existingCardsMap.set(doc.id, doc.data());
   });
   
-  // Process in batches to avoid rate limits
+  // Process in batches while the Pokemon Price Tracker request queue enforces API pacing.
   for (let i = 0; i < cardArray.length; i += batchSize) {
     const batch = cardArray.slice(i, i + batchSize);
     
@@ -2046,12 +2245,6 @@ async function updateCardDatabase(db, uniqueCards) {
         stats.failed++;
       }
     }));
-    
-    // Rate limiting: wait 2 seconds between batches
-    if (i + batchSize < cardArray.length) {
-      console.log(`   ⏳ Waiting before next batch... (${i + batchSize}/${cardArray.length})`);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
     
     console.log(`   📊 Progress: ${Math.min(i + batchSize, cardArray.length)}/${cardArray.length} cards processed`);
   }
@@ -3571,14 +3764,14 @@ exports.forceUpdateAllCards = withSecrets({
           try {
             const cardRef = db.collection('card_database').doc(card.cardKey || card.id);
             
-            // Fetch fresh market prices
-            console.log(`   💰 Fetching prices for: ${card.name}...`);
-            const marketPricesRaw = await fetchMarketPricesInternal(card);
-            const marketPrices = transformPriceStructure(marketPricesRaw);
+            // Fetch fresh TCGPlayer prices while preserving other markets.
+            console.log(`   💰 Refreshing TCGPlayer prices for: ${card.name}...`);
+            const tcgRefresh = await fetchTcgPlayerPricesFromPokePrice(card, card);
+            const marketPrices = mergePriceStructures(card.prices, tcgRefresh?.prices || null);
             
             // Fetch graded prices unless skipped
             let gradedPrices = card.gradedPrices || {};
-            if (!skipGraded) {
+            if (!skipGraded && getPriceChartingKey()) {
               console.log(`   🏆 Fetching graded prices for: ${card.name}...`);
               try {
                 const freshGradedPrices = await fetchAllGradedPrices(card);
@@ -3591,12 +3784,16 @@ exports.forceUpdateAllCards = withSecrets({
               } catch (gradedError) {
                 console.warn(`   ⚠️ Graded price fetch failed for ${card.name}: ${gradedError.message}`);
               }
+            } else if (!skipGraded && !getPriceChartingKey()) {
+              console.log(`   ⏭️ Skipping graded PriceCharting refresh for ${card.name}; PRICECHARTING_KEY is not configured`);
             }
             
             // Update the card document
             const updateData = {
               prices: marketPrices || card.prices || null,
               gradedPrices: gradedPrices,
+              tcgPlayerId: tcgRefresh?.tcgPlayerId || getStoredTcgPlayerId(card, card) || '',
+              tcgplayerId: tcgRefresh?.tcgPlayerId || getStoredTcgPlayerId(card, card) || '',
               lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
               updateCount: (card.updateCount || 0) + 1
             };
@@ -3627,10 +3824,7 @@ exports.forceUpdateAllCards = withSecrets({
         }
       });
       
-      // Small delay between batches to avoid rate limiting
-      if (i + batchSize < cards.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
+      // Pokemon Price Tracker requests are serialized by fetchPokemonPriceTracker().
     }
     
     const duration = (Date.now() - startTime) / 1000;

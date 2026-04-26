@@ -332,7 +332,12 @@ export function enrichCardWithMarketPrices(card, marketPrices) {
       low_price: marketPrices.us.low,
       mid_price: marketPrices.us.mid,
       high_price: marketPrices.us.high,
+      tcgPlayerId: marketPrices.us.tcgPlayerId || null,
     };
+    if (marketPrices.us.tcgPlayerId) {
+      card.tcgPlayerId = marketPrices.us.tcgPlayerId;
+      card.tcgplayerId = marketPrices.us.tcgPlayerId;
+    }
     card.priceSource = marketPrices.us.fallback ? 'PriceCharting' : 'TCGPlayer';
     if (marketPrices.us.fallback === true) {
       card.isFallbackPrice = true;
