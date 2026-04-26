@@ -167,6 +167,10 @@ function autoDetectGrid(cardCount) {
   return { cols: 2, rows: 2 };
 }
 
+function createFreeformGrid() {
+  return { cols: 1, rows: 1, freeform: true };
+}
+
 function roundToNearest10(n) {
   return Math.ceil(n / 10) * 10;
 }
@@ -309,19 +313,24 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
   const imgY = (canvasH - drawH) / 2;
   ctx.drawImage(img, imgX, imgY, drawW, drawH);
 
+  const isFreeform = !!gridConfig?.freeform;
   const { cols, rows } = gridConfig;
   const cellW = drawW / cols;
   const cellH = drawH / rows;
 
-  const { boxW, boxH } = getLabelBoxSize(cellW, cellH, canvasW, canvasH, storyMode);
+  const baseCellW = isFreeform ? drawW : cellW;
+  const baseCellH = isFreeform ? drawH : cellH;
+  const { boxW, boxH } = getLabelBoxSize(baseCellW, baseCellH, canvasW, canvasH, storyMode);
   const hPad = boxW * 0.06;
   const maxTextW = boxW - hPad * 2;
 
   slots.forEach((slot) => {
     const col = slot.index % cols;
     const row = Math.floor(slot.index / cols);
-    const cellX = imgX + col * cellW;
-    const cellY = imgY + row * cellH;
+    const cellX = isFreeform ? imgX : imgX + col * cellW;
+    const cellY = isFreeform ? imgY : imgY + row * cellH;
+    const slotCellW = isFreeform ? drawW : cellW;
+    const slotCellH = isFreeform ? drawH : cellH;
 
     const price = slot.manualPrice ? parseFloat(slot.manualPrice) : slot.price;
     if (!price || price <= 0) return;
@@ -334,10 +343,10 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
     }
 
     const labelPosition = slot.labelPosition || DEFAULT_LABEL_POSITION;
-    const desiredX = cellX + labelPosition.x * cellW - boxW / 2;
-    const desiredY = cellY + labelPosition.y * cellH - boxH / 2;
-    const boxX = clampStart(desiredX, cellX, cellX + cellW - boxW);
-    const boxY = clampStart(desiredY, cellY, cellY + cellH - boxH);
+    const desiredX = cellX + labelPosition.x * slotCellW - boxW / 2;
+    const desiredY = cellY + labelPosition.y * slotCellH - boxH / 2;
+    const boxX = clampStart(desiredX, cellX, cellX + slotCellW - boxW);
+    const boxY = clampStart(desiredY, cellY, cellY + slotCellH - boxH);
 
     const radius = boxH * 0.18;
     ctx.beginPath();
@@ -399,6 +408,7 @@ export function StorySaleGenerator() {
   const [activeId, setActiveId] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [draggingLabel, setDraggingLabel] = useState(null);
+  const [manualStickerQuery, setManualStickerQuery] = useState("");
   const [globalError, setGlobalError] = useState(null);
 
   const fileInputRef = useRef(null);
@@ -559,6 +569,30 @@ export function StorySaleGenerator() {
     );
   }, [activeId]);
 
+  const removeSlot = useCallback((slotIndex) => {
+    if (!activeId) return;
+    setImages((prev) =>
+      prev.map((img) => {
+        if (img.id !== activeId) return img;
+        return {
+          ...img,
+          cardSlots: img.cardSlots.filter((slot) => slot.index !== slotIndex),
+        };
+      })
+    );
+  }, [activeId]);
+
+  const startManualMode = useCallback((id) => {
+    updateImage(id, {
+      phase: "confirm",
+      gridConfig: createFreeformGrid(),
+      cardSlots: [],
+      error: null,
+      statusText: "Manual sticker mode",
+    });
+    setManualStickerQuery("");
+  }, [updateImage]);
+
   const selectInventoryItem = useCallback((slotIndex, item) => {
     const price = getDisplayPriceForItem(item, currency, roundUp);
     updateSlot(slotIndex, {
@@ -579,6 +613,37 @@ export function StorySaleGenerator() {
       .map((entry) => entry.item)
       .slice(0, 10);
   }, [inventoryIndex]);
+
+  const addManualStickerFromItem = useCallback((item) => {
+    if (!activeId) return;
+    const price = getDisplayPriceForItem(item, currency, roundUp);
+    setImages((prev) =>
+      prev.map((img) => {
+        if (img.id !== activeId) return img;
+        const nextIndex = img.cardSlots.reduce((max, slot) => Math.max(max, slot.index), -1) + 1;
+        return {
+          ...img,
+          gridConfig: img.gridConfig?.freeform ? img.gridConfig : createFreeformGrid(),
+          cardSlots: [
+            ...img.cardSlots,
+            {
+              index: nextIndex,
+              detected: { name: item.name, isManual: true },
+              matchedItem: item,
+              candidates: [item],
+              price,
+              manualPrice: "",
+              confirmed: true,
+              labelPosition: DEFAULT_LABEL_POSITION,
+              showSearch: false,
+              searchQuery: "",
+            },
+          ],
+        };
+      })
+    );
+    setManualStickerQuery("");
+  }, [activeId, currency, roundUp]);
 
   // ── Generate image for active entry ───────────────────────────
 
@@ -683,6 +748,11 @@ export function StorySaleGenerator() {
     const rect = labelPreviewRef.current.getBoundingClientRect();
     const px = clamp((event.clientX - rect.left) / rect.width, 0, 1);
     const py = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+    if (activeImage.gridConfig.freeform) {
+      updateSlot(slotIndex, { labelPosition: { x: clamp(px, 0.02, 0.98), y: clamp(py, 0.02, 0.98) } });
+      return;
+    }
+
     const { cols, rows } = activeImage.gridConfig;
     const col = slotIndex % cols;
     const row = Math.floor(slotIndex / cols);
@@ -698,6 +768,8 @@ export function StorySaleGenerator() {
 
   const allSlots = activeImage?.cardSlots || [];
   const allConfirmed = allSlots.length > 0 && allSlots.every((s) => s.confirmed);
+  const isManualMode = !!activeImage?.gridConfig?.freeform;
+  const manualStickerResults = isManualMode ? filteredSearchResults(manualStickerQuery) : [];
   const previewImages = images.filter((img) =>
     ["confirm", "generating", "done"].includes(img.phase) && (img.generatedImage || img.preview)
   );
@@ -964,6 +1036,15 @@ export function StorySaleGenerator() {
                   <Search className="h-4 w-4 mr-2" />
                   Identify Cards & Match Prices
                 </Button>
+                <Button
+                  className="w-full mt-2"
+                  variant="outline"
+                  size="lg"
+                  onClick={() => startManualMode(activeImage.id)}
+                >
+                  <Pencil className="h-4 w-4 mr-2" />
+                  Use Manual Stickers
+                </Button>
               </CardContent>
             </Card>
           )}
@@ -1069,12 +1150,12 @@ export function StorySaleGenerator() {
                           draggable={false}
                         />
                         {allSlots.map((slot) => {
-                          const { cols, rows } = activeImage.gridConfig;
+                          const { cols, rows, freeform } = activeImage.gridConfig;
                           const col = slot.index % cols;
                           const row = Math.floor(slot.index / cols);
                           const position = slot.labelPosition || DEFAULT_LABEL_POSITION;
-                          const left = ((col + position.x) / cols) * 100;
-                          const top = ((row + position.y) / rows) * 100;
+                          const left = freeform ? position.x * 100 : ((col + position.x) / cols) * 100;
+                          const top = freeform ? position.y * 100 : ((row + position.y) / rows) * 100;
                           const price = slot.manualPrice ? parseFloat(slot.manualPrice) : slot.price;
                           const primary = price > 0 ? formatWholePrice(price, currency) : "Set price";
                           const secondary = price > 0 && secondaryCurrency && activeImage.includeSecondaryCurrency
@@ -1107,6 +1188,56 @@ export function StorySaleGenerator() {
                     )}
                   </div>
 
+                  {isManualMode && (
+                    <div className="rounded-lg border border-green-200 bg-green-50/60 p-3 mb-4 space-y-3">
+                      <div>
+                        <p className="text-sm font-semibold">Manual stickers</p>
+                        <p className="text-xs text-muted-foreground">
+                          Search inventory, add a price sticker, then drag it onto the right card.
+                        </p>
+                      </div>
+                      <Input
+                        placeholder="Search inventory to add a sticker..."
+                        value={manualStickerQuery}
+                        onChange={(e) => setManualStickerQuery(e.target.value)}
+                        className="h-9 text-sm bg-background"
+                      />
+                      <div className="max-h-52 overflow-y-auto space-y-1 rounded border bg-background p-1.5">
+                        {manualStickerQuery.length < 2 ? (
+                          <p className="text-xs text-muted-foreground text-center py-3">
+                            Type at least 2 characters to search your inventory.
+                          </p>
+                        ) : manualStickerResults.length > 0 ? (
+                          manualStickerResults.map((item, resultIndex) => (
+                            <button
+                              key={item.entryId || item.cardId || `${item.name}-${item.number}-${resultIndex}`}
+                              className="flex w-full items-center gap-2 rounded p-1.5 text-left hover:bg-muted/50 transition-colors"
+                              onClick={() => addManualStickerFromItem(item)}
+                            >
+                              {item.image && (
+                                <img src={item.image} alt={item.name} className="h-10 w-7 rounded object-cover" />
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-medium truncate">{item.name}</p>
+                                <p className="text-[10px] text-muted-foreground truncate">
+                                  {item.set}{item.number && ` #${item.number}`}
+                                  {item.isGraded && ` • ${item.gradingCompany || ""} ${item.grade || ""}`}
+                                </p>
+                              </div>
+                              <span className="text-xs font-semibold text-green-600 flex-shrink-0">
+                                {formatCurrency(getDisplayPriceForItem(item, currency, roundUp), currency)}
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <p className="text-xs text-muted-foreground text-center py-3">
+                            No inventory matches found.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="space-y-3">
                     {allSlots.map((slot) => (
                       <div
@@ -1121,7 +1252,9 @@ export function StorySaleGenerator() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1">
-                              <p className="text-xs text-muted-foreground font-medium">Detected:</p>
+                              <p className="text-xs text-muted-foreground font-medium">
+                                {slot.detected.isManual ? "Sticker:" : "Detected:"}
+                              </p>
                               <p className="text-xs truncate">
                                 {slot.detected.name || "Unknown"}
                                 {slot.detected.isGraded &&
@@ -1243,9 +1376,24 @@ export function StorySaleGenerator() {
                           >
                             <Check className="h-4 w-4" />
                           </Button>
+                          {isManualMode && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="flex-shrink-0"
+                              onClick={() => removeSlot(slot.index)}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          )}
                         </div>
                       </div>
                     ))}
+                    {isManualMode && allSlots.length === 0 && (
+                      <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+                        Add at least one inventory sticker above to generate the sale image.
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
