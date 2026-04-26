@@ -35,9 +35,18 @@ const DEFAULT_LABEL_POSITION = { x: 0.5, y: 0.9 };
 const SCAN_MAX_DIMENSION = 1600;
 const SCAN_JPEG_QUALITY = 0.82;
 const BATCH_SCAN_CONCURRENCY = 3;
+const STORY_CANVAS_WIDTH = 1080;
+const STORY_CANVAS_HEIGHT = 1920;
+const BASE_LABEL_WIDTH = 430;
+const BASE_LABEL_HEIGHT = 112;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampStart(value, min, max) {
+  if (max < min) return min;
+  return clamp(value, min, max);
 }
 
 function normalizeText(value) {
@@ -188,6 +197,20 @@ function fitText(ctx, text, weight, maxW, startSize) {
   return size;
 }
 
+function getLabelBoxSize(cellW, cellH, canvasW, canvasH, storyMode) {
+  const baseScale = storyMode
+    ? canvasW / STORY_CANVAS_WIDTH
+    : clamp(Math.min(canvasW, canvasH) / STORY_CANVAS_WIDTH, 0.75, 1.6);
+  const targetW = BASE_LABEL_WIDTH * baseScale;
+  const targetH = BASE_LABEL_HEIGHT * baseScale;
+  const fitScale = Math.min(1, (cellW * 0.9) / targetW, (cellH * 0.3) / targetH);
+
+  return {
+    boxW: targetW * fitScale,
+    boxH: targetH * fitScale,
+  };
+}
+
 async function compressImageForScan(file) {
   const img = new window.Image();
   const objectUrl = URL.createObjectURL(file);
@@ -267,8 +290,8 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
   let drawH = img.naturalHeight;
 
   if (storyMode) {
-    canvasW = 1080;
-    canvasH = 1920;
+    canvasW = STORY_CANVAS_WIDTH;
+    canvasH = STORY_CANVAS_HEIGHT;
     const scale = Math.min(canvasW / img.naturalWidth, canvasH / img.naturalHeight);
     drawW = img.naturalWidth * scale;
     drawH = img.naturalHeight * scale;
@@ -290,8 +313,7 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
   const cellW = drawW / cols;
   const cellH = drawH / rows;
 
-  const boxW = cellW * 0.80;
-  const boxH = cellH * 0.20;
+  const { boxW, boxH } = getLabelBoxSize(cellW, cellH, canvasW, canvasH, storyMode);
   const hPad = boxW * 0.06;
   const maxTextW = boxW - hPad * 2;
 
@@ -312,8 +334,10 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
     }
 
     const labelPosition = slot.labelPosition || DEFAULT_LABEL_POSITION;
-    const boxX = cellX + labelPosition.x * cellW - boxW / 2;
-    const boxY = cellY + labelPosition.y * cellH - boxH / 2;
+    const desiredX = cellX + labelPosition.x * cellW - boxW / 2;
+    const desiredY = cellY + labelPosition.y * cellH - boxH / 2;
+    const boxX = clampStart(desiredX, cellX, cellX + cellW - boxW);
+    const boxY = clampStart(desiredY, cellY, cellY + cellH - boxH);
 
     const radius = boxH * 0.18;
     ctx.beginPath();
@@ -380,6 +404,7 @@ export function StorySaleGenerator() {
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const canvasRef = useRef(null);
+  const labelPreviewRef = useRef(null);
   const imagesRef = useRef(images);
 
   const roundUp = false;
@@ -654,15 +679,15 @@ export function StorySaleGenerator() {
   }, [images, generateImage]);
 
   const updateLabelPositionFromPointer = useCallback((event, slotIndex) => {
-    if (!activeImage?.gridConfig) return;
-    const rect = event.currentTarget.getBoundingClientRect();
+    if (!activeImage?.gridConfig || !labelPreviewRef.current) return;
+    const rect = labelPreviewRef.current.getBoundingClientRect();
     const px = clamp((event.clientX - rect.left) / rect.width, 0, 1);
     const py = clamp((event.clientY - rect.top) / rect.height, 0, 1);
     const { cols, rows } = activeImage.gridConfig;
     const col = slotIndex % cols;
     const row = Math.floor(slotIndex / cols);
-    const x = clamp(px * cols - col, 0.1, 0.9);
-    const y = clamp(py * rows - row, 0.1, 0.9);
+    const x = clamp(px * cols - col, 0.02, 0.98);
+    const y = clamp(py * rows - row, 0.02, 0.98);
     updateSlot(slotIndex, { labelPosition: { x, y } });
   }, [activeImage?.gridConfig, updateSlot]);
 
@@ -1031,6 +1056,7 @@ export function StorySaleGenerator() {
 
                     {activeImage.gridConfig && allSlots.length > 0 && (
                       <div
+                        ref={labelPreviewRef}
                         className="relative overflow-hidden rounded-lg border bg-black/5 touch-none select-none"
                         onPointerMove={handleLabelPointerMove}
                         onPointerUp={() => setDraggingLabel(null)}
@@ -1059,7 +1085,7 @@ export function StorySaleGenerator() {
                             <button
                               key={slot.index}
                               type="button"
-                              className="absolute min-w-20 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md px-2 py-1 text-center text-[11px] font-extrabold leading-tight text-white shadow-lg active:cursor-grabbing"
+                              className="absolute w-28 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md px-2 py-1 text-center text-[11px] font-extrabold leading-tight text-white shadow-lg active:cursor-grabbing"
                               style={{
                                 left: `${left}%`,
                                 top: `${top}%`,
