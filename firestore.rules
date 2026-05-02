@@ -241,6 +241,12 @@ service cloud.firestore {
       allow read, write: if isOwner(userId);
     }
 
+    // Expense Recurring - subcollection for recurring expense schedules
+    // (e.g. monthly rent, subscriptions). Auto-posts into /expenses on due date.
+    match /expense_recurring/{userId}/entries/{recurringId} {
+      allow read, write: if isOwner(userId);
+    }
+
     // Tax Config - per-user tax settings
     match /tax_config/{userId} {
       allow read, write: if isOwner(userId);
