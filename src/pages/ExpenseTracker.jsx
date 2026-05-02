@@ -31,11 +31,13 @@ import {
   Clock,
   CircleHelp,
   CheckCircle2,
+  Repeat,
 } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { useExpenses } from "@/contexts/ExpenseContext";
 import { ShowScheduleTab } from "@/components/ShowScheduleTab";
 import { ReimbursementsTab } from "@/components/ReimbursementsTab";
+import { RecurringExpensesTab } from "@/components/RecurringExpensesTab";
 import {
   EXPENSE_CATEGORIES,
   PAYMENT_METHODS,
@@ -175,6 +177,10 @@ export function ExpenseTracker() {
             <Receipt className="h-4 w-4 mr-1" />
             Expenses
           </TabsTrigger>
+          <TabsTrigger value="recurring">
+            <Repeat className="h-4 w-4 mr-1" />
+            Recurring
+          </TabsTrigger>
           <TabsTrigger value="reimbursements">
             <Wallet className="h-4 w-4 mr-1" />
             Reimbursements
@@ -187,6 +193,10 @@ export function ExpenseTracker() {
 
         <TabsContent value="shows">
           <ShowScheduleTab />
+        </TabsContent>
+
+        <TabsContent value="recurring">
+          <RecurringExpensesTab />
         </TabsContent>
 
         <TabsContent value="reimbursements">

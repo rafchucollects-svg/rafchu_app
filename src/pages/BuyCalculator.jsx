@@ -217,15 +217,8 @@ export function BuyCalculator() {
 
   const handleBuyDefaultChange = (pct) => {
     const next = Math.max(40, Math.min(120, pct));
-    const prevDefault = buyDefaultPct;
     setBuyDefaultPct(next);
-    setBuyItems((prev) =>
-      prev.map((item) =>
-        item.buyPct === prevDefault || item.buyPct === undefined
-          ? { ...item, buyPct: next }
-          : item,
-      ),
-    );
+    setBuyItems((prev) => prev.map((item) => ({ ...item, buyPct: next })));
   };
 
   const handleApplyThreshold = () => {

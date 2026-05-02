@@ -30,6 +30,7 @@ export function ExpenseProvider({ children }) {
   const [expenses, setExpenses] = useState([]);
   const [shows, setShows] = useState([]);
   const [payouts, setPayouts] = useState([]);
+  const [recurring, setRecurring] = useState([]);
   const [corrections, setCorrections] = useState([]);
   const [ecbRates, setEcbRates] = useState({});
   const [loading, setLoading] = useState(true);
@@ -39,6 +40,7 @@ export function ExpenseProvider({ children }) {
       setExpenses([]);
       setShows([]);
       setPayouts([]);
+      setRecurring([]);
       setCorrections([]);
       setLoading(false);
       return;
@@ -46,6 +48,7 @@ export function ExpenseProvider({ children }) {
     loadExpenses();
     loadShows();
     loadPayouts();
+    loadRecurring();
     loadCorrections();
   }, [user, db]);
 
@@ -174,6 +177,22 @@ export function ExpenseProvider({ children }) {
       setPayouts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     } catch (err) {
       console.error("Failed to load payouts:", err);
+    }
+  }, [user, db]);
+
+  // =============================
+  // Recurring Expenses
+  // =============================
+
+  const loadRecurring = useCallback(async () => {
+    if (!user || !db) return;
+    try {
+      const col = fsCollection(db, "expense_recurring", user.uid, "entries");
+      const q = query(col, orderBy("createdAt", "desc"));
+      const snap = await getDocs(q);
+      setRecurring(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      console.error("Failed to load recurring expenses:", err);
     }
   }, [user, db]);
 
@@ -505,6 +524,190 @@ export function ExpenseProvider({ children }) {
     [user, db, shows, addExpense, updateShow]
   );
 
+  // =============================
+  // Recurring Expenses CRUD + auto-post
+  // =============================
+
+  const addRecurring = useCallback(
+    async (entry) => {
+      if (!user || !db) return;
+      const now = Date.now();
+      const today = new Date().toISOString().slice(0, 10);
+      const fullEntry = {
+        name: entry.name || entry.description || "Recurring expense",
+        category: entry.category || "Rent / Storage",
+        description: entry.description || "",
+        amount: parseFloat(entry.amount) || 0,
+        currency: entry.currency || "EUR",
+        vendor: entry.vendor || "",
+        paymentMethod: entry.paymentMethod || "Bank Transfer",
+        notes: entry.notes || "",
+        frequency: entry.frequency || "monthly",
+        dayOfMonth: entry.dayOfMonth ?? new Date().getDate(),
+        startDate: entry.startDate || today,
+        endDate: entry.endDate || null,
+        nextDueDate: entry.nextDueDate || entry.startDate || today,
+        lastPostedDate: entry.lastPostedDate || null,
+        autoPost: entry.autoPost ?? true,
+        active: entry.active ?? true,
+        settlementStatus: entry.settlementStatus || "unsettled",
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        const col = fsCollection(db, "expense_recurring", user.uid, "entries");
+        const docRef = await addDoc(col, fullEntry);
+        const newEntry = { id: docRef.id, ...fullEntry };
+        setRecurring((prev) => [newEntry, ...prev]);
+        return newEntry;
+      } catch (err) {
+        console.error("Failed to add recurring expense:", err);
+        throw err;
+      }
+    },
+    [user, db]
+  );
+
+  const updateRecurring = useCallback(
+    async (entryId, updates) => {
+      if (!user || !db) return;
+      try {
+        const patched = { ...updates, updatedAt: Date.now() };
+        await updateDoc(
+          doc(db, "expense_recurring", user.uid, "entries", entryId),
+          patched
+        );
+        setRecurring((prev) =>
+          prev.map((r) => (r.id === entryId ? { ...r, ...patched } : r))
+        );
+      } catch (err) {
+        console.error("Failed to update recurring expense:", err);
+        throw err;
+      }
+    },
+    [user, db]
+  );
+
+  const deleteRecurring = useCallback(
+    async (entryId) => {
+      if (!user || !db) return;
+      try {
+        await deleteDoc(doc(db, "expense_recurring", user.uid, "entries", entryId));
+        setRecurring((prev) => prev.filter((r) => r.id !== entryId));
+      } catch (err) {
+        console.error("Failed to delete recurring expense:", err);
+        throw err;
+      }
+    },
+    [user, db]
+  );
+
+  // Compute the next due date AFTER a given posting date for a frequency.
+  const computeNextDueDate = useCallback((fromDateISO, frequency, dayOfMonth) => {
+    const d = new Date(fromDateISO + "T00:00:00");
+    if (frequency === "weekly") {
+      d.setDate(d.getDate() + 7);
+    } else if (frequency === "biweekly") {
+      d.setDate(d.getDate() + 14);
+    } else if (frequency === "yearly") {
+      d.setFullYear(d.getFullYear() + 1);
+    } else {
+      // monthly (default)
+      d.setMonth(d.getMonth() + 1);
+      if (dayOfMonth) {
+        // Clamp to last day of month if needed.
+        const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+        d.setDate(Math.min(dayOfMonth, lastDay));
+      }
+    }
+    return d.toISOString().slice(0, 10);
+  }, []);
+
+  // Manually post a recurring expense for its current nextDueDate (or override).
+  const postRecurringNow = useCallback(
+    async (recurringId, overrideDate = null) => {
+      if (!user || !db) return;
+      const r = recurring.find((x) => x.id === recurringId);
+      if (!r) return;
+      const postDate = overrideDate || r.nextDueDate || new Date().toISOString().slice(0, 10);
+
+      const expenseEntry = await addExpense({
+        date: postDate,
+        category: r.category,
+        description: r.description || r.name,
+        amount: r.amount,
+        currency: r.currency,
+        vendor: r.vendor,
+        paymentMethod: r.paymentMethod,
+        notes: r.notes
+          ? `${r.notes}\n\nAuto-generated from recurring: ${r.name}`
+          : `Auto-generated from recurring: ${r.name}`,
+        settlementStatus: r.settlementStatus || "unsettled",
+      });
+
+      const next = computeNextDueDate(postDate, r.frequency, r.dayOfMonth);
+      await updateRecurring(recurringId, {
+        lastPostedDate: postDate,
+        nextDueDate: next,
+      });
+      return expenseEntry;
+    },
+    [user, db, recurring, addExpense, computeNextDueDate, updateRecurring]
+  );
+
+  // Auto-post any active recurring expenses whose nextDueDate is on or before today.
+  // Loops in case a schedule has multiple unposted periods (e.g. user opened the
+  // app for the first time in 3 months).
+  const runRecurringDue = useCallback(async () => {
+    if (!user || !db) return;
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const due = recurring.filter(
+      (r) =>
+        r.active !== false &&
+        r.autoPost !== false &&
+        r.nextDueDate &&
+        r.nextDueDate <= todayISO &&
+        (!r.endDate || r.nextDueDate <= r.endDate)
+    );
+    for (const r of due) {
+      // Catch up: post repeatedly until nextDueDate moves past today.
+      let cursor = r.nextDueDate;
+      let last = r.lastPostedDate;
+      let safety = 60;
+      while (cursor && cursor <= todayISO && (!r.endDate || cursor <= r.endDate) && safety-- > 0) {
+        await addExpense({
+          date: cursor,
+          category: r.category,
+          description: r.description || r.name,
+          amount: r.amount,
+          currency: r.currency,
+          vendor: r.vendor,
+          paymentMethod: r.paymentMethod,
+          notes: r.notes
+            ? `${r.notes}\n\nAuto-generated from recurring: ${r.name}`
+            : `Auto-generated from recurring: ${r.name}`,
+          settlementStatus: r.settlementStatus || "unsettled",
+        });
+        last = cursor;
+        cursor = computeNextDueDate(cursor, r.frequency, r.dayOfMonth);
+      }
+      await updateRecurring(r.id, {
+        lastPostedDate: last,
+        nextDueDate: cursor,
+      });
+    }
+  }, [user, db, recurring, addExpense, computeNextDueDate, updateRecurring]);
+
+  // Auto-run after recurring data is first loaded.
+  useEffect(() => {
+    if (!user || !db) return;
+    if (recurring.length === 0) return;
+    runRecurringDue().catch((err) =>
+      console.error("Recurring auto-post failed:", err)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, db, recurring.length]);
+
   const updateExpense = useCallback(
     async (entryId, updates) => {
       if (!user || !db) return;
@@ -624,14 +827,20 @@ export function ExpenseProvider({ children }) {
   );
 
   const refreshData = useCallback(async () => {
-    await Promise.all([loadExpenses(), loadShows(), loadPayouts()]);
-  }, [loadExpenses, loadShows, loadPayouts]);
+    await Promise.all([
+      loadExpenses(),
+      loadShows(),
+      loadPayouts(),
+      loadRecurring(),
+    ]);
+  }, [loadExpenses, loadShows, loadPayouts, loadRecurring]);
 
   const value = {
     expenses,
     corrections,
     shows,
     payouts,
+    recurring,
     addExpense,
     updateExpense,
     deleteExpense,
@@ -644,6 +853,11 @@ export function ExpenseProvider({ children }) {
     addPayout,
     updatePayout,
     deletePayout,
+    addRecurring,
+    updateRecurring,
+    deleteRecurring,
+    postRecurringNow,
+    runRecurringDue,
     setExpenseSettlementStatus,
     ecbRates,
     loading,
