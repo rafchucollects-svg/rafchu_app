@@ -615,6 +615,30 @@ async function fetchImagesForCards(cards, onProgress, abortSignal) {
   return results;
 }
 
+// ─── Manual-image detection ───────────────────────────────────────────────────
+
+/**
+ * Does this item have an image the user actively chose (vs. one we
+ * auto-fetched during a previous CardLadder import)?
+ *
+ * Primary signal: the explicit `imageManuallySet` flag, set whenever the
+ * user goes through the CardImageReplacer flow. Secondary signal: URL
+ * heuristics for legacy items that were customized before the flag
+ * existed. Firebase Storage uploads always live on
+ * `firebasestorage.googleapis.com` or the alt CDN host
+ * `storage.googleapis.com`; data: URLs (rare) are also clearly user-set.
+ */
+function hasUserChosenImage(item) {
+  if (!item) return false;
+  if (item.imageManuallySet === true) return true;
+  const img = typeof item.image === "string" ? item.image : "";
+  if (!img) return false;
+  if (img.includes("firebasestorage.googleapis.com")) return true;
+  if (img.includes("storage.googleapis.com")) return true;
+  if (img.startsWith("data:")) return true;
+  return false;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function CardLadderImport({ onClose, collectionName }) {
@@ -717,43 +741,14 @@ export function CardLadderImport({ onClose, collectionName }) {
     if (!user?.uid || !db || parsedCards.length === 0) return;
 
     setImporting(true);
-    setImageProgress({ processed: 0, found: 0, total: parsedCards.length });
 
     try {
-      // Step 1: Fetch images from the API
       const abortController = new AbortController();
       abortRef.current = abortController;
 
-      const imageResults = await fetchImagesForCards(
-        parsedCards,
-        (progress) => setImageProgress(progress),
-        abortController.signal
-      );
-
-      if (abortController.signal.aborted) {
-        setImporting(false);
-        return;
-      }
-
-      // Step 2: Merge images into parsed cards
-      const enrichedCards = parsedCards.map((card, idx) => {
-        const imgData = imageResults[idx];
-        if (imgData) {
-          return {
-            ...card,
-            image: imgData.image || card.image,
-            id: imgData.id || card.id || "",
-            // Keep CardLadder name/set as primary, store API match for reference
-            ...(imgData.prices && Object.keys(imgData.prices).length > 0
-              ? { prices: imgData.prices }
-              : {}),
-          };
-        }
-        return card;
-      });
-
-      // Step 3: Save to Firestore — merge with existing CardLadder cards
-      // to preserve manually-set images and manual prices
+      // ── Step 1: Load existing Firestore data FIRST ──────────────────
+      // We need to know which cards already exist (and have manual images)
+      // before deciding which cards to spend image-API quota on.
       const docRef = doc(db, collectionName, user.uid);
       const snapshot = await getDoc(docRef);
       const currentData = snapshot.exists() ? snapshot.data() : {};
@@ -772,14 +767,9 @@ export function CardLadderImport({ onClose, collectionName }) {
       const oldCardMap = new Map();
       for (const old of oldCardLadder) {
         const lid = old.cardladderData?.ladderId;
-        if (lid) {
-          oldCardMap.set(`lid:${lid}`, old);
-        }
+        if (lid) oldCardMap.set(`lid:${lid}`, old);
         const slab = old.cardladderData?.slabSerial;
-        if (slab) {
-          oldCardMap.set(`slab:${slab}`, old);
-        }
-        // Composite fallback key: name + number + gradingCompany + grade
+        if (slab) oldCardMap.set(`slab:${slab}`, old);
         const compositeKey = [
           (old.name || "").toLowerCase().trim(),
           (old.number || "").toLowerCase().trim(),
@@ -790,11 +780,6 @@ export function CardLadderImport({ onClose, collectionName }) {
           oldCardMap.set(`comp:${compositeKey}`, old);
         }
       }
-
-      const hasUserChosenImage = (item) =>
-        item.imageManuallySet === true ||
-        (typeof item.image === "string" &&
-          item.image.includes("firebasestorage.googleapis.com"));
 
       const findOldMatch = (card) => {
         const lid = card.cardladderData?.ladderId;
@@ -816,17 +801,85 @@ export function CardLadderImport({ onClose, collectionName }) {
         return oldCardMap.get(`comp:${compositeKey}`);
       };
 
-      const mergedCards = enrichedCards.map((card) => {
-        const oldCard = findOldMatch(card);
+      // ── Step 2: Decide per parsed card whether to preserve ──────────
+      // matches[i] = { oldCard, preservesImage } for parsedCards[i].
+      const matches = parsedCards.map((card) => {
+        const oldCard = findOldMatch(card) || null;
+        return {
+          oldCard,
+          preservesImage: oldCard ? hasUserChosenImage(oldCard) : false,
+        };
+      });
 
-        if (!oldCard) return card;
+      const preservedCount = matches.filter((m) => m.preservesImage).length;
 
-        const merged = { ...card, entryId: oldCard.entryId };
+      // ── Step 3: Only call the image API for cards we won't preserve ─
+      const fetchIndices = [];
+      const cardsToFetch = [];
+      matches.forEach((m, idx) => {
+        if (!m.preservesImage) {
+          fetchIndices.push(idx);
+          cardsToFetch.push(parsedCards[idx]);
+        }
+      });
 
-        if (hasUserChosenImage(oldCard)) {
+      setImageProgress({
+        processed: 0,
+        found: 0,
+        total: cardsToFetch.length,
+        preserved: preservedCount,
+      });
+
+      const partialResults = cardsToFetch.length
+        ? await fetchImagesForCards(
+            cardsToFetch,
+            (progress) =>
+              setImageProgress({ ...progress, preserved: preservedCount }),
+            abortController.signal
+          )
+        : [];
+
+      if (abortController.signal.aborted) {
+        setImporting(false);
+        return;
+      }
+
+      // Map partial results back to original parsedCards indices.
+      const imageResults = new Array(parsedCards.length).fill(null);
+      fetchIndices.forEach((origIdx, i) => {
+        imageResults[origIdx] = partialResults[i] || null;
+      });
+
+      // ── Step 4: Build merged cards ──────────────────────────────────
+      const mergedCards = parsedCards.map((card, idx) => {
+        const { oldCard, preservesImage } = matches[idx];
+        const apiImg = imageResults[idx];
+
+        // Apply API image only when not preserving a manual one
+        let next = card;
+        if (apiImg && !preservesImage) {
+          next = {
+            ...card,
+            image: apiImg.image || card.image,
+            id: apiImg.id || card.id || "",
+            ...(apiImg.prices && Object.keys(apiImg.prices).length > 0
+              ? { prices: apiImg.prices }
+              : {}),
+          };
+        }
+
+        if (!oldCard) return next;
+
+        // Carry forward the existing entryId so other parts of the app
+        // (selection state, transactions, etc.) keep their references.
+        const merged = { ...next, entryId: oldCard.entryId };
+
+        if (preservesImage) {
           merged.image = oldCard.image;
           merged.imageManuallySet = true;
-        } else if (!card.image && oldCard.image) {
+        } else if (!next.image && oldCard.image) {
+          // Last-resort fallback: keep whatever image we had before
+          // when the API turned up nothing for this card.
           merged.image = oldCard.image;
         }
 
@@ -845,10 +898,7 @@ export function CardLadderImport({ onClose, collectionName }) {
       setCollectionItems(updatedItems);
 
       const imagesFound = imageResults.filter(Boolean).length;
-      const preservedImages = mergedCards.filter((c) => {
-        const oldCard = findOldMatch(c);
-        return oldCard && c.image && c.image === oldCard.image;
-      }).length;
+      const preservedImages = mergedCards.filter((c) => c.imageManuallySet === true).length;
       const preservedPrices = mergedCards.filter(
         (c) => c.manualPrice != null && c.manualPrice !== ""
       ).length;
@@ -994,12 +1044,26 @@ export function CardLadderImport({ onClose, collectionName }) {
                 <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />
                 <div>
                   <p className="text-sm font-semibold text-blue-800">
-                    Fetching card images...
+                    {imageProgress.total > 0
+                      ? "Fetching card images..."
+                      : "Saving import..."}
                   </p>
                   <p className="text-xs text-blue-600">
-                    {imageProgress.processed} / {imageProgress.total} searched
-                    {imageProgress.found > 0 && (
-                      <> &middot; {imageProgress.found} images found</>
+                    {imageProgress.total > 0 ? (
+                      <>
+                        {imageProgress.processed} / {imageProgress.total} searched
+                        {imageProgress.found > 0 && (
+                          <> &middot; {imageProgress.found} images found</>
+                        )}
+                      </>
+                    ) : (
+                      <>All cards already have your custom images</>
+                    )}
+                    {imageProgress.preserved > 0 && (
+                      <>
+                        {" "}&middot; {imageProgress.preserved} custom image
+                        {imageProgress.preserved !== 1 ? "s" : ""} preserved
+                      </>
                     )}
                   </p>
                 </div>
@@ -1009,7 +1073,13 @@ export function CardLadderImport({ onClose, collectionName }) {
                 <div
                   className="bg-blue-600 h-2 rounded-full transition-all duration-300"
                   style={{
-                    width: `${Math.round((imageProgress.processed / imageProgress.total) * 100)}%`,
+                    width: `${
+                      imageProgress.total > 0
+                        ? Math.round(
+                            (imageProgress.processed / imageProgress.total) * 100
+                          )
+                        : 100
+                    }%`,
                   }}
                 />
               </div>

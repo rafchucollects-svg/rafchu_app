@@ -83,13 +83,17 @@ export function MyCollection() {
       const ref = doc(db, "collector_collections", user.uid);
       const snap = await getDoc(ref);
       const data = snap.exists() ? snap.data() : {};
+      // Mark imageManuallySet so re-imports (e.g. CardLadder) don't overwrite
+      // a user's deliberate image choice with an auto-fetched one.
       const updatedItems = (data.items || []).map(it =>
-        it.entryId === entryId ? { ...it, image: newImageUrl } : it
+        it.entryId === entryId
+          ? { ...it, image: newImageUrl, imageManuallySet: true }
+          : it
       );
       await setDoc(ref, { ...data, items: updatedItems }, { merge: true });
       // Write succeeded — update local state for immediate feedback
       // (onSnapshot listener will also pick this up)
-      updateCollectionItem(entryId, { image: newImageUrl });
+      updateCollectionItem(entryId, { image: newImageUrl, imageManuallySet: true });
       console.log("[ImageUpdate] Persisted image for", entryId);
     } catch (err) {
       console.error("[ImageUpdate] Firestore write failed:", err);
