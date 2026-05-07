@@ -134,35 +134,96 @@ function parseCondition(raw) {
 
 // ─── CSV Row → Card Item ──────────────────────────────────────────────────────
 
-const REQUIRED_HEADERS = ["Player", "Set", "Condition", "Current Value"];
+// CardLadder has renamed several columns over time. Each entry below lists
+// the column name(s) we accept for a given logical field, in priority order
+// (newest format first, legacy fallback last). Header lookup is
+// case-insensitive.
+//
+// Known rename history:
+//   "Player"         → "Subject"        (subject of the card)
+//   "Slab Serial #"  → "Graded Cert #"  (cert/serial number)
+//   "Ladder ID"      → (removed)        (CardLadder-internal id)
+//   ø                → "Category"       (new column, e.g. "Pokemon")
+const COLUMN_ALIASES = {
+  player: ["Subject", "Player"],
+  set: ["Set"],
+  variation: ["Variation"],
+  number: ["Number"],
+  condition: ["Condition"],
+  investment: ["Investment"],
+  currentValue: ["Current Value"],
+  potentialProfit: ["Potential Profit"],
+  ladderId: ["Ladder ID"],
+  slabSerial: ["Graded Cert #", "Slab Serial #"],
+  population: ["Population"],
+  datePurchased: ["Date Purchased"],
+  quantity: ["Quantity"],
+  card: ["Card"],
+  year: ["Year"],
+  notes: ["Notes"],
+  category: ["Category"],
+};
+
+// Logical fields that MUST be present (under any of their accepted aliases).
+const REQUIRED_FIELDS = ["player", "set", "condition", "currentValue"];
+
+/** Build a lowercased header → column-index lookup. */
+function buildHeaderMap(headers) {
+  const map = {};
+  headers.forEach((h, i) => {
+    const key = (h || "").trim().toLowerCase();
+    if (key && map[key] === undefined) map[key] = i;
+  });
+  return map;
+}
+
+/** Read a logical field from a row, trying each alias in priority order. */
+function getField(row, headerMap, fieldKey) {
+  const aliases = COLUMN_ALIASES[fieldKey] || [];
+  for (const name of aliases) {
+    const idx = headerMap[name.toLowerCase()];
+    if (idx !== undefined && idx < row.length) {
+      const val = (row[idx] ?? "").toString().trim();
+      if (val) return val;
+    }
+  }
+  return "";
+}
 
 function validateHeaders(headers) {
-  const normalized = headers.map((h) => h.trim());
-  const missing = REQUIRED_HEADERS.filter(
-    (req) => !normalized.some((h) => h.toLowerCase() === req.toLowerCase())
-  );
-  return { valid: missing.length === 0, missing, headers: normalized };
+  const headerMap = buildHeaderMap(headers);
+  const missing = [];
+  for (const fieldKey of REQUIRED_FIELDS) {
+    const aliases = COLUMN_ALIASES[fieldKey] || [];
+    const found = aliases.some((a) => headerMap[a.toLowerCase()] !== undefined);
+    if (!found) missing.push(aliases.join(" / "));
+  }
+  return {
+    valid: missing.length === 0,
+    missing,
+    headers: headers.map((h) => (h || "").trim()),
+    headerMap,
+  };
 }
 
 function rowToCard(row, headerMap) {
-  const get = (col) => (row[headerMap[col]] || "").trim();
-
-  const playerRaw = get("Player");
-  const setRaw = get("Set");
-  const variation = get("Variation");
-  const number = get("Number");
-  const condition = get("Condition");
-  const investment = parseFloat(get("Investment")) || 0;
-  const currentValue = parseFloat(get("Current Value")) || 0;
-  const potentialProfit = parseFloat(get("Potential Profit")) || 0;
-  const ladderId = get("Ladder ID");
-  const slabSerial = get("Slab Serial #");
-  const population = parseInt(get("Population")) || null;
-  const datePurchased = get("Date Purchased");
-  const quantity = parseInt(get("Quantity")) || 1;
-  const fullCard = get("Card");
-  const year = get("Year");
-  const notes = get("Notes");
+  const playerRaw = getField(row, headerMap, "player");
+  const setRaw = getField(row, headerMap, "set");
+  const variation = getField(row, headerMap, "variation");
+  const number = getField(row, headerMap, "number");
+  const condition = getField(row, headerMap, "condition");
+  const investment = parseFloat(getField(row, headerMap, "investment")) || 0;
+  const currentValue = parseFloat(getField(row, headerMap, "currentValue")) || 0;
+  const potentialProfit = parseFloat(getField(row, headerMap, "potentialProfit")) || 0;
+  const ladderId = getField(row, headerMap, "ladderId");
+  const slabSerial = getField(row, headerMap, "slabSerial");
+  const population = parseInt(getField(row, headerMap, "population")) || null;
+  const datePurchased = getField(row, headerMap, "datePurchased");
+  const quantity = parseInt(getField(row, headerMap, "quantity")) || 1;
+  const fullCard = getField(row, headerMap, "card");
+  const year = getField(row, headerMap, "year");
+  const notes = getField(row, headerMap, "notes");
+  const category = getField(row, headerMap, "category");
 
   const cleanName = cleanPlayerName(playerRaw);
   const cleanSet = cleanSetName(setRaw);
@@ -195,6 +256,7 @@ function rowToCard(row, headerMap) {
       fullCard,
       year,
       variation,
+      category: category || null,
       investment: unitInvestment,
       currentValue: unitValue,
       potentialProfit: unitProfit,
@@ -585,7 +647,7 @@ export function CardLadderImport({ onClose, collectionName }) {
         }
 
         const headers = rows[0];
-        const { valid, missing } = validateHeaders(headers);
+        const { valid, missing, headerMap } = validateHeaders(headers);
         if (!valid) {
           setParseError(
             `This doesn't look like a CardLadder export. Missing columns: ${missing.join(", ")}. ` +
@@ -593,12 +655,6 @@ export function CardLadderImport({ onClose, collectionName }) {
           );
           return;
         }
-
-        // Build header → index map
-        const headerMap = {};
-        headers.forEach((h, i) => {
-          headerMap[h.trim()] = i;
-        });
 
         // Parse data rows
         const cards = [];
@@ -710,12 +766,18 @@ export function CardLadderImport({ onClose, collectionName }) {
         (it) => it.source === "cardladder"
       );
 
-      // Build lookup of existing cards for field preservation
+      // Build lookup of existing cards for field preservation. We index by
+      // every stable identifier we can: ladderId (legacy CSVs only), slab
+      // serial / cert # (legacy + new CSVs), and a composite fallback.
       const oldCardMap = new Map();
       for (const old of oldCardLadder) {
         const lid = old.cardladderData?.ladderId;
         if (lid) {
           oldCardMap.set(`lid:${lid}`, old);
+        }
+        const slab = old.cardladderData?.slabSerial;
+        if (slab) {
+          oldCardMap.set(`slab:${slab}`, old);
         }
         // Composite fallback key: name + number + gradingCompany + grade
         const compositeKey = [
@@ -734,19 +796,28 @@ export function CardLadderImport({ onClose, collectionName }) {
         (typeof item.image === "string" &&
           item.image.includes("firebasestorage.googleapis.com"));
 
-      const mergedCards = enrichedCards.map((card) => {
-        // Find matching old card by ladderId first, then composite key
+      const findOldMatch = (card) => {
         const lid = card.cardladderData?.ladderId;
-        let oldCard = lid ? oldCardMap.get(`lid:${lid}`) : null;
-        if (!oldCard) {
-          const compositeKey = [
-            (card.name || "").toLowerCase().trim(),
-            (card.number || "").toLowerCase().trim(),
-            (card.gradingCompany || "").toLowerCase().trim(),
-            (card.grade || "").toLowerCase().trim(),
-          ].join("|");
-          oldCard = oldCardMap.get(`comp:${compositeKey}`);
+        const slab = card.cardladderData?.slabSerial;
+        if (lid) {
+          const m = oldCardMap.get(`lid:${lid}`);
+          if (m) return m;
         }
+        if (slab) {
+          const m = oldCardMap.get(`slab:${slab}`);
+          if (m) return m;
+        }
+        const compositeKey = [
+          (card.name || "").toLowerCase().trim(),
+          (card.number || "").toLowerCase().trim(),
+          (card.gradingCompany || "").toLowerCase().trim(),
+          (card.grade || "").toLowerCase().trim(),
+        ].join("|");
+        return oldCardMap.get(`comp:${compositeKey}`);
+      };
+
+      const mergedCards = enrichedCards.map((card) => {
+        const oldCard = findOldMatch(card);
 
         if (!oldCard) return card;
 
@@ -774,16 +845,8 @@ export function CardLadderImport({ onClose, collectionName }) {
       setCollectionItems(updatedItems);
 
       const imagesFound = imageResults.filter(Boolean).length;
-      const preservedImages = mergedCards.filter((c, i) => {
-        const lid = c.cardladderData?.ladderId;
-        const compositeKey = [
-          (c.name || "").toLowerCase().trim(),
-          (c.number || "").toLowerCase().trim(),
-          (c.gradingCompany || "").toLowerCase().trim(),
-          (c.grade || "").toLowerCase().trim(),
-        ].join("|");
-        const oldCard = (lid ? oldCardMap.get(`lid:${lid}`) : null)
-          || oldCardMap.get(`comp:${compositeKey}`);
+      const preservedImages = mergedCards.filter((c) => {
+        const oldCard = findOldMatch(c);
         return oldCard && c.image && c.image === oldCard.image;
       }).length;
       const preservedPrices = mergedCards.filter(
