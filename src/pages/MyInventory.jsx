@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye } from "lucide-react";
+import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye, Percent } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { computeInventoryTotals, formatCurrency, computeItemMetrics, exportToCSV, getConditionColorClass, recordTransaction, convertCurrency } from "@/utils/cardHelpers";
 import {
@@ -60,6 +60,7 @@ export function MyInventory() {
   const [shareUsername, setShareUsername] = useState("");
   const [selectedCards, setSelectedCards] = useState(new Set());
   const [selectAll, setSelectAll] = useState(false);
+  const [bulkMarkupPct, setBulkMarkupPct] = useState("10");
   const [salesModal, setSalesModal] = useState(null); // { cards: [], defaultPrice: 0 }
   const [cardDetailsModal, setCardDetailsModal] = useState(null); // Selected card for details view
   const [salesCurrency, setSalesCurrency] = useState(currency); // Currency for sale input
@@ -1119,6 +1120,26 @@ export function MyInventory() {
     setSelectAll(!selectAll);
   };
 
+  // Select all visible cards matching graded/ungraded. Toggles: if every visible
+  // card of that type is already selected, deselect them; otherwise add them.
+  const selectVisibleByGraded = (wantGraded) => {
+    const matching = filteredItems.filter(item =>
+      wantGraded ? item.isGraded === true : !item.isGraded
+    );
+    if (matching.length === 0) return;
+    const matchingIds = matching.map(item => item.entryId);
+    const allAlreadySelected = matchingIds.every(id => selectedCards.has(id));
+    setSelectedCards(prev => {
+      const newSet = new Set(prev);
+      if (allAlreadySelected) {
+        matchingIds.forEach(id => newSet.delete(id));
+      } else {
+        matchingIds.forEach(id => newSet.add(id));
+      }
+      return newSet;
+    });
+  };
+
   // Bulk delete
   const handleBulkDelete = async () => {
     if (selectedCards.size === 0) return;
@@ -1181,6 +1202,65 @@ export function MyInventory() {
     } catch (error) {
       console.error("Failed to update card visibility", error);
       toast.error("Failed to update card visibility");
+    }
+  };
+
+  // Bulk apply a percentage markup to selected cards. Markup is applied to the
+  // current MARKET price (graded price for graded cards, suggested price for
+  // ungraded), overwriting any prior overridePrice. Result is rounded up to
+  // the nearest 5 in the user's primary currency, matching applyGradedMarkup.
+  const handleBulkApplyMarkup = async (pct) => {
+    if (selectedCards.size === 0) return;
+    if (!Number.isFinite(pct)) {
+      toast.info("Enter a valid percentage");
+      return;
+    }
+
+    try {
+      let updatedCount = 0;
+      let skippedCount = 0;
+
+      const updatedItems = collectionItems.map(item => {
+        if (!selectedCards.has(item.entryId)) return item;
+
+        // Compute base market price ignoring any existing override so repeated
+        // markups always reference the underlying market price rather than
+        // compounding off a previous override.
+        const stripped = {
+          ...item,
+          overridePrice: null,
+          overridePriceCurrency: null,
+        };
+        const baseInCurrency = computeItemMetrics(stripped, currency).suggested;
+
+        if (!Number.isFinite(baseInCurrency) || baseInCurrency <= 0) {
+          skippedCount++;
+          return item;
+        }
+
+        const rounded = roundUpMarkup(baseInCurrency, pct);
+        updatedCount++;
+        return {
+          ...item,
+          overridePrice: rounded,
+          overridePriceCurrency: currency,
+        };
+      });
+
+      if (updatedCount === 0) {
+        toast.info("No selected cards have a market price to mark up");
+        return;
+      }
+
+      await saveInventory(updatedItems);
+
+      const sign = pct >= 0 ? "+" : "";
+      let message = `${sign}${pct}% applied to ${updatedCount} card(s)`;
+      if (skippedCount > 0) message += ` (${skippedCount} skipped — no market price)`;
+      triggerQuickAddFeedback(message);
+    } catch (error) {
+      console.error("Failed to apply bulk markup", error);
+      toast.error("Failed to apply markup");
     }
   };
 
@@ -1778,26 +1858,77 @@ export function MyInventory() {
       </Card>
 
       {/* Bulk Actions */}
-      {sortedItems.length > 0 && (
+      {sortedItems.length > 0 && (() => {
+        const visibleGradedCount = filteredItems.filter(i => i.isGraded === true).length;
+        const visibleUngradedCount = filteredItems.filter(i => !i.isGraded).length;
+        return (
         <Card className="rounded-2xl p-3 sm:p-4 shadow">
           <CardContent className="p-0">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
-              <button
-                onClick={toggleSelectAll}
-                className="flex items-center gap-2 px-3 py-1.5 sm:py-2 rounded-lg border hover:bg-accent transition"
-              >
-                {selectAll || selectedCards.size > 0 ? (
-                  <CheckSquare className="h-4 w-4 sm:h-5 sm:w-5" />
-                ) : (
-                  <Square className="h-4 w-4 sm:h-5 sm:w-5" />
-                )}
-                <span className="text-xs sm:text-sm font-semibold">
-                  {selectedCards.size > 0 ? `${selectedCards.size} selected` : 'Select All'}
-                </span>
-              </button>
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                <button
+                  onClick={toggleSelectAll}
+                  className="flex items-center gap-2 px-3 py-1.5 sm:py-2 rounded-lg border hover:bg-accent transition"
+                >
+                  {selectAll || selectedCards.size > 0 ? (
+                    <CheckSquare className="h-4 w-4 sm:h-5 sm:w-5" />
+                  ) : (
+                    <Square className="h-4 w-4 sm:h-5 sm:w-5" />
+                  )}
+                  <span className="text-xs sm:text-sm font-semibold">
+                    {selectedCards.size > 0 ? `${selectedCards.size} selected` : 'Select All'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectVisibleByGraded(true)}
+                  disabled={visibleGradedCount === 0}
+                  title={visibleGradedCount === 0 ? "No graded cards visible" : "Select all graded cards in current view"}
+                  className="text-xs h-7 sm:h-9 px-2 sm:px-3 rounded-lg border border-purple-300 text-purple-700 hover:bg-purple-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Graded ({visibleGradedCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectVisibleByGraded(false)}
+                  disabled={visibleUngradedCount === 0}
+                  title={visibleUngradedCount === 0 ? "No ungraded cards visible" : "Select all ungraded cards in current view"}
+                  className="text-xs h-7 sm:h-9 px-2 sm:px-3 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Ungraded ({visibleUngradedCount})
+                </button>
+              </div>
 
               {selectedCards.size > 0 && (
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                  {/* Bulk percentage markup */}
+                  <div className="flex items-center gap-1 h-7 sm:h-9 border border-purple-300 rounded-md px-1.5 bg-purple-50">
+                    <Percent className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-purple-700 flex-shrink-0" />
+                    <input
+                      type="number"
+                      step="any"
+                      value={bulkMarkupPct}
+                      onChange={(e) => setBulkMarkupPct(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleBulkApplyMarkup(parseFloat(bulkMarkupPct));
+                        }
+                      }}
+                      placeholder="10"
+                      aria-label="Markup percentage"
+                      className="w-12 sm:w-14 px-1 text-xs sm:text-sm bg-transparent outline-none text-purple-900 placeholder:text-purple-400"
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-5 sm:h-6 px-1.5 sm:px-2 text-[10px] sm:text-xs border-purple-400 text-purple-700 hover:bg-purple-100"
+                      onClick={() => handleBulkApplyMarkup(parseFloat(bulkMarkupPct))}
+                      title="Apply % markup over market price to all selected cards"
+                    >
+                      Apply
+                    </Button>
+                  </div>
                   {(() => {
                     const selectedItems = collectionItems.filter(item => selectedCards.has(item.entryId));
                     const allHidden = selectedItems.every(item => item.excludeFromSale);
@@ -1855,7 +1986,8 @@ export function MyInventory() {
             </div>
           </CardContent>
         </Card>
-      )}
+        );
+      })()}
 
       {/* Inventory Grid */}
       <div className="grid gap-3">
