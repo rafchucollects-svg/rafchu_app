@@ -639,6 +639,45 @@ function hasUserChosenImage(item) {
   return false;
 }
 
+/**
+ * How "customized" is this inventory item? Used as a tie-breaker when we
+ * find duplicate old entries pointing at the same physical card and need
+ * to decide which one to keep. Higher = more user-set data we don't want
+ * to lose.
+ */
+function customizationScore(item) {
+  if (!item) return 0;
+  let score = 0;
+  if (item.imageManuallySet === true) score += 8;
+  if (
+    typeof item.image === "string" &&
+    (item.image.includes("firebasestorage.googleapis.com") ||
+      item.image.includes("storage.googleapis.com") ||
+      item.image.startsWith("data:"))
+  ) {
+    score += 4;
+  }
+  if (item.manualPrice != null && item.manualPrice !== "") score += 2;
+  if (
+    item.overridePrice != null &&
+    !Number.isNaN(Number(item.overridePrice))
+  ) {
+    score += 2;
+  }
+  if (item.excludeFromSale === true) score += 1;
+  return score;
+}
+
+/** Composite identity for a CardLadder card row — name + number + grade. */
+function compositeKey(item) {
+  return [
+    (item?.name || "").toLowerCase().trim(),
+    (item?.number || "").toLowerCase().trim(),
+    (item?.gradingCompany || "").toLowerCase().trim(),
+    (item?.grade || "").toLowerCase().trim(),
+  ].join("|");
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function CardLadderImport({ onClose, collectionName }) {
@@ -757,54 +796,102 @@ export function CardLadderImport({ onClose, collectionName }) {
       const nonCardLadder = currentItems.filter(
         (it) => it.source !== "cardladder"
       );
-      const oldCardLadder = currentItems.filter(
+      const oldCardLadderRaw = currentItems.filter(
         (it) => it.source === "cardladder"
       );
 
+      // ── Step 1.5: Pre-dedup oldCardLadder by slab/cert number ──────
+      // Earlier versions of the matcher could leave duplicate inventory
+      // rows pointing at the same physical card. Collapse them now,
+      // keeping the most-customized survivor (manual image > manual
+      // price > override price > exclude flag) so we don't lose user data.
+      const slabSurvivors = new Map();
+      const noSlab = [];
+      let slabDuplicatesRemoved = 0;
+      for (const old of oldCardLadderRaw) {
+        const slab = old.cardladderData?.slabSerial;
+        if (!slab) {
+          noSlab.push(old);
+          continue;
+        }
+        const existing = slabSurvivors.get(slab);
+        if (!existing) {
+          slabSurvivors.set(slab, old);
+        } else {
+          slabDuplicatesRemoved++;
+          if (customizationScore(old) > customizationScore(existing)) {
+            slabSurvivors.set(slab, old);
+          }
+        }
+      }
+      const oldCardLadder = [...slabSurvivors.values(), ...noSlab];
+
       // Build lookup of existing cards for field preservation. We index by
-      // every stable identifier we can: ladderId (legacy CSVs only), slab
-      // serial / cert # (legacy + new CSVs), and a composite fallback.
+      // every stable identifier we can: ladderId (legacy CSVs only) and
+      // slab serial / cert # (legacy + new CSVs). Composite is handled in
+      // Pass 2 of matching, scanning the deduped list directly.
       const oldCardMap = new Map();
       for (const old of oldCardLadder) {
         const lid = old.cardladderData?.ladderId;
         if (lid) oldCardMap.set(`lid:${lid}`, old);
         const slab = old.cardladderData?.slabSerial;
         if (slab) oldCardMap.set(`slab:${slab}`, old);
-        const compositeKey = [
-          (old.name || "").toLowerCase().trim(),
-          (old.number || "").toLowerCase().trim(),
-          (old.gradingCompany || "").toLowerCase().trim(),
-          (old.grade || "").toLowerCase().trim(),
-        ].join("|");
-        if (!oldCardMap.has(`comp:${compositeKey}`)) {
-          oldCardMap.set(`comp:${compositeKey}`, old);
-        }
       }
 
-      const findOldMatch = (card) => {
+      // ── Step 2: Two-pass matching with claim tracking ──────────────
+      // Each old card may be claimed by AT MOST ONE parsed card, so two
+      // CSV rows that share a composite key (e.g. two different cert #s
+      // of the same Pikachu PSA 10) can never both inherit the same
+      // entryId. Pass 1 binds stable IDs; Pass 2 fills in the rest by
+      // composite key, preferring the most-customized unclaimed old.
+      const matchedOldFor = new Array(parsedCards.length).fill(null);
+      const claimedEntryIds = new Set();
+
+      // Pass 1: stable-ID matching (ladderId, then slab/cert #)
+      parsedCards.forEach((card, idx) => {
         const lid = card.cardladderData?.ladderId;
         const slab = card.cardladderData?.slabSerial;
-        if (lid) {
-          const m = oldCardMap.get(`lid:${lid}`);
-          if (m) return m;
+        let m = null;
+        if (lid) m = oldCardMap.get(`lid:${lid}`) || null;
+        if (!m && slab) m = oldCardMap.get(`slab:${slab}`) || null;
+        if (m && !claimedEntryIds.has(m.entryId)) {
+          matchedOldFor[idx] = m;
+          claimedEntryIds.add(m.entryId);
         }
-        if (slab) {
-          const m = oldCardMap.get(`slab:${slab}`);
-          if (m) return m;
-        }
-        const compositeKey = [
-          (card.name || "").toLowerCase().trim(),
-          (card.number || "").toLowerCase().trim(),
-          (card.gradingCompany || "").toLowerCase().trim(),
-          (card.grade || "").toLowerCase().trim(),
-        ].join("|");
-        return oldCardMap.get(`comp:${compositeKey}`);
-      };
+      });
 
-      // ── Step 2: Decide per parsed card whether to preserve ──────────
-      // matches[i] = { oldCard, preservesImage } for parsedCards[i].
-      const matches = parsedCards.map((card) => {
-        const oldCard = findOldMatch(card) || null;
+      // Pass 2: composite-key fallback. For each still-unmatched parsed
+      // card, scan dedupedOldCardLadder for the most-customized unclaimed
+      // old card with the same composite key.
+      parsedCards.forEach((card, idx) => {
+        if (matchedOldFor[idx]) return;
+        const target = compositeKey(card);
+        let best = null;
+        let bestScore = -1;
+        for (const old of oldCardLadder) {
+          if (claimedEntryIds.has(old.entryId)) continue;
+          if (compositeKey(old) !== target) continue;
+          const s = customizationScore(old);
+          if (s > bestScore) {
+            best = old;
+            bestScore = s;
+          }
+        }
+        if (best) {
+          matchedOldFor[idx] = best;
+          claimedEntryIds.add(best.entryId);
+        }
+      });
+
+      // Old cards that nothing claimed are duplicates / orphans and will
+      // be dropped from the rebuilt inventory. Tally for the result toast.
+      const orphanedOldCards = oldCardLadder.filter(
+        (o) => !claimedEntryIds.has(o.entryId)
+      ).length;
+      const duplicatesRemoved = slabDuplicatesRemoved + orphanedOldCards;
+
+      const matches = parsedCards.map((card, idx) => {
+        const oldCard = matchedOldFor[idx] || null;
         return {
           oldCard,
           preservesImage: oldCard ? hasUserChosenImage(oldCard) : false,
@@ -883,10 +970,26 @@ export function CardLadderImport({ onClose, collectionName }) {
           merged.image = oldCard.image;
         }
 
-        // Preserve manual price
+        // Preserve manual price (legacy field, still supported)
         if (oldCard.manualPrice != null && oldCard.manualPrice !== "") {
           merged.manualPrice = oldCard.manualPrice;
           merged.manualPriceCurrency = oldCard.manualPriceCurrency || null;
+        }
+
+        // Preserve manual override price — what the inline price editor and
+        // the +5% / +10% markup buttons actually write to. Without this,
+        // every re-import would silently revert your custom prices.
+        if (
+          oldCard.overridePrice != null &&
+          !Number.isNaN(Number(oldCard.overridePrice))
+        ) {
+          merged.overridePrice = oldCard.overridePrice;
+          merged.overridePriceCurrency = oldCard.overridePriceCurrency || null;
+        }
+
+        // Preserve marketplace-visibility flag
+        if (oldCard.excludeFromSale === true) {
+          merged.excludeFromSale = true;
         }
 
         return merged;
@@ -900,17 +1003,20 @@ export function CardLadderImport({ onClose, collectionName }) {
       const imagesFound = imageResults.filter(Boolean).length;
       const preservedImages = mergedCards.filter((c) => c.imageManuallySet === true).length;
       const preservedPrices = mergedCards.filter(
-        (c) => c.manualPrice != null && c.manualPrice !== ""
+        (c) =>
+          (c.manualPrice != null && c.manualPrice !== "") ||
+          (c.overridePrice != null && !Number.isNaN(Number(c.overridePrice)))
       ).length;
 
       setImportResult({
         success: true,
         imported: mergedCards.length,
-        removed: oldCardLadder.length,
+        removed: oldCardLadderRaw.length,
         total: updatedItems.length,
         imagesFound,
         preservedImages,
         preservedPrices,
+        duplicatesRemoved,
       });
     } catch (err) {
       console.error("Import failed:", err);
@@ -1197,6 +1303,11 @@ export function CardLadderImport({ onClose, collectionName }) {
                   {importResult.preservedPrices > 0 && (
                     <p className="text-xs text-green-600 mt-0.5">
                       {importResult.preservedPrices} manual price{importResult.preservedPrices !== 1 ? "s" : ""} preserved
+                    </p>
+                  )}
+                  {importResult.duplicatesRemoved > 0 && (
+                    <p className="text-xs text-amber-700 mt-0.5">
+                      Cleaned up {importResult.duplicatesRemoved} duplicate{importResult.duplicatesRemoved !== 1 ? "s" : ""} from prior imports
                     </p>
                   )}
                   <Button variant="outline" className="mt-4" onClick={onClose}>
