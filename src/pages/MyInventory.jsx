@@ -330,6 +330,33 @@ export function MyInventory() {
     );
   }, [filteredItems, currency, roundUpPrices]);
 
+  // Graded vs ungraded split of the Suggested (vendor) value. Mirrors the
+  // rounding logic of `totals.suggested` so the two pieces always add up to
+  // the displayed total. Used to show a quick "what % of my book value is
+  // graded vs raw" breakdown under the totals row.
+  const suggestedSplit = useMemo(() => {
+    const acc = {
+      gradedSuggested: 0,
+      ungradedSuggested: 0,
+      gradedCount: 0,
+      ungradedCount: 0,
+    };
+    const items = Array.isArray(filteredItems) ? filteredItems : [];
+    for (const item of items) {
+      const stats = computeItemMetrics(item, currency);
+      const qty = Number(item.quantity) || 1;
+      const value = (roundUpPrices ? Math.ceil(stats.suggested) : stats.suggested) * qty;
+      if (item.isGraded) {
+        acc.gradedSuggested += value;
+        acc.gradedCount += qty;
+      } else {
+        acc.ungradedSuggested += value;
+        acc.ungradedCount += qty;
+      }
+    }
+    return acc;
+  }, [filteredItems, currency, roundUpPrices]);
+
   // Ownership-split totals (always computed from the UNFILTERED enriched set so
   // the "Your inventory vs Consigned" header is stable regardless of active filters).
   const ownershipTotals = useMemo(() => {
@@ -1704,6 +1731,46 @@ export function MyInventory() {
               <div>Low: {formatPrice(totals.cmLowest)}</div>
               <div className="text-primary">Suggested: {formatPrice(totals.suggested)}</div>
             </div>
+
+            {/* Graded vs ungraded breakdown of the Suggested (vendor) value.
+                Only useful when both types are present in the current view —
+                under a Graded-only or Ungraded-only filter the breakdown is
+                already implied by totals.suggested above. */}
+            {filterGraded === "all" &&
+              suggestedSplit.gradedCount > 0 &&
+              suggestedSplit.ungradedCount > 0 && (() => {
+                const total = totals.suggested || 0;
+                const gradedPct = total > 0
+                  ? Math.round((suggestedSplit.gradedSuggested / total) * 100)
+                  : 0;
+                const ungradedPct = total > 0 ? 100 - gradedPct : 0;
+                return (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-md border border-purple-200 bg-purple-50 px-3 py-2">
+                      <div className="text-purple-700 flex items-center justify-between">
+                        <span className="font-medium">Graded</span>
+                        <span className="text-[10px] tabular-nums">
+                          {suggestedSplit.gradedCount} card{suggestedSplit.gradedCount !== 1 ? "s" : ""} · {gradedPct}%
+                        </span>
+                      </div>
+                      <div className="font-semibold text-sm text-purple-900 mt-0.5">
+                        {formatPrice(suggestedSplit.gradedSuggested)}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+                      <div className="text-blue-700 flex items-center justify-between">
+                        <span className="font-medium">Ungraded</span>
+                        <span className="text-[10px] tabular-nums">
+                          {suggestedSplit.ungradedCount} card{suggestedSplit.ungradedCount !== 1 ? "s" : ""} · {ungradedPct}%
+                        </span>
+                      </div>
+                      <div className="font-semibold text-sm text-blue-900 mt-0.5">
+                        {formatPrice(suggestedSplit.ungradedSuggested)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
             {/* Ownership breakdown — only shown when the vendor actually has consigned items */}
             {hasConsignedItems && (
