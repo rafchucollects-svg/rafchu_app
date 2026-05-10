@@ -4,7 +4,9 @@ import {
   getAuth,
   connectAuthEmulator,
   GoogleAuthProvider,
-  signInWithCredential,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut as firebaseSignOut,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -79,71 +81,68 @@ try {
   }
 }
 
+// Heuristic: detect environments where popup-based OAuth flows are blocked or
+// broken (in-app browsers in social apps, very old WebViews, etc.). For these
+// we go straight to the redirect flow. Everywhere else we try the popup first
+// and fall back to redirect on known popup-failure error codes.
+function shouldUseRedirectAuth() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /FBAN|FBAV|Instagram|Line|TikTok|MicroMessenger|Snapchat|Pinterest|LinkedInApp/i.test(ua);
+}
+
+const POPUP_FALLBACK_CODES = new Set([
+  "auth/popup-blocked",
+  "auth/popup-closed-by-user",
+  "auth/cancelled-popup-request",
+  "auth/operation-not-supported-in-this-environment",
+  "auth/web-storage-unsupported",
+]);
+
 export function AppWrapper() {
-  // Clean up any leftover GIS modal on auth state change
+  // Complete any in-flight redirect-based Google sign-in. When the user is
+  // bounced through `rafchu-tcg-app.firebaseapp.com/__/auth/handler` and back,
+  // the credential is delivered here on next page load. We swallow the
+  // "no redirect in progress" case silently — that's the common path.
   useEffect(() => {
-    const container = document.getElementById("gsi-btn-container");
-    if (container) container.remove();
+    if (!auth) return;
+    getRedirectResult(auth).catch((err) => {
+      if (err?.code && err.code !== "auth/no-auth-event") {
+        console.error("Redirect sign-in failed:", err);
+        toast.error("Sign-in failed: " + (err.message || err.code));
+      }
+    });
   }, []);
 
-  // Google Sign-In using Google Identity Services (GIS) — bypasses redirect_uri entirely
-  const handleGoogleLogin = useMemo(() => () => {
+  // Google Sign-In via Firebase Auth's built-in handler. This routes through
+  // `rafchu-tcg-app.firebaseapp.com/__/auth/handler`, which means the origin
+  // the app is loaded from does NOT need to be registered as an OAuth
+  // "Authorized JavaScript origin" — only as a Firebase Auth authorized
+  // domain. This avoids the `Error 400: origin_mismatch` GIS path entirely.
+  const handleGoogleLogin = useMemo(() => async () => {
     if (!auth) {
       toast.error("Authentication not initialized");
       return;
     }
 
-    // Wait for GIS script to load
-    if (!window.google?.accounts?.id) {
-      toast.info("Google sign-in is loading, please try again in a moment.");
+    const provider = new GoogleAuthProvider();
+
+    if (shouldUseRedirectAuth()) {
+      await signInWithRedirect(auth, provider);
       return;
     }
 
-    const GOOGLE_CLIENT_ID = "1045008710585-kh31cut39285d0vo20o3481nsv9qvtk3.apps.googleusercontent.com";
-
-    window.google.accounts.id.initialize({
-      client_id: GOOGLE_CLIENT_ID,
-      callback: async (response) => {
-        try {
-          const credential = GoogleAuthProvider.credential(response.credential);
-          await signInWithCredential(auth, credential);
-          // Remove GIS modal if present
-          const container = document.getElementById("gsi-btn-container");
-          if (container) container.remove();
-        } catch (err) {
-          console.error("Firebase credential sign-in failed:", err);
-          toast.error("Sign-in failed: " + (err.message || "Unknown error"));
-        }
-      },
-    });
-
-    window.google.accounts.id.prompt((notification) => {
-      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-        // One Tap not available (e.g. user dismissed it before, or 3rd party cookies blocked)
-        // Fall back to the button/popup flow
-        const btnContainer = document.createElement("div");
-        btnContainer.id = "gsi-btn-container";
-        btnContainer.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
-        
-        const inner = document.createElement("div");
-        inner.style.cssText = "background:white;border-radius:16px;padding:32px;text-align:center;max-width:360px;width:90%;";
-        inner.innerHTML = '<p style="margin-bottom:16px;font-weight:600;font-size:16px;">Sign in with Google</p><div id="gsi-btn"></div><button id="gsi-cancel" style="margin-top:16px;padding:8px 16px;border:1px solid #ddd;border-radius:8px;background:white;cursor:pointer;font-size:14px;">Cancel</button>';
-        btnContainer.appendChild(inner);
-        document.body.appendChild(btnContainer);
-
-        window.google.accounts.id.renderButton(
-          document.getElementById("gsi-btn"),
-          { theme: "outline", size: "large", width: 280, text: "signin_with" }
-        );
-
-        document.getElementById("gsi-cancel").onclick = () => {
-          btnContainer.remove();
-        };
-        btnContainer.onclick = (e) => {
-          if (e.target === btnContainer) btnContainer.remove();
-        };
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (err) {
+      if (err?.code && POPUP_FALLBACK_CODES.has(err.code)) {
+        await signInWithRedirect(auth, provider);
+        return;
       }
-    });
+      console.error("Google sign-in failed:", err);
+      toast.error("Sign-in failed: " + (err.message || "Unknown error"));
+      throw err;
+    }
   }, []);
 
   // Email/Password Sign Up

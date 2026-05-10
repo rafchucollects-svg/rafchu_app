@@ -2421,109 +2421,198 @@ async function updateItemsInBatches(db, items, updaterFn, batchSize = 20) {
   return results;
 }
 
-async function updateVendorInventory(db, userId, inventoryData) {
+// Returns true if a `prices` block contains any usable market data. We treat
+// an empty object or a block with no positive numbers as "no fresh data".
+function hasUsablePrices(prices) {
+  if (!prices || typeof prices !== 'object') return false;
+  const tcg = prices.tcgplayer || {};
+  const cm = prices.cardmarket || {};
+  const candidates = [
+    tcg.market_price, tcg.mid_price,
+    cm.avg30, cm.avg7, cm.average,
+    cm.lowest_near_mint, cm.lowest, cm.lowest_listing,
+    prices.us?.market, prices.eu?.avg, prices.eu?.low,
+    prices.justtcg?.price,
+  ];
+  return candidates.some(v => Number(v) > 0);
+}
+
+/**
+ * Build one canonical price snapshot per cardKey for a single user's items.
+ *
+ * Why this exists:
+ *   The previous implementation looked up `card_database/{cardKey}` once per
+ *   inventory entry. When the central doc had `prices: null` (because the
+ *   upstream pricing API failed for that card), each entry fell back to its
+ *   OWN original snapshot from `addedAt` time. Two entries sharing a cardKey
+ *   would then keep diverging snapshots forever, producing different displayed
+ *   prices for what is literally the same card. This was directly observable
+ *   on the Celebi V (Fusion Strike #245) duplicates.
+ *
+ * Resolution priority per cardKey:
+ *   1. Central `card_database[cardKey].prices` if it has any usable numbers.
+ *   2. Otherwise, the freshest non-empty `prices` snapshot among the user's
+ *      own entries that share this cardKey (so duplicates converge on each
+ *      other rather than continuing to drift apart).
+ *   3. Otherwise no canonical snapshot — leave each entry alone.
+ *
+ * Only case (1) bumps `pricesLastUpdated` to "now". Case (2) preserves the
+ * snapshot's original timestamp so monitoring/staleness checks remain honest:
+ * we did not refresh anything, we just deduplicated existing data.
+ */
+function buildCanonicalSnapshots(items, cardCacheMap) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = generateCardKey(item);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+
+  const nowIso = new Date().toISOString();
+  const snapshots = new Map();
+
+  for (const [key, group] of groups) {
+    const cached = cardCacheMap.get(key);
+
+    if (cached && hasUsablePrices(cached.prices)) {
+      snapshots.set(key, {
+        prices: cached.prices,
+        image: cached.image || null,
+        gradedPrices: cached.gradedPrices || null,
+        pricesLastUpdated: nowIso,
+        source: 'central',
+      });
+      continue;
+    }
+
+    let best = null;
+    for (const it of group) {
+      if (!hasUsablePrices(it.prices)) continue;
+      const ts = it.pricesLastUpdated ? Date.parse(it.pricesLastUpdated) : 0;
+      if (!best || ts > best.ts) {
+        best = {
+          ts,
+          prices: it.prices,
+          image: it.image || null,
+          pricesLastUpdated: it.pricesLastUpdated || null,
+        };
+      }
+    }
+    if (best) {
+      snapshots.set(key, {
+        prices: best.prices,
+        image: best.image,
+        gradedPrices: cached?.gradedPrices || null,
+        pricesLastUpdated: best.pricesLastUpdated,
+        source: 'self',
+      });
+    }
+  }
+
+  return snapshots;
+}
+
+async function updateVendorInventory(db, userId, inventoryData, cardCacheMap) {
   if (!inventoryData.items || !Array.isArray(inventoryData.items)) {
     return;
   }
-  
+
+  const canonicalSnapshots = buildCanonicalSnapshots(inventoryData.items, cardCacheMap);
+
   const updatedItems = await updateItemsInBatches(db, inventoryData.items, async (db, item) => {
-    // Get cached card data
     const cardKey = generateCardKey(item);
-    const cachedCard = await db.collection('card_database').doc(cardKey).get();
-    
-    if (!cachedCard.exists) {
-      return item; // No update available
+    const canonical = canonicalSnapshots.get(cardKey);
+    const cached = cardCacheMap.get(cardKey);
+
+    // No usable data anywhere — preserve the entry exactly as-is. Notably we
+    // do NOT bump `pricesLastUpdated` in this branch.
+    if (!canonical && !cached) {
+      return item;
     }
-    
-    const cached = cachedCard.data();
-    
-    // Create updated item
+
     const updatedItem = {
       ...item,
-      // Update prices field with fresh market data
-      prices: cached.prices || item.prices || {},
-      pricesLastUpdated: new Date().toISOString(),
-      // Update image if not present (include community images) - use null instead of undefined
-      image: item.image || cached.image || item.imageUrl || null,
+      image: item.image || canonical?.image || cached?.image || item.imageUrl || null,
     };
-    
-    // CRITICAL: Recalculate suggested price ONLY if no manual override
+
+    // Apply the canonical snapshot uniformly to every entry sharing this
+    // cardKey. This is what prevents duplicate entries from drifting.
+    if (canonical) {
+      updatedItem.prices = canonical.prices;
+      updatedItem.pricesLastUpdated = canonical.pricesLastUpdated;
+    }
+
+    // CRITICAL: Recalculate suggested price ONLY if no manual override.
+    // Vendor `overridePrice` is sacred — never overwrite it.
     if (item.overridePrice == null || item.overridePrice === undefined) {
-      if (item.isGraded && cached.gradedPrices) {
+      if (item.isGraded && cached?.gradedPrices) {
         const gradeKey = `${item.gradingCompany}-${item.grade}`;
         updatedItem.calculatedSuggestedPrice = cached.gradedPrices[gradeKey] || item.calculatedSuggestedPrice;
-      } else if (cached.prices) {
-        // Calculate suggested price from market prices
-        const newSuggestedPrice = calculateSuggestedPrice(cached.prices);
-        // Only update if we found a valid new price (don't overwrite with 0)
+      } else if (canonical && hasUsablePrices(canonical.prices)) {
+        const newSuggestedPrice = calculateSuggestedPrice(canonical.prices);
         updatedItem.calculatedSuggestedPrice = newSuggestedPrice > 0 ? newSuggestedPrice : item.calculatedSuggestedPrice;
       }
     }
-    
+
     // CRITICAL: NEVER modify these protected fields
     // - overridePrice, overridePriceCurrency (vendor manual price)
     // - quantity, condition, entryId, addedAt
     // - excludeFromSale, isGraded, gradingCompany, grade
-    
+
     return updatedItem;
   });
-  
-  // Sanitize all items to strip undefined values before writing to Firestore
+
   const sanitizedItems = sanitizeForFirestore(updatedItems);
-  
-  // Save updated inventory
+
   await db.collection('collections').doc(userId).set(
     { items: sanitizedItems },
     { merge: true }
   );
 }
 
-async function updateCollectorCollection(db, userId, collectionData) {
+async function updateCollectorCollection(db, userId, collectionData, cardCacheMap) {
   if (!collectionData.items || !Array.isArray(collectionData.items)) {
     return;
   }
-  
+
+  const canonicalSnapshots = buildCanonicalSnapshots(collectionData.items, cardCacheMap);
+
   const updatedItems = await updateItemsInBatches(db, collectionData.items, async (db, item) => {
-    // Get cached card data
     const cardKey = generateCardKey(item);
-    const cachedCard = await db.collection('card_database').doc(cardKey).get();
-    
-    if (!cachedCard.exists) {
-      return item; // No update available
+    const canonical = canonicalSnapshots.get(cardKey);
+    const cached = cardCacheMap.get(cardKey);
+
+    if (!canonical && !cached) {
+      return item;
     }
-    
-    const cached = cachedCard.data();
-    
-    // Create updated item
+
     const updatedItem = {
       ...item,
-      // Update prices field with fresh market data
-      prices: cached.prices || item.prices || {},
-      pricesLastUpdated: new Date().toISOString(),
-      // Update image if not present (include community images) - use null instead of undefined
-      image: item.image || cached.image || item.imageUrl || null,
+      image: item.image || canonical?.image || cached?.image || item.imageUrl || null,
     };
-    
-    // Update graded price if applicable
-    if (item.isGraded && cached.gradedPrices) {
+
+    if (canonical) {
+      updatedItem.prices = canonical.prices;
+      updatedItem.pricesLastUpdated = canonical.pricesLastUpdated;
+    }
+
+    // Update graded price if applicable.
+    if (item.isGraded && cached?.gradedPrices) {
       const gradeKey = `${item.gradingCompany}-${item.grade}`;
       const newGradedPrice = cached.gradedPrices[gradeKey];
-      // Only update if we found a valid new price (don't overwrite with undefined/0)
       updatedItem.gradedPrice = (newGradedPrice && newGradedPrice > 0) ? newGradedPrice : item.gradedPrice;
     }
-    
+
     // CRITICAL: NEVER modify these protected fields
     // - manualPrice (collector manual value)
     // - quantity, condition, entryId, addedAt
     // - isGraded, gradingCompany, grade
-    
+
     return updatedItem;
   });
-  
-  // Sanitize all items to strip undefined values before writing to Firestore
+
   const sanitizedItems = sanitizeForFirestore(updatedItems);
-  
-  // Save updated collection
+
   await db.collection('collector_collections').doc(userId).set(
     { items: sanitizedItems },
     { merge: true }
@@ -2533,14 +2622,23 @@ async function updateCollectorCollection(db, userId, collectionData) {
 async function updateAllUserCollections(db) {
   console.log('🔄 Updating user data...');
   const stats = { vendors: 0, collectors: 0, errors: 0, failedUsers: [] };
-  
+
+  // Pre-fetch the entire card_database into memory ONCE per refresh run.
+  // This is both faster (no per-item Firestore reads) and race-free: every
+  // entry sharing a cardKey resolves against the same in-memory record.
+  console.log('   📚 Loading card_database into memory...');
+  const cardCacheMap = new Map();
+  const cardDbSnap = await db.collection('card_database').get();
+  cardDbSnap.forEach(doc => cardCacheMap.set(doc.id, doc.data()));
+  console.log(`   📚 Loaded ${cardCacheMap.size} cards from card_database`);
+
   // Update vendor inventories
   console.log('   📦 Updating vendor inventories...');
   const vendorSnapshot = await db.collection('collections').get();
-  
+
   for (const doc of vendorSnapshot.docs) {
     try {
-      await updateVendorInventory(db, doc.id, doc.data());
+      await updateVendorInventory(db, doc.id, doc.data(), cardCacheMap);
       stats.vendors++;
     } catch (error) {
       console.error(`Failed to update vendor ${doc.id}:`, error);
@@ -2553,14 +2651,14 @@ async function updateAllUserCollections(db) {
       });
     }
   }
-  
+
   // Update collector collections
   console.log('   📦 Updating collector collections...');
   const collectorSnapshot = await db.collection('collector_collections').get();
-  
+
   for (const doc of collectorSnapshot.docs) {
     try {
-      await updateCollectorCollection(db, doc.id, doc.data());
+      await updateCollectorCollection(db, doc.id, doc.data(), cardCacheMap);
       stats.collectors++;
     } catch (error) {
       console.error(`Failed to update collector ${doc.id}:`, error);
@@ -2573,7 +2671,7 @@ async function updateAllUserCollections(db) {
       });
     }
   }
-  
+
   return stats;
 }
 
