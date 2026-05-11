@@ -693,6 +693,19 @@ async function composeInventoryGridImage({
   return { blob, failedItems };
 }
 
+// Color palette for the condition chip, mirroring the Tailwind colors used
+// in the inventory list. Each tier gets a distinct hue so a quick glance at
+// the story image tells you which cards are NM vs played without reading
+// the chip text.
+const CONDITION_CHIP_COLORS = {
+  M:  { bg: "#059669", text: "#ffffff" }, // emerald-600
+  NM: { bg: "#16a34a", text: "#ffffff" }, // green-600
+  EX: { bg: "#65a30d", text: "#ffffff" }, // lime-600
+  GD: { bg: "#d97706", text: "#ffffff" }, // amber-600
+  PL: { bg: "#ea580c", text: "#ffffff" }, // orange-600
+  PO: { bg: "#dc2626", text: "#ffffff" }, // red-600
+};
+
 function drawCardPriceLabel(ctx, opts) {
   const {
     cardX, cardY, cardW, cardH,
@@ -700,13 +713,40 @@ function drawCardPriceLabel(ctx, opts) {
     labelColor, conditionText,
   } = opts;
 
-  // Label sized relative to card width so it scales correctly across
-  // 1x1 (large), 2x2, and 3x3 grids without needing per-grid tuning.
-  const boxW = Math.min(cardW * 0.82, 380);
-  const boxH = Math.max(cardH * 0.14, 56);
+  // Narrower label so the card's bottom-corner info (set number, rarity,
+  // artist signature) stays visible. The label sizes itself to the actual
+  // text length within a tight max-width.
+  const primaryText = formatWholePrice(price, currency);
+  const secondaryText = secondaryCurrency
+    ? formatWholePrice(roundToNearest10(convertCurrency(price, secondaryCurrency, currency)), secondaryCurrency)
+    : null;
+
+  const boxH = Math.max(cardH * 0.13, 52);
+
+  // Measure the widest text we'll actually render at our target font size,
+  // then add a small horizontal pad. This collapses empty space on either
+  // side of the price for short values like "€140" while still expanding
+  // gracefully for "€12,950" + secondary line.
+  const measureFontPx = boxH * 0.6;
+  ctx.save();
+  ctx.font = `800 ${measureFontPx}px ${FONT_STACK}`;
+  const primaryW = ctx.measureText(primaryText).width;
+  let measuredW = primaryW;
+  if (secondaryText) {
+    ctx.font = `600 ${measureFontPx * 0.62}px ${FONT_STACK}`;
+    const secondaryW = ctx.measureText(secondaryText).width;
+    measuredW = Math.max(measuredW, secondaryW);
+  }
+  ctx.restore();
+
+  const horizontalPad = boxH * 0.55;
+  const boxW = Math.min(
+    Math.max(measuredW + horizontalPad * 2, cardW * 0.32),
+    cardW * 0.7
+  );
   const boxX = cardX + (cardW - boxW) / 2;
   const boxY = cardY + cardH - boxH - cardH * 0.04;
-  const radius = boxH * 0.22;
+  const radius = boxH * 0.24;
 
   // Soft shadow under the label so it pops off the card.
   ctx.save();
@@ -718,36 +758,43 @@ function drawCardPriceLabel(ctx, opts) {
   ctx.fill();
   ctx.restore();
 
-  const primaryText = formatWholePrice(price, currency);
-  const secondaryText = secondaryCurrency
-    ? formatWholePrice(roundToNearest10(convertCurrency(price, secondaryCurrency, currency)), secondaryCurrency)
-    : null;
-
-  const hPad = boxW * 0.06;
-  const maxTextW = boxW - hPad * 2;
+  const maxTextW = boxW - horizontalPad * 2;
 
   ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  // Condition chip pinned to top-right of the label (ungraded only).
+  // Condition chip pinned to top-right of the label, color-coded by tier.
   if (conditionText) {
-    const chipPadX = boxH * 0.18;
-    const chipH = boxH * 0.42;
-    ctx.font = `800 ${chipH * 0.62}px ${FONT_STACK}`;
+    const palette = CONDITION_CHIP_COLORS[conditionText] || CONDITION_CHIP_COLORS.NM;
+    const chipPadX = boxH * 0.22;
+    const chipH = boxH * 0.46;
+    ctx.font = `900 ${chipH * 0.64}px ${FONT_STACK}`;
     const chipTextW = ctx.measureText(conditionText).width;
     const chipW = chipTextW + chipPadX * 2;
-    const chipX = boxX + boxW - chipW - boxH * 0.14;
-    const chipY = boxY - chipH * 0.45;
+    const chipX = boxX + boxW - chipW * 0.6;
+    const chipY = boxY - chipH * 0.5;
 
     ctx.save();
-    drawRoundedRect(ctx, chipX, chipY, chipW, chipH, chipH * 0.32);
-    ctx.fillStyle = "#ffffff";
+    ctx.shadowColor = "rgba(0, 0, 0, 0.35)";
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 2;
+    drawRoundedRect(ctx, chipX, chipY, chipW, chipH, chipH * 0.35);
+    ctx.fillStyle = palette.bg;
     ctx.fill();
-    ctx.fillStyle = labelColor;
-    ctx.font = `800 ${chipH * 0.62}px ${FONT_STACK}`;
-    ctx.fillText(conditionText, chipX + chipW / 2, chipY + chipH / 2 + 1);
     ctx.restore();
+
+    // Thin white outline so the chip reads on top of any backdrop hue.
+    ctx.save();
+    drawRoundedRect(ctx, chipX, chipY, chipW, chipH, chipH * 0.35);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.fillStyle = palette.text;
+    ctx.font = `900 ${chipH * 0.64}px ${FONT_STACK}`;
+    ctx.fillText(conditionText, chipX + chipW / 2, chipY + chipH / 2 + 1);
   }
 
   if (secondaryText) {
