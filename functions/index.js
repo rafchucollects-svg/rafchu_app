@@ -4666,3 +4666,141 @@ exports.parseReceipt = parseReceipt;
 // CARD PHOTO SCANNER (Gemini Vision)
 // ================================================================================
 exports.parseCardPhoto = parseCardPhoto;
+
+// ================================================================================
+// IMAGE PROXY
+// ================================================================================
+// Re-serves any allowed remote image with our own permissive CORS headers so
+// the Story Sale Generator can draw it onto a <canvas> and export to PNG.
+// Without this, images on hosts that don't send `Access-Control-Allow-Origin`
+// poison the canvas (`crossOrigin="anonymous"` fails) and the export breaks.
+//
+// Security:
+//   - GET only.
+//   - HTTPS-only upstream URLs.
+//   - Hostname must not be an IP literal or localhost (blocks SSRF against
+//     metadata services, internal networks, etc).
+//   - Response must be an image/* content-type.
+//   - Hard cap on upstream response size.
+//   - Short upstream timeout.
+//
+// Cache:
+//   - Card images are immutable for our purposes (we never edit them after
+//     upload), so we cache aggressively. Browser + Cloud CDN can serve
+//     repeat hits without re-invoking the function.
+
+const IMAGE_PROXY_MAX_BYTES = 12 * 1024 * 1024; // 12 MB upstream cap
+const IMAGE_PROXY_TIMEOUT_MS = 15000;
+
+function isBlockedProxyHostname(hostname) {
+  if (!hostname) return true;
+  const h = hostname.toLowerCase();
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  // IPv4 literal
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true;
+  // IPv6 literal (wrapped in brackets in URLs)
+  if (h.includes(':')) return true;
+  // Common cloud metadata aliases
+  if (h === 'metadata.google.internal' || h === 'metadata') return true;
+  return false;
+}
+
+exports.proxyImage = functions.runWith({
+  memory: '256MB',
+  timeoutSeconds: 30,
+}).https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  if (req.method !== 'GET') {
+    res.status(405).send('Method not allowed');
+    return;
+  }
+
+  const target = typeof req.query.url === 'string' ? req.query.url : null;
+  if (!target) {
+    res.status(400).send('Missing url parameter');
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch {
+    res.status(400).send('Invalid URL');
+    return;
+  }
+
+  if (parsed.protocol !== 'https:') {
+    res.status(400).send('Only https URLs are allowed');
+    return;
+  }
+  if (isBlockedProxyHostname(parsed.hostname)) {
+    res.status(403).send('Host not allowed');
+    return;
+  }
+
+  // Strip our own cache-buster param before forwarding so the upstream
+  // CDN's cache key isn't fragmented by client-side cache-busting.
+  parsed.searchParams.delete('_rb');
+  const upstreamUrl = parsed.toString();
+
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'Accept': 'image/*,*/*;q=0.8',
+        'User-Agent': 'rafchu-tcg-app/1.0 (+image-proxy)',
+      },
+      signal: AbortSignal.timeout(IMAGE_PROXY_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.error('[proxyImage] upstream fetch failed:', parsed.hostname, err.message);
+    res.status(502).send(`Upstream fetch failed: ${err.message}`);
+    return;
+  }
+
+  if (!upstream.ok) {
+    res.status(upstream.status).send(`Upstream returned ${upstream.status}`);
+    return;
+  }
+
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!contentType.startsWith('image/')) {
+    res.status(415).send(`Upstream not an image (content-type: ${contentType || 'unknown'})`);
+    return;
+  }
+
+  const contentLengthHeader = upstream.headers.get('content-length');
+  const declaredLength = contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0;
+  if (declaredLength && declaredLength > IMAGE_PROXY_MAX_BYTES) {
+    res.status(413).send('Upstream image too large');
+    return;
+  }
+
+  let buffer;
+  try {
+    const arrayBuf = await upstream.arrayBuffer();
+    if (arrayBuf.byteLength > IMAGE_PROXY_MAX_BYTES) {
+      res.status(413).send('Upstream image too large');
+      return;
+    }
+    buffer = Buffer.from(arrayBuf);
+  } catch (err) {
+    console.error('[proxyImage] failed reading upstream body:', err.message);
+    res.status(502).send('Failed reading upstream body');
+    return;
+  }
+
+  res.set('Content-Type', contentType);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.set('X-Proxied-From', parsed.hostname);
+  res.status(200).send(buffer);
+});

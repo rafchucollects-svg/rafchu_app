@@ -439,26 +439,66 @@ function computeInventoryGridLayout(count, isGraded) {
   return { cols: 2, rows: 2 };
 }
 
+// Cache-bust appended to bypass any stale non-CORS response the browser
+// may have cached BEFORE the Storage bucket's CORS config was applied.
+// Without this, the browser keeps reusing the cached failed response
+// even after the bucket now serves correct CORS headers.
+function addCacheBuster(src) {
+  if (!src) return src;
+  if (src.startsWith("data:") || src.startsWith("blob:")) return src;
+  const cacheKey = "rcsv1"; // bump if we ever need to re-bust all clients
+  return src.includes("?") ? `${src}&_rb=${cacheKey}` : `${src}?_rb=${cacheKey}`;
+}
+
+// Server-side image proxy. Used as a fallback when the direct load fails
+// (CORS-locked host, 404, etc). The proxy fetches the image server-side
+// — where CORS rules don't apply — and re-serves it with our own
+// permissive CORS headers so canvas export works.
+const IMAGE_PROXY_BASE = "https://us-central1-rafchu-tcg-app.cloudfunctions.net/proxyImage";
+
+function buildProxyUrl(src) {
+  return `${IMAGE_PROXY_BASE}?url=${encodeURIComponent(src)}`;
+}
+
+function tryLoadCrossOriginImage(src) {
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    img.crossOrigin = "anonymous";
+    img.referrerPolicy = "no-referrer";
+    img.onload = () => resolve({ img, error: null });
+    img.onerror = () => resolve({ img: null, error: "load_failed" });
+    img.src = src;
+  });
+}
+
 // Image loader that NEVER rejects. We can't let a single bad image taint
 // the canvas (toBlob would throw and the whole batch would fail), so any
 // failure is reported back to the caller via {img: null, error}. The
 // compositor then draws a styled placeholder for that slot and the rest
 // of the grid generates normally.
-function loadCardImage(src) {
-  return new Promise((resolve) => {
-    if (!src) {
-      resolve({ img: null, error: "No image on this card" });
-      return;
-    }
-    const img = new window.Image();
-    img.crossOrigin = "anonymous";
-    // Helps some CDNs avoid blocking on Referer-based checks (common with
-    // Firebase Storage when CORS isn't configured for the web origin).
-    img.referrerPolicy = "no-referrer";
-    img.onload = () => resolve({ img, error: null });
-    img.onerror = () => resolve({ img: null, error: "Image blocked by CORS or unreachable" });
-    img.src = src;
-  });
+//
+// Loading strategy:
+//   1. Try the original URL directly with crossOrigin=anonymous. Fast path
+//      for hosts that already send proper CORS headers (our Firebase
+//      Storage bucket, Pokemon TCG API CDN, etc).
+//   2. If the direct load fails, retry via the proxyImage Cloud Function
+//      which fetches server-side (no CORS) and re-serves with our headers.
+//      Bypasses any browser-cached CORS failures and any host that simply
+//      doesn't speak CORS.
+async function loadCardImage(src) {
+  if (!src) {
+    return { img: null, error: "No image on this card" };
+  }
+
+  const direct = await tryLoadCrossOriginImage(addCacheBuster(src));
+  if (direct.img) return direct;
+
+  console.warn("[StorySale] Direct load failed, retrying via proxy:", src);
+  const viaProxy = await tryLoadCrossOriginImage(buildProxyUrl(src));
+  if (viaProxy.img) return viaProxy;
+
+  console.warn("[StorySale] Proxy load also failed:", src);
+  return { img: null, error: "Image unreachable (direct + proxy both failed)" };
 }
 
 // Draws a styled placeholder card when the real image couldn't be loaded.

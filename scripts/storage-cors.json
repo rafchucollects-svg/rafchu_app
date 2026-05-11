@@ -1,0 +1,17 @@
+[
+  {
+    "origin": [
+      "https://rafchu-tcg-app.web.app",
+      "https://rafchu-tcg-app.firebaseapp.com",
+      "http://localhost:5173",
+      "http://localhost:5000"
+    ],
+    "method": ["GET"],
+    "maxAgeSeconds": 3600,
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Cache-Control"
+    ]
+  }
+]
