@@ -1,74 +1,205 @@
 import React from 'react';
 
 /**
- * Displays the logo for a grading company
- * Falls back to styled text if logo isn't available
+ * Grading company badges styled to mimic each company's real slab labels.
+ *
+ * Each badge has:
+ *   - A brand-colored container (matches the company's real packaging)
+ *   - An inline SVG "wordmark" rendered with brand-appropriate typography
+ *     and color treatments (e.g. BGS gold gradient, CGC red+gold)
+ *   - A high-contrast grade pill on the right
+ *
+ * Public API is unchanged:
+ *   <GradingBadge company="PSA" grade={9} />
+ *   <GradingCompanyLogo company="BGS" grade={9.5} />
  */
 
-// Logo URLs - using CDN/public URLs for grading company logos
-const GRADING_COMPANY_LOGOS = {
-  PSA: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/Professional_Sports_Authenticator_logo.svg/512px-Professional_Sports_Authenticator_logo.svg.png',
-  BGS: 'https://www.beckett.com/grading/images/bgs-logo-small.png',
-  CGC: 'https://www.cgccomics.com/images/cgc-logo.svg',
-  SGC: 'https://www.sgccard.com/wp-content/uploads/2021/03/SGC-Logo-Shield.png',
-  ACE: 'https://www.acegrading.com/cdn/shop/files/Ace_Grading_-_Brandmark_Logo_-_Full_Color.svg',
-};
+// ---------- Brand-styled inline SVG wordmarks ----------
+// These are deliberately rendered as SVG so they read cleanly at very small
+// sizes, don't depend on external image hosts, and let us bake in
+// brand-specific effects (gold gradients, etc.) that plain text can't do.
 
-// Fallback colors for each company (used for styled badges when logo unavailable)
-const GRADING_COMPANY_COLORS = {
-  PSA: { bg: 'bg-red-600', text: 'text-white', border: 'border-red-700' },
-  BGS: { bg: 'bg-black', text: 'text-yellow-400', border: 'border-yellow-500' },
-  CGC: { bg: 'bg-green-600', text: 'text-white', border: 'border-green-700' },
-  SGC: { bg: 'bg-blue-800', text: 'text-white', border: 'border-blue-900' },
-  ACE: { bg: 'bg-purple-600', text: 'text-white', border: 'border-purple-700' },
-  Other: { bg: 'bg-gray-600', text: 'text-white', border: 'border-gray-700' },
-};
-
-export const GradingCompanyLogo = ({ company, size = 'sm', showText = true, grade }) => {
-  const sizeClasses = {
-    xs: 'h-3 w-auto',
-    sm: 'h-4 w-auto',
-    md: 'h-5 w-auto',
-    lg: 'h-6 w-auto',
-  };
-
-  const badgeSizes = {
-    xs: 'text-[10px] px-1 py-0.5',
-    sm: 'text-xs px-1.5 py-0.5',
-    md: 'text-sm px-2 py-1',
-    lg: 'text-base px-2.5 py-1',
-  };
-
-  const colors = GRADING_COMPANY_COLORS[company] || GRADING_COMPANY_COLORS.Other;
-  const logoUrl = GRADING_COMPANY_LOGOS[company];
-
-  // Use a simple styled badge instead of external images (more reliable)
+const WordmarkSvg = ({ text, fill, gradientId, gradientStops, letterSpacing = '-0.04em' }) => {
+  // viewBox sized so the wordmark fills the badge height nicely
+  const width = text.length * 14 + 4;
   return (
-    <span 
-      className={`inline-flex items-center gap-1 font-bold rounded ${colors.bg} ${colors.text} ${colors.border} border ${badgeSizes[size]}`}
-      title={`${company}${grade ? ` ${grade}` : ''}`}
+    <svg
+      viewBox={`0 0 ${width} 22`}
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      className="h-full w-auto block"
+      style={{ display: 'block' }}
     >
-      <span className="font-black tracking-tight">{company}</span>
-      {showText && grade && <span className="font-semibold">{grade}</span>}
+      {gradientStops && (
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            {gradientStops.map((s, i) => (
+              <stop key={i} offset={s.offset} stopColor={s.color} />
+            ))}
+          </linearGradient>
+        </defs>
+      )}
+      <text
+        x={width / 2}
+        y="17"
+        textAnchor="middle"
+        fontFamily="'Helvetica Neue', 'Arial Black', Arial, sans-serif"
+        fontSize="19"
+        fontWeight="900"
+        fill={gradientStops ? `url(#${gradientId})` : fill}
+        letterSpacing={letterSpacing}
+      >
+        {text}
+      </text>
+    </svg>
+  );
+};
+
+const PsaWordmark = () => (
+  <WordmarkSvg text="PSA" fill="#ffffff" />
+);
+
+const BgsWordmark = () => (
+  <WordmarkSvg
+    text="BGS"
+    gradientId="bgs-gold-gradient"
+    gradientStops={[
+      { offset: '0%', color: '#fef3c7' },
+      { offset: '45%', color: '#d4af37' },
+      { offset: '100%', color: '#8b6914' },
+    ]}
+  />
+);
+
+const CgcWordmark = () => (
+  <WordmarkSvg
+    text="CGC"
+    gradientId="cgc-gold-gradient"
+    gradientStops={[
+      { offset: '0%', color: '#fef3c7' },
+      { offset: '50%', color: '#fbbf24' },
+      { offset: '100%', color: '#b45309' },
+    ]}
+  />
+);
+
+const SgcWordmark = () => (
+  <WordmarkSvg text="SGC" fill="#ffffff" />
+);
+
+const AceWordmark = () => (
+  <WordmarkSvg text="ACE" fill="#ffffff" />
+);
+
+const GenericWordmark = ({ text }) => (
+  <WordmarkSvg text={text || '??'} fill="#ffffff" />
+);
+
+// ---------- Brand color schemes ----------
+// Each company's slab label has a distinctive visual identity; we mirror
+// that here so the badges feel like real grading labels rather than
+// generic colored rectangles.
+
+const COMPANY_STYLES = {
+  PSA: {
+    Wordmark: PsaWordmark,
+    container: 'bg-gradient-to-b from-red-600 to-red-700 border-red-800',
+    gradePill: 'bg-white text-red-700',
+  },
+  BGS: {
+    Wordmark: BgsWordmark,
+    container: 'bg-gradient-to-b from-neutral-900 to-black border-amber-600',
+    gradePill: 'bg-amber-400 text-black',
+  },
+  CGC: {
+    Wordmark: CgcWordmark,
+    container: 'bg-gradient-to-b from-red-700 to-red-900 border-amber-500',
+    gradePill: 'bg-amber-300 text-red-900',
+  },
+  SGC: {
+    Wordmark: SgcWordmark,
+    container: 'bg-gradient-to-b from-emerald-700 to-emerald-900 border-emerald-900',
+    gradePill: 'bg-white text-emerald-800',
+  },
+  ACE: {
+    Wordmark: AceWordmark,
+    container: 'bg-gradient-to-b from-purple-600 to-purple-800 border-purple-900',
+    gradePill: 'bg-white text-purple-700',
+  },
+};
+
+const getStyle = (company) =>
+  COMPANY_STYLES[company] || {
+    Wordmark: () => <GenericWordmark text={company} />,
+    container: 'bg-gradient-to-b from-gray-600 to-gray-700 border-gray-800',
+    gradePill: 'bg-white text-gray-800',
+  };
+
+// ---------- Public components ----------
+
+/**
+ * Compact inline badge used in lists/tables. Backwards-compatible with the
+ * previous text-only implementation: same props, drop-in replacement.
+ */
+export const GradingBadge = ({ company, grade, className = '' }) => {
+  const { Wordmark, container, gradePill } = getStyle(company);
+
+  return (
+    <span
+      className={`inline-flex items-stretch gap-0 rounded border shadow-sm overflow-hidden ${container} ${className}`}
+      title={`${company || 'Graded'}${grade !== undefined && grade !== null && grade !== '' ? ` ${grade}` : ''}`}
+    >
+      <span className="flex items-center px-1.5 py-0.5 h-[20px]">
+        <Wordmark />
+      </span>
+      {grade !== undefined && grade !== null && grade !== '' && (
+        <span
+          className={`flex items-center justify-center px-1.5 text-[11px] font-black leading-none ${gradePill}`}
+        >
+          {grade}
+        </span>
+      )}
     </span>
   );
 };
 
 /**
- * Simple inline badge version for compact displays
+ * Larger sizeable variant. Same brand-styled rendering, sized via the `size`
+ * prop. Used in modals / detail views.
  */
-export const GradingBadge = ({ company, grade, className = '' }) => {
-  const colors = GRADING_COMPANY_COLORS[company] || GRADING_COMPANY_COLORS.Other;
-  
+export const GradingCompanyLogo = ({ company, size = 'sm', grade, showText = true }) => {
+  const { Wordmark, container, gradePill } = getStyle(company);
+
+  const heightMap = {
+    xs: 'h-4',
+    sm: 'h-5',
+    md: 'h-6',
+    lg: 'h-7',
+  };
+  const textSizeMap = {
+    xs: 'text-[10px]',
+    sm: 'text-xs',
+    md: 'text-sm',
+    lg: 'text-base',
+  };
+
   return (
-    <span 
-      className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded border ${colors.bg} ${colors.text} ${colors.border} whitespace-nowrap ${className}`}
+    <span
+      className={`inline-flex items-stretch rounded border shadow-sm overflow-hidden ${container} ${heightMap[size] || heightMap.sm}`}
+      title={`${company || 'Graded'}${grade ? ` ${grade}` : ''}`}
     >
-      <span className="font-black">{company}</span>
-      <span>{grade}</span>
+      <span className="flex items-center px-2">
+        <Wordmark />
+      </span>
+      {showText && grade !== undefined && grade !== null && grade !== '' && (
+        <span
+          className={`flex items-center justify-center px-2 font-black leading-none ${gradePill} ${textSizeMap[size] || textSizeMap.sm}`}
+        >
+          {grade}
+        </span>
+      )}
     </span>
   );
 };
 
 export default GradingCompanyLogo;
-
