@@ -5,10 +5,11 @@ import { Input } from "@/components/ui/input";
 import {
   Camera, Upload, X, Check, AlertTriangle, Loader2,
   Search, RotateCcw, Download, Image, Pencil, Plus, Share2,
+  LayoutGrid, Package,
 } from "lucide-react";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { useApp } from "@/contexts/AppContext";
-import { computeItemMetrics, convertCurrency, formatCurrency } from "@/utils/cardHelpers";
+import { computeItemMetrics, convertCurrency, formatCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 
 function getDisplayPriceForItem(item, currency, roundUp) {
   let price;
@@ -382,6 +383,305 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
   return canvasToBlob(canvas, "image/png");
 }
 
+// ── Inventory-mode helpers ──────────────────────────────────────
+// These power the "Build from Inventory" flow where we synthesize the
+// story image from scratch using each card's stored picture rather than
+// overlaying labels on a user-uploaded photo.
+
+const STORY_FOOTER_NOTE = "Certs and images for reference, DM for pics";
+const STORY_BG_COLOR = "#1a1a2e";
+const GRADED_PER_IMAGE = 4;   // 2x2 max
+const UNGRADED_PER_IMAGE = 9; // 3x3 max
+
+function getCardImageUrl(item) {
+  return item.image || item.imageUrl || null;
+}
+
+// Compact Cardmarket-style condition badge (M / NM / EX / GD / PL / PO).
+// We always force the European/Cardmarket vocabulary regardless of the
+// viewer's region because the user explicitly asked for the CM labels on
+// the generated sale images.
+function getCompactCMCondition(condition) {
+  const cmLabel = getConditionDisplayLabel(condition || "NM", true);
+  const map = {
+    "Mint": "M",
+    "Near Mint": "NM",
+    "Excellent": "EX",
+    "Good": "GD",
+    "Light Played": "LP",
+    "Played": "PL",
+    "Poor": "PO",
+  };
+  return map[cmLabel] || cmLabel.slice(0, 2).toUpperCase();
+}
+
+function chunkBy(items, perChunk) {
+  const out = [];
+  for (let i = 0; i < items.length; i += perChunk) {
+    out.push(items.slice(i, i + perChunk));
+  }
+  return out;
+}
+
+// Tight-fit grid math: smallest grid that holds `count` cards while
+// respecting the per-mode maximum. Bias toward portrait-friendly shapes
+// for the 1080x1920 story canvas (extra columns over extra rows).
+function computeInventoryGridLayout(count, isGraded) {
+  if (count <= 1) return { cols: 1, rows: 1 };
+  if (count === 2) return { cols: 2, rows: 1 };
+  if (count === 3) return { cols: 3, rows: 1 };
+  if (count === 4) return { cols: 2, rows: 2 };
+  // From here only ungraded (graded chunks cap at 4).
+  if (!isGraded) {
+    if (count <= 6) return { cols: 3, rows: 2 };
+    return { cols: 3, rows: 3 };
+  }
+  return { cols: 2, rows: 2 };
+}
+
+function loadCardImage(src) {
+  return new Promise((resolve, reject) => {
+    if (!src) return reject(new Error("No image source"));
+    const img = new window.Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => {
+      // Retry without CORS — image will still render, but the resulting
+      // canvas will be tainted and exporting it will fail. We surface
+      // that to the caller as an error rather than silently producing
+      // a broken blob.
+      reject(new Error(`Failed to load image: ${src}`));
+    };
+    img.src = src;
+  });
+}
+
+function drawRoundedRect(ctx, x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+}
+
+async function composeInventoryGridImage({
+  items,
+  isGraded,
+  currency,
+  secondaryCurrency,
+  includeSecondaryCurrency,
+  labelColor,
+  showCondition,
+}) {
+  const W = STORY_CANVAS_WIDTH;
+  const H = STORY_CANVAS_HEIGHT;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  // Background
+  ctx.fillStyle = STORY_BG_COLOR;
+  ctx.fillRect(0, 0, W, H);
+
+  // Layout regions
+  const sidePad = 48;
+  const topPad = 60;
+  const bottomPad = 150;
+  const gridW = W - sidePad * 2;
+  const gridH = H - topPad - bottomPad;
+
+  const { cols, rows } = computeInventoryGridLayout(items.length, isGraded);
+  const cellW = gridW / cols;
+  const cellH = gridH / rows;
+  const cellPad = 18;
+
+  // Preload all card images in parallel. If any fail, propagate so the
+  // caller can surface an error rather than ship a broken image.
+  const loadedImages = await Promise.all(
+    items.map((item) => loadCardImage(getCardImageUrl(item)))
+  );
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const img = loadedImages[i];
+
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+
+    // Center the last row when it isn't full so partial grids stay
+    // visually balanced instead of dangling against one edge.
+    const rowItemCount = Math.min(cols, items.length - row * cols);
+    const rowOffset = ((cols - rowItemCount) * cellW) / 2;
+
+    const cellX = sidePad + rowOffset + col * cellW;
+    const cellY = topPad + row * cellH;
+
+    const innerX = cellX + cellPad;
+    const innerY = cellY + cellPad;
+    const innerW = cellW - cellPad * 2;
+    const innerH = cellH - cellPad * 2;
+
+    const scale = Math.min(innerW / img.naturalWidth, innerH / img.naturalHeight);
+    const drawW = img.naturalWidth * scale;
+    const drawH = img.naturalHeight * scale;
+    const drawX = innerX + (innerW - drawW) / 2;
+    const drawY = innerY + (innerH - drawH) / 2;
+
+    // Drop shadow under each card so they feel like physical cards on
+    // a backdrop rather than flat cutouts.
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+    ctx.shadowBlur = 28;
+    ctx.shadowOffsetY = 10;
+    ctx.drawImage(img, drawX, drawY, drawW, drawH);
+    ctx.restore();
+
+    // Price label overlay: sticker-on-card style at the bottom of each card.
+    const price = getDisplayPriceForItem(item, currency, false);
+    if (price > 0) {
+      drawCardPriceLabel(ctx, {
+        cardX: drawX,
+        cardY: drawY,
+        cardW: drawW,
+        cardH: drawH,
+        price,
+        currency,
+        secondaryCurrency: includeSecondaryCurrency ? secondaryCurrency : null,
+        labelColor: labelColor || DEFAULT_LABEL_COLOR,
+        conditionText: showCondition && !item.isGraded
+          ? getCompactCMCondition(item.condition)
+          : null,
+      });
+    }
+  }
+
+  // Footer note centered at the bottom of the canvas.
+  ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
+  ctx.font = `600 28px ${FONT_STACK}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(STORY_FOOTER_NOTE, W / 2, H - bottomPad / 2);
+
+  return canvasToBlob(canvas, "image/png");
+}
+
+function drawCardPriceLabel(ctx, opts) {
+  const {
+    cardX, cardY, cardW, cardH,
+    price, currency, secondaryCurrency,
+    labelColor, conditionText,
+  } = opts;
+
+  // Label sized relative to card width so it scales correctly across
+  // 1x1 (large), 2x2, and 3x3 grids without needing per-grid tuning.
+  const boxW = Math.min(cardW * 0.82, 380);
+  const boxH = Math.max(cardH * 0.14, 56);
+  const boxX = cardX + (cardW - boxW) / 2;
+  const boxY = cardY + cardH - boxH - cardH * 0.04;
+  const radius = boxH * 0.22;
+
+  // Soft shadow under the label so it pops off the card.
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 4;
+  drawRoundedRect(ctx, boxX, boxY, boxW, boxH, radius);
+  ctx.fillStyle = labelColor;
+  ctx.fill();
+  ctx.restore();
+
+  const primaryText = formatWholePrice(price, currency);
+  const secondaryText = secondaryCurrency
+    ? formatWholePrice(roundToNearest10(convertCurrency(price, secondaryCurrency, currency)), secondaryCurrency)
+    : null;
+
+  const hPad = boxW * 0.06;
+  const maxTextW = boxW - hPad * 2;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  // Condition chip pinned to top-right of the label (ungraded only).
+  if (conditionText) {
+    const chipPadX = boxH * 0.18;
+    const chipH = boxH * 0.42;
+    ctx.font = `800 ${chipH * 0.62}px ${FONT_STACK}`;
+    const chipTextW = ctx.measureText(conditionText).width;
+    const chipW = chipTextW + chipPadX * 2;
+    const chipX = boxX + boxW - chipW - boxH * 0.14;
+    const chipY = boxY - chipH * 0.45;
+
+    ctx.save();
+    drawRoundedRect(ctx, chipX, chipY, chipW, chipH, chipH * 0.32);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.fillStyle = labelColor;
+    ctx.font = `800 ${chipH * 0.62}px ${FONT_STACK}`;
+    ctx.fillText(conditionText, chipX + chipW / 2, chipY + chipH / 2 + 1);
+    ctx.restore();
+  }
+
+  if (secondaryText) {
+    const gap = boxH * 0.04;
+    const primarySize = fitText(ctx, primaryText, 800, maxTextW, boxH * 0.52);
+    const secondarySize = fitText(ctx, secondaryText, 600, maxTextW, primarySize * 0.62);
+    const totalH = primarySize + secondarySize + gap;
+    const topY = boxY + (boxH - totalH) / 2;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `800 ${primarySize}px ${FONT_STACK}`;
+    ctx.fillText(primaryText, boxX + boxW / 2, topY + primarySize / 2);
+
+    ctx.font = `600 ${secondarySize}px ${FONT_STACK}`;
+    ctx.globalAlpha = 0.9;
+    ctx.fillText(secondaryText, boxX + boxW / 2, topY + primarySize + gap + secondarySize / 2);
+    ctx.globalAlpha = 1;
+  } else {
+    const fontSize = fitText(ctx, primaryText, 800, maxTextW, boxH * 0.62);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `800 ${fontSize}px ${FONT_STACK}`;
+    ctx.fillText(primaryText, boxX + boxW / 2, boxY + boxH / 2);
+  }
+}
+
+function createInventoryImageEntry({ blob, items, gridConfig, currency, isGraded }) {
+  const url = URL.createObjectURL(blob);
+  return {
+    id: `inv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    file: null,
+    preview: url,
+    phase: "done",
+    cardSlots: items.map((item, i) => ({
+      index: i,
+      detected: { name: item.name, isManual: true, isGraded: item.isGraded, gradingCompany: item.gradingCompany, grade: item.grade },
+      matchedItem: item,
+      candidates: [item],
+      price: getDisplayPriceForItem(item, currency, false),
+      manualPrice: "",
+      confirmed: true,
+      labelPosition: DEFAULT_LABEL_POSITION,
+      showSearch: false,
+      searchQuery: "",
+    })),
+    gridConfig,
+    generatedImage: url,
+    generatedBlob: blob,
+    storyMode: true,
+    labelColor: DEFAULT_LABEL_COLOR,
+    includeSecondaryCurrency: true,
+    error: null,
+    statusText: "",
+    sourceMode: "inventory",
+    isGradedSet: isGraded,
+  };
+}
+
 // ── Per-image state structure ───────────────────────────────────
 function createImageEntry(file) {
   return {
@@ -410,6 +710,14 @@ export function StorySaleGenerator() {
   const [draggingLabel, setDraggingLabel] = useState(null);
   const [manualStickerQuery, setManualStickerQuery] = useState("");
   const [globalError, setGlobalError] = useState(null);
+
+  // Inventory-mode picker state
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState("graded"); // 'graded' | 'ungraded'
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [pickerSelected, setPickerSelected] = useState(() => new Set());
+  const [pickerGenerating, setPickerGenerating] = useState(false);
+  const [pickerError, setPickerError] = useState(null);
 
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -645,6 +953,121 @@ export function StorySaleGenerator() {
     setManualStickerQuery("");
   }, [activeId, currency, roundUp]);
 
+  // ── Inventory picker (Build from Inventory) ───────────────────
+
+  const inventoryByMode = useMemo(() => {
+    const graded = [];
+    const ungraded = [];
+    inventoryItems.forEach((item) => {
+      if (item.isGraded) graded.push(item);
+      else ungraded.push(item);
+    });
+    return { graded, ungraded };
+  }, [inventoryItems]);
+
+  const pickerCandidates = useMemo(() => {
+    const list = pickerMode === "graded" ? inventoryByMode.graded : inventoryByMode.ungraded;
+    if (!pickerSearch.trim()) return list;
+    const q = normalizeText(pickerSearch);
+    const qNumber = normalizeCardNumber(pickerSearch);
+    return list.filter((item) => {
+      const haystack = `${normalizeText(item.name)} ${normalizeText(item.set)} ${normalizeCardNumber(item.number)} ${normalizeText(item.gradingCompany)} ${item.grade || ""}`;
+      return haystack.includes(q) || (qNumber && normalizeCardNumber(item.number).includes(qNumber));
+    });
+  }, [pickerMode, pickerSearch, inventoryByMode]);
+
+  const openPicker = useCallback(() => {
+    setPickerOpen(true);
+    setPickerError(null);
+  }, []);
+
+  const closePicker = useCallback(() => {
+    setPickerOpen(false);
+    setPickerSelected(new Set());
+    setPickerSearch("");
+    setPickerError(null);
+  }, []);
+
+  const switchPickerMode = useCallback((mode) => {
+    setPickerMode((prev) => {
+      if (prev === mode) return prev;
+      // Clear selection when switching modes since graded/ungraded mixing is
+      // disabled per UX decision (one mode per generated session).
+      setPickerSelected(new Set());
+      return mode;
+    });
+  }, []);
+
+  const togglePickerSelection = useCallback((entryKey) => {
+    setPickerSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(entryKey)) next.delete(entryKey);
+      else next.add(entryKey);
+      return next;
+    });
+  }, []);
+
+  const generateFromInventory = useCallback(async () => {
+    setPickerError(null);
+    const isGraded = pickerMode === "graded";
+    const perImage = isGraded ? GRADED_PER_IMAGE : UNGRADED_PER_IMAGE;
+
+    const selectedItems = (isGraded ? inventoryByMode.graded : inventoryByMode.ungraded)
+      .filter((item) => pickerSelected.has(item.entryId || item.cardId || item.id))
+      .map((item) => ({
+        ...item,
+        _price: getDisplayPriceForItem(item, currency, roundUp),
+      }))
+      .sort((a, b) => (b._price || 0) - (a._price || 0));
+
+    if (selectedItems.length === 0) {
+      setPickerError("Select at least one card to build the story.");
+      return;
+    }
+
+    const chunks = chunkBy(selectedItems, perImage);
+    setPickerGenerating(true);
+
+    try {
+      const newEntries = [];
+      for (const chunk of chunks) {
+        const gridConfig = computeInventoryGridLayout(chunk.length, isGraded);
+        const blob = await composeInventoryGridImage({
+          items: chunk,
+          isGraded,
+          currency,
+          secondaryCurrency,
+          includeSecondaryCurrency: true,
+          labelColor: DEFAULT_LABEL_COLOR,
+          showCondition: !isGraded,
+        });
+        newEntries.push(createInventoryImageEntry({
+          blob,
+          items: chunk,
+          gridConfig,
+          currency,
+          isGraded,
+        }));
+      }
+
+      setImages((prev) => [...prev, ...newEntries]);
+      setActiveId(newEntries[newEntries.length - 1]?.id || null);
+      // Close the picker and reset selection now that the images are queued.
+      setPickerOpen(false);
+      setPickerSelected(new Set());
+      setPickerSearch("");
+    } catch (err) {
+      console.error("Inventory story generation failed:", err);
+      setPickerError(
+        err?.message?.includes("Failed to load image")
+          ? "One of the card images couldn't be loaded. Try removing that card or re-uploading its photo in your inventory."
+          : "Failed to generate story images. Please try again."
+      );
+    } finally {
+      setPickerGenerating(false);
+    }
+  }, [pickerMode, pickerSelected, inventoryByMode, currency, secondaryCurrency, roundUp]);
+
   // ── Generate image for active entry ───────────────────────────
 
   const generateImage = useCallback(async (imageEntry) => {
@@ -790,7 +1213,7 @@ export function StorySaleGenerator() {
         <div>
           <h1 className="text-2xl font-bold">Story Sale Generator</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Upload photos of graded cards and generate sale images with prices
+            Upload a photo of cards or build a story directly from inventory
           </p>
         </div>
         {hasImages && (
@@ -822,6 +1245,13 @@ export function StorySaleGenerator() {
                 <Button
                   variant="outline"
                   size="sm"
+                  onClick={openPicker}
+                >
+                  <LayoutGrid className="h-3.5 w-3.5 mr-1" /> From Inventory
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Plus className="h-3.5 w-3.5 mr-1" /> Add More
@@ -843,15 +1273,18 @@ export function StorySaleGenerator() {
             >
               <Image className="h-12 w-12 text-muted-foreground/40" />
               <p className="text-sm text-muted-foreground text-center">
-                Drag & drop photos of your graded cards, or use the buttons below.
-                You can upload multiple photos at once.
+                Drag &amp; drop a photo of cards, scan with your camera, or build a
+                story directly from your inventory.
               </p>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 justify-center">
                 <Button variant="outline" onClick={() => cameraInputRef.current?.click()}>
                   <Camera className="h-4 w-4 mr-2" /> Take Photo
                 </Button>
                 <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
                   <Upload className="h-4 w-4 mr-2" /> Upload
+                </Button>
+                <Button className="bg-green-600 hover:bg-green-700" onClick={openPicker}>
+                  <LayoutGrid className="h-4 w-4 mr-2" /> From Inventory
                 </Button>
               </div>
             </div>
@@ -946,6 +1379,185 @@ export function StorySaleGenerator() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Build from Inventory picker ────────────────────────── */}
+      {pickerOpen && (
+        <Card className="mb-5 border-green-300">
+          <CardContent className="pt-6">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <h3 className="font-semibold flex items-center gap-2">
+                  <LayoutGrid className="h-4 w-4 text-green-600" />
+                  Build from Inventory
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Pick cards and we'll lay them out automatically.
+                  Graded uses 2x2 grids; ungraded uses 3x3. Selections over the
+                  grid max split into multiple images.
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={closePicker}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {/* Mode toggle */}
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1 mb-3">
+              <button
+                type="button"
+                onClick={() => switchPickerMode("graded")}
+                className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition-colors ${
+                  pickerMode === "graded"
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Package className="h-3.5 w-3.5" />
+                Graded
+                <span className="text-[10px] text-muted-foreground">
+                  ({inventoryByMode.graded.length})
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => switchPickerMode("ungraded")}
+                className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition-colors ${
+                  pickerMode === "ungraded"
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                Ungraded
+                <span className="text-[10px] text-muted-foreground">
+                  ({inventoryByMode.ungraded.length})
+                </span>
+              </button>
+            </div>
+
+            {/* Search */}
+            <Input
+              placeholder={`Search ${pickerMode} inventory...`}
+              value={pickerSearch}
+              onChange={(e) => setPickerSearch(e.target.value)}
+              className="h-9 text-sm mb-2"
+            />
+
+            {/* Selection summary */}
+            <div className="flex items-center justify-between text-xs mb-2">
+              <span className="text-muted-foreground">
+                {pickerSelected.size > 0 ? (
+                  <>
+                    <span className="font-semibold text-foreground">{pickerSelected.size}</span>
+                    {" selected · "}
+                    {(() => {
+                      const perImage = pickerMode === "graded" ? GRADED_PER_IMAGE : UNGRADED_PER_IMAGE;
+                      const imageCount = Math.ceil(pickerSelected.size / perImage);
+                      return `${imageCount} image${imageCount !== 1 ? "s" : ""} will be generated`;
+                    })()}
+                  </>
+                ) : (
+                  `Pick at least 1 card (max ${pickerMode === "graded" ? "4 per image, 2x2" : "9 per image, 3x3"})`
+                )}
+              </span>
+              {pickerSelected.size > 0 && (
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground underline"
+                  onClick={() => setPickerSelected(new Set())}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {/* Inventory list */}
+            <div className="max-h-80 overflow-y-auto rounded-lg border bg-muted/20 divide-y">
+              {pickerCandidates.length === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-6">
+                  {pickerSearch
+                    ? "No matches in inventory."
+                    : `No ${pickerMode} cards in your inventory yet.`}
+                </p>
+              ) : (
+                pickerCandidates.map((item) => {
+                  const key = item.entryId || item.cardId || item.id;
+                  const selected = pickerSelected.has(key);
+                  const price = getDisplayPriceForItem(item, currency, roundUp);
+                  const imageUrl = getCardImageUrl(item);
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => togglePickerSelection(key)}
+                      className={`flex w-full items-center gap-3 p-2 text-left transition-colors ${
+                        selected ? "bg-green-50 hover:bg-green-100" : "hover:bg-muted/40"
+                      }`}
+                    >
+                      <span
+                        className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border-2 ${
+                          selected
+                            ? "bg-green-600 border-green-600 text-white"
+                            : "border-muted-foreground/40 bg-background"
+                        }`}
+                      >
+                        {selected && <Check className="h-3.5 w-3.5" />}
+                      </span>
+                      {imageUrl ? (
+                        <img
+                          src={imageUrl}
+                          alt={item.name}
+                          className="h-12 w-9 rounded object-cover border flex-shrink-0"
+                        />
+                      ) : (
+                        <div className="h-12 w-9 rounded border bg-muted flex-shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{item.name}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">
+                          {item.set}{item.number && ` #${item.number}`}
+                          {item.isGraded
+                            ? ` • ${item.gradingCompany || "Graded"} ${item.grade || ""}`
+                            : ` • ${getCompactCMCondition(item.condition)}`}
+                        </p>
+                      </div>
+                      <span className="text-sm font-semibold text-green-600 flex-shrink-0">
+                        {formatCurrency(price, currency)}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {pickerError && (
+              <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700 mt-3">
+                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                {pickerError}
+              </div>
+            )}
+
+            <Button
+              className="w-full mt-4 bg-green-600 hover:bg-green-700"
+              size="lg"
+              disabled={pickerSelected.size === 0 || pickerGenerating}
+              onClick={generateFromInventory}
+            >
+              {pickerGenerating ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Image className="h-4 w-4 mr-2" />
+                  Generate {pickerSelected.size > 0 ? `(${pickerSelected.size} card${pickerSelected.size !== 1 ? "s" : ""})` : ""}
+                </>
+              )}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {previewImages.length > 1 && (
         <Card className="mb-4">
