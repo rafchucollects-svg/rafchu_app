@@ -439,21 +439,86 @@ function computeInventoryGridLayout(count, isGraded) {
   return { cols: 2, rows: 2 };
 }
 
+// Image loader that NEVER rejects. We can't let a single bad image taint
+// the canvas (toBlob would throw and the whole batch would fail), so any
+// failure is reported back to the caller via {img: null, error}. The
+// compositor then draws a styled placeholder for that slot and the rest
+// of the grid generates normally.
 function loadCardImage(src) {
-  return new Promise((resolve, reject) => {
-    if (!src) return reject(new Error("No image source"));
+  return new Promise((resolve) => {
+    if (!src) {
+      resolve({ img: null, error: "No image on this card" });
+      return;
+    }
     const img = new window.Image();
     img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = () => {
-      // Retry without CORS — image will still render, but the resulting
-      // canvas will be tainted and exporting it will fail. We surface
-      // that to the caller as an error rather than silently producing
-      // a broken blob.
-      reject(new Error(`Failed to load image: ${src}`));
-    };
+    // Helps some CDNs avoid blocking on Referer-based checks (common with
+    // Firebase Storage when CORS isn't configured for the web origin).
+    img.referrerPolicy = "no-referrer";
+    img.onload = () => resolve({ img, error: null });
+    img.onerror = () => resolve({ img: null, error: "Image blocked by CORS or unreachable" });
     img.src = src;
   });
+}
+
+// Draws a styled placeholder card when the real image couldn't be loaded.
+// Looks like a "card outline" with the card name + grade so the user can
+// still tell which slot is for which card in the generated story.
+function drawPlaceholderCard(ctx, x, y, w, h, item) {
+  // Aspect-correct card shape (TCG ~2.5:3.5).
+  const targetRatio = 2.5 / 3.5;
+  let cardW = w;
+  let cardH = w / targetRatio;
+  if (cardH > h) {
+    cardH = h;
+    cardW = h * targetRatio;
+  }
+  const cardX = x + (w - cardW) / 2;
+  const cardY = y + (h - cardH) / 2;
+  const radius = cardW * 0.06;
+
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+  ctx.shadowBlur = 28;
+  ctx.shadowOffsetY = 10;
+
+  const grad = ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
+  grad.addColorStop(0, "#2a2a4a");
+  grad.addColorStop(1, "#1a1a2e");
+  drawRoundedRect(ctx, cardX, cardY, cardW, cardH, radius);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  drawRoundedRect(ctx, cardX, cardY, cardW, cardH, radius);
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const nameSize = fitText(ctx, item.name || "Unknown card", 800, cardW * 0.84, cardW * 0.13);
+  ctx.font = `800 ${nameSize}px ${FONT_STACK}`;
+  ctx.fillText(item.name || "Unknown card", cardX + cardW / 2, cardY + cardH * 0.42);
+
+  if (item.isGraded) {
+    const gradeText = `${item.gradingCompany || "Graded"} ${item.grade || ""}`.trim();
+    const gradeSize = fitText(ctx, gradeText, 600, cardW * 0.84, nameSize * 0.7);
+    ctx.font = `600 ${gradeSize}px ${FONT_STACK}`;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+    ctx.fillText(gradeText, cardX + cardW / 2, cardY + cardH * 0.42 + nameSize * 0.9);
+  }
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
+  const msgSize = nameSize * 0.5;
+  ctx.font = `500 ${msgSize}px ${FONT_STACK}`;
+  ctx.fillText("Image unavailable", cardX + cardW / 2, cardY + cardH * 0.78);
+
+  return { drawX: cardX, drawY: cardY, drawW: cardW, drawH: cardH };
 }
 
 function drawRoundedRect(ctx, x, y, w, h, r) {
@@ -500,15 +565,18 @@ async function composeInventoryGridImage({
   const cellH = gridH / rows;
   const cellPad = 18;
 
-  // Preload all card images in parallel. If any fail, propagate so the
-  // caller can surface an error rather than ship a broken image.
+  // Preload all card images in parallel. `loadCardImage` never rejects,
+  // so a single CORS-blocked or 404 image won't crater the whole batch —
+  // it just resolves with {img: null, error} and we render a placeholder.
   const loadedImages = await Promise.all(
     items.map((item) => loadCardImage(getCardImageUrl(item)))
   );
 
+  const failedItems = [];
+
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const img = loadedImages[i];
+    const { img, error: loadError } = loadedImages[i];
 
     const col = i % cols;
     const row = Math.floor(i / cols);
@@ -526,20 +594,34 @@ async function composeInventoryGridImage({
     const innerW = cellW - cellPad * 2;
     const innerH = cellH - cellPad * 2;
 
-    const scale = Math.min(innerW / img.naturalWidth, innerH / img.naturalHeight);
-    const drawW = img.naturalWidth * scale;
-    const drawH = img.naturalHeight * scale;
-    const drawX = innerX + (innerW - drawW) / 2;
-    const drawY = innerY + (innerH - drawH) / 2;
+    let drawX;
+    let drawY;
+    let drawW;
+    let drawH;
 
-    // Drop shadow under each card so they feel like physical cards on
-    // a backdrop rather than flat cutouts.
-    ctx.save();
-    ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
-    ctx.shadowBlur = 28;
-    ctx.shadowOffsetY = 10;
-    ctx.drawImage(img, drawX, drawY, drawW, drawH);
-    ctx.restore();
+    if (img) {
+      const scale = Math.min(innerW / img.naturalWidth, innerH / img.naturalHeight);
+      drawW = img.naturalWidth * scale;
+      drawH = img.naturalHeight * scale;
+      drawX = innerX + (innerW - drawW) / 2;
+      drawY = innerY + (innerH - drawH) / 2;
+
+      // Drop shadow under each card so they feel like physical cards on
+      // a backdrop rather than flat cutouts.
+      ctx.save();
+      ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+      ctx.shadowBlur = 28;
+      ctx.shadowOffsetY = 10;
+      ctx.drawImage(img, drawX, drawY, drawW, drawH);
+      ctx.restore();
+    } else {
+      const placeholder = drawPlaceholderCard(ctx, innerX, innerY, innerW, innerH, item);
+      drawX = placeholder.drawX;
+      drawY = placeholder.drawY;
+      drawW = placeholder.drawW;
+      drawH = placeholder.drawH;
+      failedItems.push({ item, error: loadError });
+    }
 
     // Price label overlay: sticker-on-card style at the bottom of each card.
     const price = getDisplayPriceForItem(item, currency, false);
@@ -567,7 +649,8 @@ async function composeInventoryGridImage({
   ctx.textBaseline = "middle";
   ctx.fillText(STORY_FOOTER_NOTE, W / 2, H - bottomPad / 2);
 
-  return canvasToBlob(canvas, "image/png");
+  const blob = await canvasToBlob(canvas, "image/png");
+  return { blob, failedItems };
 }
 
 function drawCardPriceLabel(ctx, opts) {
@@ -1030,9 +1113,10 @@ export function StorySaleGenerator() {
 
     try {
       const newEntries = [];
+      const allFailed = [];
       for (const chunk of chunks) {
         const gridConfig = computeInventoryGridLayout(chunk.length, isGraded);
-        const blob = await composeInventoryGridImage({
+        const { blob, failedItems } = await composeInventoryGridImage({
           items: chunk,
           isGraded,
           currency,
@@ -1048,21 +1132,27 @@ export function StorySaleGenerator() {
           currency,
           isGraded,
         }));
+        allFailed.push(...failedItems);
       }
 
       setImages((prev) => [...prev, ...newEntries]);
       setActiveId(newEntries[newEntries.length - 1]?.id || null);
-      // Close the picker and reset selection now that the images are queued.
       setPickerOpen(false);
       setPickerSelected(new Set());
       setPickerSearch("");
+
+      if (allFailed.length > 0) {
+        const names = allFailed.map(({ item }) => item.name).filter(Boolean);
+        const uniqueNames = Array.from(new Set(names));
+        const preview = uniqueNames.slice(0, 4).join(", ");
+        const suffix = uniqueNames.length > 4 ? `, +${uniqueNames.length - 4} more` : "";
+        setGlobalError(
+          `Generated, but ${allFailed.length} card image${allFailed.length !== 1 ? "s" : ""} couldn't be loaded (CORS/network). Placeholders were drawn for: ${preview}${suffix}. Re-upload those photos in inventory for cleaner results.`
+        );
+      }
     } catch (err) {
       console.error("Inventory story generation failed:", err);
-      setPickerError(
-        err?.message?.includes("Failed to load image")
-          ? "One of the card images couldn't be loaded. Try removing that card or re-uploading its photo in your inventory."
-          : "Failed to generate story images. Please try again."
-      );
+      setPickerError("Failed to generate story images. Please try again.");
     } finally {
       setPickerGenerating(false);
     }
@@ -1460,15 +1550,49 @@ export function StorySaleGenerator() {
                   `Pick at least 1 card (max ${pickerMode === "graded" ? "4 per image, 2x2" : "9 per image, 3x3"})`
                 )}
               </span>
-              {pickerSelected.size > 0 && (
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-foreground underline"
-                  onClick={() => setPickerSelected(new Set())}
-                >
-                  Clear
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                {(() => {
+                  // Select All toggles every card in the currently-visible
+                  // (search-filtered) list within the active mode. Toggling
+                  // back to "Deselect" only deselects those visible cards,
+                  // so selections from a previous search are preserved.
+                  const visibleKeys = pickerCandidates.map((item) => item.entryId || item.cardId || item.id);
+                  const visibleSelectedCount = visibleKeys.filter((k) => pickerSelected.has(k)).length;
+                  const allVisibleSelected = visibleKeys.length > 0 && visibleSelectedCount === visibleKeys.length;
+                  const label = allVisibleSelected
+                    ? `Deselect all${pickerSearch ? " visible" : ""}`
+                    : `Select all${pickerSearch ? " visible" : ""} (${visibleKeys.length})`;
+                  return (
+                    <button
+                      type="button"
+                      className="text-green-700 hover:text-green-800 font-semibold disabled:opacity-40 disabled:hover:text-green-700"
+                      disabled={visibleKeys.length === 0}
+                      onClick={() => {
+                        setPickerSelected((prev) => {
+                          const next = new Set(prev);
+                          if (allVisibleSelected) {
+                            visibleKeys.forEach((k) => next.delete(k));
+                          } else {
+                            visibleKeys.forEach((k) => next.add(k));
+                          }
+                          return next;
+                        });
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })()}
+                {pickerSelected.size > 0 && (
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground underline"
+                    onClick={() => setPickerSelected(new Set())}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Inventory list */}
