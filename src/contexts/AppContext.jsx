@@ -241,12 +241,22 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
         if (snap.exists()) {
           const data = snap.data() || {};
           const rawItems = Array.isArray(data.items) ? data.items : [];
+          const missingEntryIds = rawItems.some((item) => !item.entryId);
           const items = rawItems.map((item) => ({
             ...item,
             entryId: item.entryId || crypto.randomUUID(),
           }));
           
           setCollectionItems(items);
+
+          // Persist freshly minted entryIds once so identity is stable across
+          // reloads (deletes/edits key off entryId). Owner-only, guarded by
+          // missingEntryIds so it runs at most once per doc and never loops.
+          if (missingEntryIds && user && viewingUid === user.uid) {
+            setDoc(ref, { items }, { merge: true }).catch((err) =>
+              console.error("Failed to persist entryIds", err),
+            );
+          }
           
           // Load other metadata
           if (Array.isArray(data.history)) {
@@ -575,8 +585,13 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       
       console.log('[addToWishlist] Saving to:', collectionName, 'for path:', currentPath);
       
-      const updatedItems = [...wishlistItems, newItem];
+      // Read the latest stored items before writing so concurrent adds (or a
+      // lagging listener) don't overwrite each other by spreading a stale
+      // in-memory array.
       const ref = doc(db, collectionName, user.uid);
+      const snap = await getDoc(ref);
+      const existing = snap.exists() && Array.isArray(snap.data().items) ? snap.data().items : [];
+      const updatedItems = [...existing, newItem];
       
       await setDoc(ref, { items: updatedItems }, { merge: true });
       return newItem;
@@ -585,7 +600,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       toast.error("Failed to add card. Please try again.");
       return null;
     }
-  }, [user, db, wishlistItems, currentPath]);
+  }, [user, db, currentPath]);
 
   const removeFromWishlist = useCallback(async (entryId) => {
     if (!user || !db) return;
@@ -594,8 +609,11 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       const isCollectorPath = currentPath.includes('/collector/');
       const collectionName = isCollectorPath ? "collector_wishlists" : "wishlists";
       
-      const updatedItems = wishlistItems.filter(item => item.entryId !== entryId);
+      // Read fresh so we filter against the authoritative stored list.
       const ref = doc(db, collectionName, user.uid);
+      const snap = await getDoc(ref);
+      const existing = snap.exists() && Array.isArray(snap.data().items) ? snap.data().items : [];
+      const updatedItems = existing.filter(item => item.entryId !== entryId);
       
       await setDoc(ref, { items: updatedItems }, { merge: true });
     } catch (error) {

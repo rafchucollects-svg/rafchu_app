@@ -73,6 +73,54 @@ const withSecrets = (opts = {}) => functions.runWith({ ...opts, secrets: API_SEC
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// ================================================================================
+// AUTH HELPERS FOR HTTPS FUNCTIONS
+// ================================================================================
+// Admin-only endpoints (manual triggers, arbitrary-user reads/mutations, log
+// readers) previously relied on either NO auth or a hard-coded string token
+// committed to source. They now require a valid Firebase ID token belonging to
+// an admin. Admin status matches firestore.rules: an admins/{uid} doc, a custom
+// claim `admin: true`, or the email allowlist below (kept during migration).
+const ADMIN_EMAILS = ['rafchucollects@gmail.com'];
+
+async function verifyIdToken(req) {
+  const header = req.headers.authorization || '';
+  const match = header.match(/^Bearer (.+)$/);
+  if (!match) return null;
+  try {
+    return await admin.auth().verifyIdToken(match[1]);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function isAdminUser(decoded) {
+  if (!decoded) return false;
+  if (decoded.admin === true) return true;
+  if (decoded.email && ADMIN_EMAILS.includes(decoded.email)) return true;
+  try {
+    const doc = await admin.firestore().collection('admins').doc(decoded.uid).get();
+    return doc.exists;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Guard for admin-only HTTPS handlers. Returns the decoded token on success, or
+// writes a 401/403 and returns null (caller must `if (!admin_) return;`).
+async function requireAdmin(req, res) {
+  const decoded = await verifyIdToken(req);
+  if (!decoded) {
+    res.status(401).json({ success: false, error: 'Authentication required.' });
+    return null;
+  }
+  if (!(await isAdminUser(decoded))) {
+    res.status(403).json({ success: false, error: 'Admin access required.' });
+    return null;
+  }
+  return decoded;
+}
+
 class PokemonPriceRateLimitError extends Error {
   constructor(retryAfterMs) {
     super('Pokemon Price Tracker rate limit reached');
@@ -821,12 +869,14 @@ exports.triggerCsvCache = withSecrets({
   // Enable CORS
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
     return;
   }
+
+  if (!(await requireAdmin(req, res))) return;
   
   try {
     console.log('🚀 Manual CSV cache trigger initiated');
@@ -2765,21 +2815,14 @@ exports.initializeCardDatabase = withSecrets({
   // CORS headers
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
     return;
   }
-  
-  // Security: Check for authorization token
-  const authHeader = req.headers.authorization;
-  const expectedToken = 'Bearer rafchu-init-db-2024'; // Change this to your secret token
-  
-  if (authHeader !== expectedToken) {
-    res.status(403).json({ error: 'Unauthorized. Invalid token.' });
-    return;
-  }
+
+  if (!(await requireAdmin(req, res))) return;
   
   console.log('🚀 Starting one-time card database initialization...');
   
@@ -2808,8 +2851,7 @@ exports.initializeCardDatabase = withSecrets({
     console.error('❌ Initialization failed:', error);
     res.status(500).json({
       success: false,
-      error: error.message,
-      stack: error.stack
+      error: error.message
     });
   }
 });
@@ -2825,12 +2867,14 @@ exports.triggerUserPriceRefresh = withSecrets({
 }).https.onRequest(async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
     return;
   }
+
+  if (!(await requireAdmin(req, res))) return;
 
   console.log('🚀 Manual user price refresh triggered');
   const db = admin.firestore();
@@ -3425,6 +3469,8 @@ exports.getUpdateLogs = withSecrets().https.onRequest(async (req, res) => {
     res.status(204).send('');
     return;
   }
+
+  if (!(await requireAdmin(req, res))) return;
   
   const limit = parseInt(req.query.limit) || 20;
   const statusFilter = req.query.status || 'all';
@@ -3541,6 +3587,8 @@ exports.checkInventoryPriceFreshness = withSecrets().https.onRequest(async (req,
     res.status(204).send('');
     return;
   }
+
+  if (!(await requireAdmin(req, res))) return;
   
   const userId = req.query.userId;
   const collectionType = req.query.collection || 'vendor';
@@ -3679,6 +3727,8 @@ exports.migrateTcgPocketCards = withSecrets({
     res.status(204).send('');
     return;
   }
+
+  if (!(await requireAdmin(req, res))) return;
   
   const userId = req.query.userId;
   const dryRun = req.query.dryRun === 'true';
@@ -3910,18 +3960,8 @@ exports.forceUpdateAllCards = withSecrets({
     res.status(204).send('');
     return;
   }
-  
-  // Security check via query parameter (to avoid Cloud Functions auth interception)
-  const secretToken = req.query.token;
-  const expectedToken = 'rafchu-force-update-2024';
-  
-  if (secretToken !== expectedToken) {
-    res.status(403).json({ 
-      success: false, 
-      error: 'Unauthorized. Include token query parameter: ?token=rafchu-force-update-2024' 
-    });
-    return;
-  }
+
+  if (!(await requireAdmin(req, res))) return;
   
   const batchSize = parseInt(req.query.batchSize) || 10;
   const skipGraded = req.query.skipGraded === 'true';
@@ -4356,8 +4396,9 @@ exports.syncJapaneseCards = withSecrets({
   });
 
 /**
- * Manually trigger Japanese card sync (for testing)
- * Usage: GET /triggerJapaneseSync?token=rafchu-force-update-2024
+ * Manually trigger Japanese card sync (for testing).
+ * Admin-only: send an "Authorization: Bearer <Firebase ID token>" header for an
+ * account that is an admin (admins/{uid} doc, admin custom claim, or allowlist).
  */
 exports.triggerJapaneseSync = withSecrets({
   timeoutSeconds: 540,
@@ -4372,16 +4413,8 @@ exports.triggerJapaneseSync = withSecrets({
     res.status(204).send('');
     return;
   }
-  
-  // Security check
-  const token = req.query.token;
-  if (token !== 'rafchu-force-update-2024') {
-    res.status(403).json({ 
-      success: false, 
-      error: 'Unauthorized. Include token query parameter.' 
-    });
-    return;
-  }
+
+  if (!(await requireAdmin(req, res))) return;
   
   const db = admin.firestore();
   const startTime = Date.now();
@@ -4639,6 +4672,8 @@ exports.triggerSetCatalogSync = withSecrets({
     res.status(204).send('');
     return;
   }
+
+  if (!(await requireAdmin(req, res))) return;
 
   try {
     console.log('🚀 Manual set catalog sync triggered');

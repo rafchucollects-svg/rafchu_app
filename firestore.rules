@@ -37,10 +37,19 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // User profiles - readable by all (for shared links and marketplace)
+    // User profiles - readable by all (for shared links and marketplace).
+    // Owners may edit their own profile but MUST NOT be able to self-grant
+    // privileged fields. `isAdmin` (used by admin UI + storage rules) and
+    // `vendorAccess` (the subscription object) can only be set by an admin.
     match /users/{userId} {
       allow read: if true;
-      allow write: if isOwner(userId) || isAdmin();
+      allow create: if (isOwner(userId)
+                        && !request.resource.data.keys().hasAny(['isAdmin', 'vendorAccess']))
+                     || isAdmin();
+      allow update: if (isOwner(userId)
+                        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isAdmin', 'vendorAccess']))
+                     || isAdmin();
+      allow delete: if isOwner(userId) || isAdmin();
     }
 
     // Vendor inventory collections owned by each authenticated user.
@@ -63,18 +72,20 @@ service cloud.firestore {
       allow write: if isOwner(userId);
     }
 
-    // Conversations between users
+    // Conversations between users.
+    // Read/update/delete require membership in the EXISTING participants list,
+    // and the participant list is immutable on update so a signed-in user can
+    // not insert themselves into someone else's conversation.
     match /conversations/{conversationId} {
-      allow read: if isSignedIn() && (
-        request.auth.uid in resource.data.participants ||
-        !exists(/databases/$(database)/documents/conversations/$(conversationId))
-      );
-      allow write: if isSignedIn() && (
-        request.auth.uid in resource.data.participants ||
-        request.auth.uid in request.resource.data.participants
-      );
+      allow read: if isSignedIn() &&
+        request.auth.uid in resource.data.participants;
       allow create: if isSignedIn() &&
         request.auth.uid in request.resource.data.participants;
+      allow update: if isSignedIn() &&
+        request.auth.uid in resource.data.participants &&
+        request.resource.data.participants == resource.data.participants;
+      allow delete: if isSignedIn() &&
+        request.auth.uid in resource.data.participants;
     }
 
     // Messages within conversations - only participants can read/write

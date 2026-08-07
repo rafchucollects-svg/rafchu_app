@@ -1417,6 +1417,16 @@ export function MyInventory() {
           };
         }
 
+        // Resolve the real acquisition cost from the inventory item so COGS is
+        // computed from what was actually paid, not a fabricated percentage of
+        // the sale price. Priority: buyPrice > overridePrice > costBasis.
+        // Consigned goods were never owned, so their cost basis is 0.
+        const parseCost = (v) =>
+          v != null && !isNaN(parseFloat(v)) ? parseFloat(v) : null;
+        const resolvedCostBasis = consignmentLine
+          ? 0
+          : parseCost(c.buyPrice) ?? parseCost(c.overridePrice) ?? parseCost(c.costBasis);
+
         // Create object and filter out undefined values (Firestore doesn't accept undefined)
         const cardData = {
           entryId: c.entryId || null,
@@ -1427,6 +1437,8 @@ export function MyInventory() {
           quantity: c.quantity || 1,
           unitPrice: finalUnitPrice,
           totalPrice: finalCardTotal,
+          costBasis: resolvedCostBasis,
+          buyPrice: parseCost(c.buyPrice),
           image: imageUrl,
           // Include graded card information for transaction log display
           isGraded: c.isGraded || false,

@@ -2,16 +2,35 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
+    // Admin check — mirrors firestore.rules. Admin status lives in the
+    // admins/{uid} collection (NOT the client-writable users.isAdmin field,
+    // which any user could set on their own profile). Email fallback kept in
+    // parity with Firestore during migration.
+    function isStorageAdmin() {
+      return request.auth != null && (
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'rafchucollects@gmail.com'
+      );
+    }
+
+    function isConversationParticipant(conversationId) {
+      return request.auth != null &&
+        request.auth.uid in firestore.get(/databases/(default)/documents/conversations/$(conversationId)).data.participants;
+    }
+
     // Profile pictures - users can only upload/read their own
     match /profile-pictures/{userId} {
       allow read: if true; // Public read for profile pictures
       allow write: if request.auth != null && request.auth.uid == userId;
     }
     
-    // Message images - users can upload for conversations they're part of
+    // Message images - only conversation participants may read/write, and
+    // uploads are capped and restricted to image content types.
     match /message-images/{conversationId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow read: if isConversationParticipant(conversationId);
+      allow write: if isConversationParticipant(conversationId)
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
     }
     
     // Community image submissions (pending review)
@@ -25,8 +44,7 @@ service firebase.storage {
       allow read: if true;
       
       // Only admins can delete pending images
-      allow delete: if request.auth != null 
-                    && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+      allow delete: if isStorageAdmin();
     }
     
     // Approved community images (public)
@@ -35,10 +53,20 @@ service firebase.storage {
       allow read: if true;
       
       // Only admins can write/delete approved images
-      allow write, delete: if request.auth != null 
-                            && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+      allow write, delete: if isStorageAdmin();
     }
-    
+
+    // Card images - vendor/collector supplied art for cards in their own
+    // inventory (used by CardImageReplacer). Mirrors manual-cards.
+    match /card-images/{userId}/{filename} {
+      allow create, write: if request.auth != null
+                           && request.auth.uid == userId
+                           && request.resource.size < 5 * 1024 * 1024
+                           && request.resource.contentType.matches('image/.*');
+      allow read: if true;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
     // Manual card images - users can upload their own (bypasses admin approval)
     match /manual-cards/{userId}/{filename} {
       // Users can only upload to their own folder

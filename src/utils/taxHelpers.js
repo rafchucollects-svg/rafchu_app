@@ -10,67 +10,90 @@ import autoTable from "jspdf-autotable";
 // Finnish VAT rate (25.5% as of 2025)
 export const FINLAND_VAT_RATE = 0.255;
 
-// ECB exchange rate API
-const ECB_API_URL = "https://data-api.ecb.europa.eu/service/data/EXR/D.USD+JPY+GBP+SEK+NOK+DKK+CHF.EUR.SP00.A";
-
+// ECB reference rates. Frankfurter serves the official ECB daily reference
+// rates for free, with per-date historical lookups (unlike the previous
+// "latest only" exchangerate-api call). Finnish margin/VAT reporting expects
+// the ECB rate on the transaction date, so pass a YYYY-MM-DD dateStr.
 let ecbRateCache = {};
 let ecbCacheDate = null;
 
+const STATIC_RATE_FALLBACK = {
+  EUR: 1,
+  USD: 1.08,
+  JPY: 162.0,
+  GBP: 0.86,
+  SEK: 11.2,
+  NOK: 11.5,
+  DKK: 7.46,
+  CHF: 0.97,
+};
+
 /**
- * Fetch ECB daily reference rates. Returns rates relative to EUR (1 EUR = X foreign).
- * Falls back to cached values if the API is unreachable.
+ * Fetch ECB daily reference rates for a given date (or latest). Returns rates
+ * relative to EUR (1 EUR = X foreign). Falls back to cache, then a static table.
+ * @param {string} [dateStr] YYYY-MM-DD. Omit for the latest rates.
  */
 export async function fetchECBRates(dateStr) {
-  const today = dateStr || new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  const requested = dateStr || today;
+  // Frankfurter only serves closed (past) dates; today/future -> "latest".
+  const endpointDate = requested >= today ? "latest" : requested;
 
-  if (ecbCacheDate === today && Object.keys(ecbRateCache).length > 0) {
+  if (ecbCacheDate === endpointDate && Object.keys(ecbRateCache).length > 0) {
     return ecbRateCache;
   }
 
+  // 1) ECB reference rates on the requested date (Frankfurter, no API key).
   try {
-    const res = await fetch(
-      `https://api.exchangerate-api.com/v4/latest/EUR`
-    );
+    const res = await fetch(`https://api.frankfurter.app/${endpointDate}?from=EUR`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.rates) {
+        ecbRateCache = { EUR: 1, ...data.rates };
+        ecbCacheDate = endpointDate;
+        return ecbRateCache;
+      }
+    }
+  } catch (err) {
+    console.warn("Frankfurter ECB rates unavailable, trying fallback:", err);
+  }
+
+  // 2) Fallback: latest rates only (not date-specific).
+  try {
+    const res = await fetch(`https://api.exchangerate-api.com/v4/latest/EUR`);
     const data = await res.json();
     if (data?.rates) {
       ecbRateCache = { EUR: 1, ...data.rates };
-      ecbCacheDate = today;
+      ecbCacheDate = endpointDate;
       return ecbRateCache;
     }
   } catch (err) {
-    console.warn("Failed to fetch ECB rates, using fallback:", err);
+    console.warn("Failed to fetch fallback FX rates, using static table:", err);
   }
 
   if (Object.keys(ecbRateCache).length > 0) return ecbRateCache;
-
-  return {
-    EUR: 1,
-    USD: 1.08,
-    JPY: 162.0,
-    GBP: 0.86,
-    SEK: 11.2,
-    NOK: 11.5,
-    DKK: 7.46,
-    CHF: 0.97,
-  };
+  return { ...STATIC_RATE_FALLBACK };
 }
 
 /**
  * Convert an amount to EUR using ECB rates.
- * @returns {{ amountEUR: number, rate: number }}
+ * @returns {{ amountEUR: number, rate: number|null, reliable: boolean }}
+ *   `reliable` is false when no rate was available for the currency — callers
+ *   must not treat such an amount as a trustworthy EUR figure.
  */
 export function convertToEUR(amount, fromCurrency, rates) {
+  const numeric = parseFloat(amount) || 0;
   if (!amount || fromCurrency === "EUR") {
-    return { amountEUR: parseFloat(amount) || 0, rate: 1 };
+    return { amountEUR: numeric, rate: 1, reliable: true };
   }
   const rate = rates?.[fromCurrency];
   if (!rate || rate === 0) {
-    return { amountEUR: parseFloat(amount) || 0, rate: 1 };
+    // No rate available. Surface the raw amount but flag it so nothing silently
+    // treats foreign money as EUR at 1:1 (the previous behaviour).
+    console.warn(`No FX rate for ${fromCurrency}; EUR conversion is unreliable.`);
+    return { amountEUR: numeric, rate: null, reliable: false };
   }
-  return {
-    amountEUR: parseFloat(amount) / rate,
-    rate,
-  };
+  return { amountEUR: numeric / rate, rate, reliable: true };
 }
 
 /**
@@ -182,14 +205,41 @@ export function getAcquisitionCost(item) {
  */
 export function calculateCOGS(salesInPeriod) {
   let totalCOGS = 0;
+  let missingCostBasisCount = 0;
   const details = [];
+
+  const parseCost = (v) =>
+    v != null && !isNaN(parseFloat(v)) ? parseFloat(v) : null;
 
   (salesInPeriod || []).forEach((sale) => {
     const items = sale.itemsOut || sale.cards || [];
     items.forEach((card) => {
       const qty = Number(card.quantity) || 1;
-      const costBasis = card.costBasis || card.unitPrice * 0.8 || 0;
       const salePrice = card.unitPrice || 0;
+      const isConsigned = card.consignment?.isConsigned === true;
+
+      // Consigned goods were never owned by the vendor: COGS is 0. The
+      // consignor payout is accounted for on the revenue side (vendor keeps
+      // only the commission), not as cost of goods sold.
+      let costBasis;
+      let costUnknown = false;
+      if (isConsigned) {
+        costBasis = 0;
+      } else {
+        const resolved = parseCost(card.costBasis) ?? parseCost(card.buyPrice);
+        if (resolved == null) {
+          // No recorded acquisition cost. Do NOT invent one — the old
+          // "80% of sale price" fallback produced fake ~20% margins on every
+          // untracked sale. Treat as 0 and flag so the UI can warn before the
+          // figures are used for filing.
+          costBasis = 0;
+          costUnknown = true;
+          missingCostBasisCount += 1;
+        } else {
+          costBasis = resolved;
+        }
+      }
+
       const itemCOGS = costBasis * qty;
       totalCOGS += itemCOGS;
       details.push({
@@ -198,6 +248,8 @@ export function calculateCOGS(salesInPeriod) {
         number: card.number,
         quantity: qty,
         costBasis,
+        costUnknown,
+        isConsigned,
         salePrice,
         cogs: itemCOGS,
         profit: (salePrice - costBasis) * qty,
@@ -207,7 +259,7 @@ export function calculateCOGS(salesInPeriod) {
     });
   });
 
-  return { totalCOGS, details };
+  return { totalCOGS, details, missingCostBasisCount };
 }
 
 // =============================

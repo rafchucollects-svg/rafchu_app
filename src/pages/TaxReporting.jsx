@@ -1005,8 +1005,15 @@ function MarginTaxTab() {
   const directSales = salesData.filter(
     (tx) => tx.type === "sale" || tx.type === "sell"
   );
+  // For consigned sales the vendor's revenue is only its take-home (commission
+  // plus any owned portion), not the full sale price. The consignor's payout is
+  // a pass-through, not vendor revenue.
   const directSalesTotal = directSales.reduce(
-    (s, tx) => s + (tx.totalValue || tx.totalAmount || 0),
+    (s, tx) =>
+      s +
+      (tx.hasConsignment
+        ? (tx.vendorTakeHome || 0)
+        : (tx.totalValue || tx.totalAmount || 0)),
     0
   );
 
@@ -1045,8 +1052,12 @@ function MarginTaxTab() {
 
   // Trade outgoing items also have a cost basis
   const tradeOutgoingCost = useMemo(() => {
+    const parseCost = (v) =>
+      v != null && !isNaN(parseFloat(v)) ? parseFloat(v) : null;
     return tradeOutgoing.reduce((sum, item) => {
-      const costBasis = item.costBasis || (item.unitPrice || 0) * 0.8 || 0;
+      // Use the recorded acquisition cost only. No phantom "80% of value"
+      // fallback — an untracked cost basis contributes 0, not a fabricated one.
+      const costBasis = parseCost(item.costBasis) ?? parseCost(item.buyPrice) ?? 0;
       return sum + costBasis * (item.quantity || 1);
     }, 0);
   }, [tradeOutgoing]);
@@ -2497,7 +2508,10 @@ function ProfitLossTab() {
     let total = 0;
     periodTransactions.forEach((tx) => {
       if (tx.type === "sale" || tx.type === "sell") {
-        total += tx.totalValue || tx.totalAmount || 0;
+        // Consigned sales count only the vendor's take-home as revenue.
+        total += tx.hasConsignment
+          ? (tx.vendorTakeHome || 0)
+          : (tx.totalValue || tx.totalAmount || 0);
       }
       if (tx.type === "trade") {
         (tx.itemsOut || []).forEach((item) => {

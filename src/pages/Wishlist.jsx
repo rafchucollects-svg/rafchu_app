@@ -32,21 +32,33 @@ export function Wishlist() {
       return undefined;
     }
 
+    let unsub = null;
+    let cancelled = false;
+
     const loadWishlist = async () => {
-      const { doc, onSnapshot } = await import("firebase/firestore");
+      const { doc, onSnapshot, setDoc } = await import("firebase/firestore");
+      if (cancelled) return;
       const ref = doc(db, "collector_wishlists", user.uid);
 
-      return onSnapshot(
+      unsub = onSnapshot(
         ref,
         (snap) => {
           if (snap.exists()) {
             const data = snap.data() || {};
             const rawItems = Array.isArray(data.items) ? data.items : [];
+            const missingEntryIds = rawItems.some((item) => !item.entryId);
             const items = rawItems.map((item) => ({
               ...item,
               entryId: item.entryId || crypto.randomUUID(),
             }));
             setWishlistItems(items);
+
+            // Persist minted entryIds once so removes/edits key off a stable id.
+            if (missingEntryIds) {
+              setDoc(ref, { items }, { merge: true }).catch((err) =>
+                console.error("Failed to persist wishlist entryIds", err)
+              );
+            }
           } else {
             setWishlistItems([]);
           }
@@ -59,6 +71,11 @@ export function Wishlist() {
     };
 
     loadWishlist();
+
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
   }, [db, user, setWishlistItems]);
 
   // Filter items

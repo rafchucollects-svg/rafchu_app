@@ -10,6 +10,10 @@ import { useApp } from "@/contexts/AppContext";
  * Protects vendor-only routes and shows upgrade prompts
  */
 
+// Owner/admin accounts that always have vendor access (mirrors firestore.rules
+// and functions ADMIN_EMAILS). Vendor access is otherwise admin-granted only.
+const ADMIN_EMAILS = ["rafchucollects@gmail.com"];
+
 export function VendorAccessGuard({ children }) {
   const { user, userProfile, authLoading } = useApp();
   const navigate = useNavigate();
@@ -37,8 +41,10 @@ export function VendorAccessGuard({ children }) {
     return null;
   }
 
-  // Wait for userProfile to load
-  if (userProfile === null || userProfile === undefined) {
+  // While the profile is loading (auth resolved but profile fetch not yet
+  // returned), show a spinner. `authLoading` gates the initial fetch, so a
+  // still-undefined profile here means the fetch is in flight.
+  if (userProfile === undefined) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
         <div className="text-center">
@@ -49,17 +55,17 @@ export function VendorAccessGuard({ children }) {
     );
   }
 
-  // Check if user has vendor access
-  const hasVendorAccess = userProfile?.vendorAccess?.enabled || userProfile?.isVendor;
+  // Access is granted ONLY by admin-controlled state, never by a field the user
+  // can set on their own profile. `vendorAccess` is admin-writable only (see
+  // firestore.rules); the legacy `isVendor` self-serve flag no longer unlocks
+  // the toolkit on its own. The owner/admin always passes.
   const subscriptionStatus = userProfile?.vendorAccess?.status || "none";
+  const hasActiveSubscription =
+    userProfile?.vendorAccess?.enabled === true && subscriptionStatus === "active";
+  const isOwnerAdmin =
+    userProfile?.isAdmin === true || ADMIN_EMAILS.includes(user.email);
 
-  // If user has access, render children
-  if (hasVendorAccess && subscriptionStatus === "active") {
-    return children;
-  }
-  
-  // Also allow if isVendor is true (backward compatibility)
-  if (userProfile?.isVendor) {
+  if (hasActiveSubscription || isOwnerAdmin) {
     return children;
   }
 

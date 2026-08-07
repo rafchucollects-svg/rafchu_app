@@ -80,9 +80,17 @@ export function Marketplace() {
           
           if (!hasActiveVendorAccess && !isLegacyVendor) continue;
           
-          // Get their inventory
+          // Get their inventory. A vendor who hasn't enabled sharing will be
+          // denied by security rules; skip them instead of failing the whole
+          // marketplace load.
           const inventoryRef = firestoreDoc(db, "collections", userDoc.id);
-          const inventorySnap = await getDoc(inventoryRef);
+          let inventorySnap;
+          try {
+            inventorySnap = await getDoc(inventoryRef);
+          } catch (err) {
+            console.warn(`Skipping vendor ${userDoc.id}: inventory not readable`, err?.code || err);
+            continue;
+          }
           
           if (inventorySnap.exists()) {
             const inventoryData = inventorySnap.data();
@@ -421,18 +429,6 @@ export function Marketplace() {
     navigate(`/collector/vendor-profile?vendor=${vendor.userId}`);
   };
 
-  // Toggle card selection in vendor inventory
-  const toggleCardSelection = (card) => {
-    setSelectedCardsFromVendor(prev => {
-      const isSelected = prev.some(c => c === card);
-      if (isSelected) {
-        return prev.filter(c => c !== card);
-      } else {
-        return [...prev, card];
-      }
-    });
-  };
-
   // Open message modal
   const handleOpenMessage = (vendor, cards = []) => {
     setMessageModal({ vendor, cards });
@@ -491,7 +487,6 @@ export function Marketplace() {
       }
       
       setMessageModal(null);
-      setSelectedVendor(null);
     } catch (error) {
       console.error("Failed to start conversation:", error);
       alert("Failed to start conversation. Please try again.");

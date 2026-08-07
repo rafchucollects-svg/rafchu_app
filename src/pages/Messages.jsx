@@ -555,8 +555,8 @@ export function Messages() {
       const transRef = collection(db, "transactions");
       const newTransaction = {
         conversationId: selectedConversation.id,
-        buyerId: selectedConversation.otherUser.isVendor ? user.uid : selectedConversation.otherUserId,
-        sellerId: selectedConversation.otherUser.isVendor ? selectedConversation.otherUserId : user.uid,
+        buyerId: selectedConversation.otherUser.isVendor ? user.uid : selectedConversation.otherUser.id,
+        sellerId: selectedConversation.otherUser.isVendor ? selectedConversation.otherUser.id : user.uid,
         status: "pending",
         createdAt: serverTimestamp(),
       };
