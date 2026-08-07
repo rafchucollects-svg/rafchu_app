@@ -11,6 +11,7 @@ import {
   getCardmarketLowest,
   getCardmarketAvg,
   computeSuggestedPrice,
+  computeMarketValues,
   computeItemMetrics,
   computeInventoryTotals,
   normalizeApiCard,
@@ -294,6 +295,49 @@ describe("computeSuggestedPrice", () => {
     expect(
       computeSuggestedPrice({ tcg: 0, cmAvg: 0, cmLowest: 0, condition: "NM" })
     ).toBe(0);
+  });
+});
+
+describe("computeMarketValues", () => {
+  const card = {
+    prices: {
+      tcgplayer: { market_price: 10, currency: "EUR" },
+      cardmarket: { lowest7: 8, "30d_average": 12, currency: "EUR" },
+    },
+  };
+
+  it("keeps the current ask while deriving distinct market views", () => {
+    const values = computeMarketValues(card, {
+      condition: "NM",
+      targetCurrency: "EUR",
+      marketSource: "cardmarket",
+    });
+    expect(values.sellerAsk).toBe(12);
+    expect(values.fairMarket).toBe(10);
+    expect(values.preferredMarket).toBe(12);
+    expect(values.quickSale).toBe(8);
+    expect(values.availableBenchmarkCount).toBe(3);
+  });
+
+  it("uses TCGplayer for the preferred market when selected", () => {
+    const values = computeMarketValues(card, {
+      condition: "NM",
+      targetCurrency: "EUR",
+      marketSource: "tcg",
+    });
+    expect(values.preferredMarket).toBe(10);
+    expect(values.preferredSource).toBe("TCGplayer");
+  });
+
+  it("falls back cleanly when only one feed is available", () => {
+    const values = computeMarketValues(
+      { prices: { tcgplayer: { market_price: 9, currency: "EUR" } } },
+      { targetCurrency: "EUR", marketSource: "cardmarket" },
+    );
+    expect(values.fairMarket).toBe(9);
+    expect(values.preferredMarket).toBe(9);
+    expect(values.quickSale).toBe(9);
+    expect(values.availableBenchmarkCount).toBe(1);
   });
 });
 

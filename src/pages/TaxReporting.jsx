@@ -72,6 +72,9 @@ import {
   exportProfitLossCSV,
   exportProfitLossPDF,
   generateBillOfSalePDF,
+  fetchECBRates,
+  convertToEUR,
+  convertTransactionForTaxEUR,
 } from "@/utils/taxHelpers";
 import { useExpenses } from "@/contexts/ExpenseContext";
 import { getCategoryColor } from "@/utils/expenseHelpers";
@@ -88,6 +91,22 @@ import {
   setDoc,
   writeBatch,
 } from "firebase/firestore";
+
+async function prepareTransactionsForTaxEUR(transactions) {
+  const ratesByDate = new Map();
+  const prepared = [];
+  for (const transaction of transactions) {
+    const currency = transaction.currency || "EUR";
+    let rates = { EUR: 1 };
+    if (currency !== "EUR") {
+      const date = new Date(transaction.ts || Date.now()).toISOString().slice(0, 10);
+      if (!ratesByDate.has(date)) ratesByDate.set(date, await fetchECBRates(date));
+      rates = ratesByDate.get(date);
+    }
+    prepared.push(convertTransactionForTaxEUR(transaction, rates));
+  }
+  return prepared;
+}
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import SignaturePad from "signature_pad";
 import { toast } from "@/components/ui/Toaster";
@@ -463,50 +482,85 @@ function PurchaseDiaryTab() {
         const col = fsCollection(db, "transactions", user.uid, "entries");
         const snap = await getDocs(query(col, orderBy("ts", "desc")));
         const auto = [];
-        snap.docs.forEach((d) => {
+        const ratesByDate = new Map();
+        const convertAmountToEur = async (amount, originalCurrency, timestamp) => {
+          if (!originalCurrency || originalCurrency === "EUR") {
+            return { amountEUR: Number(amount) || 0, rate: 1, reliable: true };
+          }
+          const date = new Date(timestamp || Date.now()).toISOString().slice(0, 10);
+          if (!ratesByDate.has(date)) ratesByDate.set(date, await fetchECBRates(date));
+          return convertToEUR(amount, originalCurrency, ratesByDate.get(date));
+        };
+
+        for (const d of snap.docs) {
           const tx = { id: d.id, ...d.data() };
           if (tx.type === "buy" && tx.itemsIn) {
-            tx.itemsIn.forEach((item, idx) => {
+            for (const [idx, item] of tx.itemsIn.entries()) {
+              const quantity = item.quantity || 1;
+              const originalCurrency = item.originalCostCurrency || tx.totals?.originalCurrency || tx.currency || "EUR";
+              const originalAmount = item.originalUnitCost ?? item.unitCost ?? (
+                item.totalCost != null ? Number(item.totalCost) / quantity : item.unitPrice ?? 0
+              );
+              const converted = await convertAmountToEur(originalAmount, originalCurrency, tx.ts);
               auto.push({
                 id: `tx-${tx.id}-in-${idx}`,
-                purchaseId: "BUY",
+                purchaseId: tx.internalVoucherId || tx.documents?.number || "BUY",
                 date: tx.ts,
-                location: "",
-                sellerName: "",
+                location: tx.location || tx.channel || "",
+                sellerName: tx.counterparty?.name || tx.counterpartyName || "",
                 itemName: item.name || "",
                 set: item.set || "",
                 condition: item.condition || "NM",
-                quantity: item.quantity || 1,
-                originalCurrency: tx.currency || "EUR",
-                originalAmount: item.unitPrice || 0,
-                priceEUR: item.unitPrice || 0,
-                paymentMethod: "",
+                quantity,
+                originalCurrency,
+                originalAmount,
+                priceEUR: converted.amountEUR,
+                exchangeRate: converted.rate,
+                fxReliable: converted.reliable,
+                paymentMethod: tx.payment?.method || tx.paymentMethod || "",
+                receiptUrls: tx.documents?.urls || tx.receiptUrls || [],
+                documentNumber: tx.documents?.number || tx.documentNumber || "",
+                taxRecordStatus: tx.taxRecord?.status || "legacy_record",
+                missingTaxFields: tx.taxRecord?.missingFields || [],
                 notes: tx.notes || "",
                 source: "buy",
               });
-            });
+            }
           } else if (tx.type === "trade" && tx.itemsIn) {
-            tx.itemsIn.forEach((item, idx) => {
+            for (const [idx, item] of tx.itemsIn.entries()) {
+              const quantity = item.quantity || 1;
+              const originalCurrency = item.currency || tx.currency || "EUR";
+              const originalAmount = item.marketUnitPrice ?? item.marketValue ?? item.unitPrice ?? (
+                item.marketTotal != null ? Number(item.marketTotal) / quantity : 0
+              );
+              const converted = await convertAmountToEur(originalAmount, originalCurrency, tx.ts);
               auto.push({
                 id: `tx-${tx.id}-in-${idx}`,
-                purchaseId: "TRADE-IN",
+                purchaseId: tx.internalVoucherId || tx.documents?.number || "TRADE-IN",
                 date: tx.ts,
-                location: "",
-                sellerName: "",
+                location: tx.location || tx.channel || "",
+                sellerName: tx.counterparty?.name || tx.counterpartyName || "",
                 itemName: item.name || "",
                 set: item.set || "",
                 condition: item.condition || "NM",
-                quantity: item.quantity || 1,
-                originalCurrency: tx.currency || "EUR",
-                originalAmount: item.unitPrice || item.marketValue || 0,
-                priceEUR: item.unitPrice || item.marketValue || 0,
-                paymentMethod: "Trade",
+                quantity,
+                originalCurrency,
+                originalAmount,
+                priceEUR: converted.amountEUR,
+                exchangeRate: converted.rate,
+                fxReliable: converted.reliable,
+                paymentMethod: tx.payment?.method || "Trade",
+                receiptUrls: tx.documents?.urls || tx.receiptUrls || [],
+                documentNumber: tx.documents?.number || tx.documentNumber || "",
+                valuationMethod: "recorded_fair_market_value",
+                taxRecordStatus: tx.taxRecord?.status || "legacy_record",
+                missingTaxFields: tx.taxRecord?.missingFields || [],
                 notes: tx.notes || "",
                 source: "trade",
               });
-            });
+            }
           }
-        });
+        }
         if (!cancelled) setTxEntries(auto);
       } catch (err) {
         console.error("Failed to load transaction entries for diary:", err);
@@ -856,6 +910,14 @@ function PurchaseDiaryTab() {
                           {sourceLabel(entry)}
                         </span>
                       )}
+                      {entry.taxRecordStatus === "needs_review" && (
+                        <span
+                          className="ml-1 inline-flex align-middle text-amber-600"
+                          title={`Tax details to review: ${(entry.missingTaxFields || []).join(", ")}`}
+                        >
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">
                       {entry.date
@@ -959,7 +1021,9 @@ function MarginTaxTab() {
     try {
       const col = fsCollection(db, "transactions", user.uid, "entries");
       const snap = await getDocs(query(col, orderBy("ts", "desc")));
-      const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const all = await prepareTransactionsForTaxEUR(
+        snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      );
       setAllTransactions(all);
     } catch (err) {
       console.error("Failed to load transactions:", err);
@@ -2236,8 +2300,10 @@ function COGSTab() {
 
       const col = fsCollection(db, "transactions", user.uid, "entries");
       const snap = await getDocs(query(col, orderBy("ts", "desc")));
-      const all = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
+      const prepared = await prepareTransactionsForTaxEUR(
+        snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      );
+      const all = prepared
         .filter((tx) => {
           if (tx.type !== "sale" && tx.type !== "sell") return false;
           const ts = tx.ts || 0;
@@ -2471,7 +2537,10 @@ function ProfitLossTab() {
     try {
       const col = fsCollection(db, "transactions", user.uid, "entries");
       const snap = await getDocs(query(col, orderBy("ts", "desc")));
-      setAllTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const prepared = await prepareTransactionsForTaxEUR(
+        snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      );
+      setAllTransactions(prepared);
     } catch (err) {
       console.error("Failed to load transactions:", err);
     } finally {

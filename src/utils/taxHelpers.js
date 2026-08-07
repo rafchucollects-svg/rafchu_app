@@ -3,7 +3,6 @@
  * Handles ECB exchange rates, margin tax calculation, COGS, and report exports.
  */
 
-import { formatCurrency } from "./cardHelpers";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 
@@ -94,6 +93,67 @@ export function convertToEUR(amount, fromCurrency, rates) {
     return { amountEUR: numeric, rate: null, reliable: false };
   }
   return { amountEUR: numeric / rate, rate, reliable: true };
+}
+
+/**
+ * Return a tax-report-only EUR view of a transaction. Raw Firestore values are
+ * retained under `taxAccounting.sourceCurrency`; monetary fields on the clone
+ * are converted so existing margin/COGS/P&L calculations cannot accidentally
+ * label a USD/GBP amount as EUR. Missing FX fails closed to zero and is flagged.
+ */
+export function convertTransactionForTaxEUR(transaction, rates) {
+  const sourceCurrency = transaction?.currency || "EUR";
+  const conversion = convertToEUR(1, sourceCurrency, rates);
+  const reliable = conversion.reliable;
+  const toEur = (value) => {
+    if (value == null || value === "") return value;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return value;
+    if (!reliable) return 0;
+    return numeric * conversion.amountEUR;
+  };
+  const convertConsignment = (consignment) => consignment ? {
+    ...consignment,
+    consignorPayoutPerUnit: toEur(consignment.consignorPayoutPerUnit),
+    vendorCommissionPerUnit: toEur(consignment.vendorCommissionPerUnit),
+    consignorPayoutTotal: toEur(consignment.consignorPayoutTotal),
+    vendorCommissionTotal: toEur(consignment.vendorCommissionTotal),
+  } : consignment;
+  const convertLine = (item) => ({
+    ...item,
+    unitPrice: toEur(item.unitPrice),
+    totalPrice: toEur(item.totalPrice),
+    marketValue: toEur(item.marketValue),
+    marketUnitPrice: toEur(item.marketUnitPrice),
+    marketTotal: toEur(item.marketTotal),
+    unitCost: toEur(item.unitCost),
+    totalCost: toEur(item.totalCost),
+    costBasis: toEur(item.costBasis),
+    buyPrice: toEur(item.buyPrice),
+    consignment: convertConsignment(item.consignment),
+    currency: "EUR",
+  });
+
+  return {
+    ...transaction,
+    currency: "EUR",
+    totalValue: toEur(transaction.totalValue),
+    totalAmount: toEur(transaction.totalAmount),
+    valueGained: toEur(transaction.valueGained),
+    vendorTakeHome: toEur(transaction.vendorTakeHome),
+    ownedRevenue: toEur(transaction.ownedRevenue),
+    consignorPayoutTotal: toEur(transaction.consignorPayoutTotal),
+    vendorCommissionTotal: toEur(transaction.vendorCommissionTotal),
+    itemsIn: (transaction.itemsIn || []).map(convertLine),
+    itemsOut: (transaction.itemsOut || transaction.cards || []).map(convertLine),
+    taxAccounting: {
+      currency: "EUR",
+      sourceCurrency,
+      rate: conversion.rate,
+      reliable,
+      convertedAt: Date.now(),
+    },
+  };
 }
 
 /**
@@ -645,8 +705,6 @@ export function exportMarginTaxPDF(report, period, salesList, config, filename) 
   // Summary box
   const boxW = 85;
   const boxH = 28;
-  const pageW = doc.internal.pageSize.getWidth();
-
   const boxes = [
     { label: "Total Sales", value: `€${report.totalSales?.toFixed(2)}`, color: [219, 234, 254] },
     { label: "Purchase Cost", value: `€${report.totalPurchaseCost?.toFixed(2)}`, color: [254, 235, 200] },

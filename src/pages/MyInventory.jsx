@@ -16,6 +16,8 @@ import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/compon
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { CashManager } from "@/components/CashManager";
+import { TransactionDetailsFields } from "@/components/TransactionDetailsFields";
+import { createEmptyTransactionDetails } from "@/utils/transactionHelpers";
 import { needsImage } from "@/utils/imageHelpers";
 import { CardLadderImport } from "@/components/CardLadderImport";
 import { CardImageReplacer } from "@/components/CardImageReplacer";
@@ -1351,9 +1353,25 @@ export function MyInventory() {
     setSalesModal({
       cards: cardsWithPrices,
       defaultTotal: totalValue,
-      cardPrices: cardsWithPrices.map(c => c.unitPrice)
+      cardPrices: cardsWithPrices.map(c => c.unitPrice),
+      transactionDetails: createEmptyTransactionDetails("sale"),
     });
     setSalesCurrency(currency); // Reset to primary currency
+  };
+
+  const handleSalesCurrencyChange = (nextCurrency) => {
+    if (!salesModal || nextCurrency === salesCurrency) return;
+    const convertInput = (element) => {
+      if (!element) return;
+      const amount = Number(element.value);
+      if (!Number.isFinite(amount)) return;
+      element.value = convertCurrency(amount, nextCurrency, salesCurrency).toFixed(2);
+    };
+    convertInput(document.getElementById("totalPriceInput"));
+    salesModal.cards.forEach((_, index) => {
+      convertInput(document.getElementById(`cardPrice-${index}`));
+    });
+    setSalesCurrency(nextCurrency);
   };
 
   // Confirm sale and log transaction
@@ -1371,6 +1389,8 @@ export function MyInventory() {
         toast.info("Please enter a valid sales price");
         return;
       }
+
+      const originalSaleTotal = finalPrice;
       
       // Convert from sales currency to primary currency if needed
       const inputCurrency = salesCurrency;
@@ -1380,14 +1400,25 @@ export function MyInventory() {
         console.log(`Converted price: ${finalPrice}`);
       }
       
-      // Calculate proportional prices if total changed
-      const originalTotal = cards.reduce((sum, c) => sum + (parseFloat(cardPrices[cards.indexOf(c)]) * c.quantity), 0);
-      const discountRatio = finalPrice / originalTotal;
+      // Individual inputs are entered in the selected sales currency; normalize
+      // them before comparing to the primary-currency transaction total.
+      const cardPricesInPrimary = cardPrices.map((price) =>
+        inputCurrency !== currency
+          ? convertCurrency(parseFloat(price) || 0, currency, inputCurrency)
+          : parseFloat(price) || 0
+      );
+      const originalTotal = cards.reduce(
+        (sum, c, index) => sum + cardPricesInPrimary[index] * c.quantity,
+        0,
+      );
+      const discountRatio = originalTotal > 0 ? finalPrice / originalTotal : 0;
+      const totalQuantity = cards.reduce((sum, card) => sum + (card.quantity || 1), 0);
       
       const cardsWithFinalPrices = cards.map((c, idx) => {
-        const originalUnitPrice = parseFloat(cardPrices[idx]);
-        const originalCardTotal = originalUnitPrice * c.quantity;
-        const finalUnitPrice = originalUnitPrice * discountRatio;
+        const originalUnitPrice = cardPricesInPrimary[idx];
+        const finalUnitPrice = originalTotal > 0
+          ? originalUnitPrice * discountRatio
+          : finalPrice / Math.max(1, totalQuantity);
         const finalCardTotal = finalUnitPrice * c.quantity;
         
         const imageUrl = c.image || c.imageUrl || null;
@@ -1433,6 +1464,8 @@ export function MyInventory() {
           totalPrice: finalCardTotal,
           costBasis: resolvedCostBasis,
           buyPrice: parseCost(c.buyPrice),
+          acquisitionTransactionId: c.acquisitionTransactionId || null,
+          taxAcquisition: c.taxAcquisition || null,
           image: imageUrl,
           // Include graded card information for transaction log display
           isGraded: c.isGraded || false,
@@ -1480,6 +1513,7 @@ export function MyInventory() {
       
       // Prepare transaction data, ensuring no undefined values
       const transactionData = {
+        ...(salesModal.transactionDetails || {}),
         userId: user.uid,
         type: "sale",
         cards: cardsWithFinalPrices,
@@ -1510,12 +1544,16 @@ export function MyInventory() {
       // Log to transaction log (for Transaction Log page)
       try {
         const logData = {
+          ...(salesModal.transactionDetails || {}),
           type: "sale",
           totalValue: finalPrice,
+          originalTotal: originalSaleTotal,
+          originalCurrency: inputCurrency,
           itemsOut: cardsWithFinalPrices,
           itemsIn: [],
           notes: `Sale of ${cards.length} card(s)`,
-          currency: currency
+          currency: currency,
+          source: "inventory_sale",
         };
 
         // Only add inputCurrency if it's different from primary currency
@@ -2342,9 +2380,9 @@ export function MyInventory() {
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
-                        name="salesCurrency"
-                        checked={salesCurrency === currency}
-                        onChange={() => setSalesCurrency(currency)}
+                      name="salesCurrency"
+                      checked={salesCurrency === currency}
+                      onChange={() => handleSalesCurrencyChange(currency)}
                         className="w-4 h-4"
                       />
                       <span className="text-sm font-medium">{currency} (Primary)</span>
@@ -2352,9 +2390,9 @@ export function MyInventory() {
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
-                        name="salesCurrency"
-                        checked={salesCurrency === secondaryCurrency}
-                        onChange={() => setSalesCurrency(secondaryCurrency)}
+                      name="salesCurrency"
+                      checked={salesCurrency === secondaryCurrency}
+                      onChange={() => handleSalesCurrencyChange(secondaryCurrency)}
                         className="w-4 h-4"
                       />
                       <span className="text-sm font-medium">{secondaryCurrency} (Secondary)</span>
@@ -2484,6 +2522,15 @@ export function MyInventory() {
                   </span>
                 </p>
               </div>
+
+              <TransactionDetailsFields
+                value={salesModal.transactionDetails}
+                onChange={(transactionDetails) => setSalesModal((current) => ({
+                  ...current,
+                  transactionDetails,
+                }))}
+                type="sale"
+              />
 
               <div className="flex gap-3">
                 <Button

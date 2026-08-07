@@ -3,7 +3,8 @@
  * Extracted from App.jsx for reusability
  */
 
-import { doc, setDoc, collection as fsCollection, addDoc } from "firebase/firestore";
+import { doc, setDoc, collection as fsCollection } from "firebase/firestore";
+import { buildTaxReadyTransaction } from "./transactionHelpers";
 
 // =============================
 // Constants
@@ -421,6 +422,68 @@ export function computeSuggestedPrice({
   return Math.max(cmBase, safeTcg);
 }
 
+function medianPositive(values) {
+  const sorted = values
+    .map((value) => Number(value) || 0)
+    .filter((value) => value > 0)
+    .sort((a, b) => a - b);
+  if (sorted.length === 0) return 0;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+/**
+ * Build the four ungraded pricing views shown throughout the app.
+ *
+ * Seller Ask intentionally preserves the existing suggested-price rule.
+ * Fair Market uses the median so one unusually high/low feed cannot dominate.
+ * Preferred Market follows the user's chosen data source, and Quick Sale uses
+ * the lower immediately actionable market/listing benchmark.
+ */
+export function computeMarketValues(
+  source,
+  {
+    condition = "NM",
+    targetCurrency = DEFAULT_CURRENCY,
+    marketSource = "cardmarket",
+    overridePrice,
+  } = {},
+) {
+  const tcg = computeTcgPrice(source, condition, targetCurrency) || 0;
+  const cmAvg = getCardmarketAvg(source, condition, targetCurrency) || 0;
+  const cmLowest = getCardmarketLowest(source, condition, targetCurrency) || 0;
+  const sellerAsk = computeSuggestedPrice({
+    tcg,
+    cmAvg,
+    cmLowest,
+    condition,
+    overridePrice,
+  });
+  const fairMarket = medianPositive([tcg, cmAvg, cmLowest]);
+
+  const prefersTcg = marketSource === "tcg" || marketSource === "tcgplayer";
+  const preferredMarket = prefersTcg
+    ? (tcg || fairMarket)
+    : (cmAvg || cmLowest || fairMarket);
+
+  const liquidBenchmarks = [tcg, cmLowest].filter((value) => value > 0);
+  const quickSale = liquidBenchmarks.length > 0
+    ? Math.min(...liquidBenchmarks)
+    : fairMarket;
+
+  return {
+    sellerAsk,
+    fairMarket,
+    preferredMarket,
+    quickSale,
+    benchmarks: { tcg, cmAvg, cmLowest },
+    preferredSource: prefersTcg ? "TCGplayer" : "Cardmarket",
+    availableBenchmarkCount: [tcg, cmAvg, cmLowest].filter((value) => value > 0).length,
+  };
+}
+
 export function computeItemMetrics(item, userCurrency = 'USD') {
   // Manual override price always wins (graded or not). This is the price the
   // user actively picked in the inventory editor and must be reflected in
@@ -535,10 +598,14 @@ export async function saveCollection(db, uid, items, extra = {}) {
 export async function recordTransaction(db, uid, entry) {
   if (!db || !uid) return;
   const col = fsCollection(db, "transactions", uid, "entries");
-  await addDoc(col, cloneForFirestore({
-    ts: Date.now(),
-    ...entry,
-  }));
+  const ref = doc(col);
+  const payload = buildTaxReadyTransaction(entry, {
+    uid,
+    now: Date.now(),
+    id: ref.id,
+  });
+  await setDoc(ref, cloneForFirestore(payload));
+  return { id: ref.id, ref, payload };
 }
 
 // =============================

@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { ShoppingCart, Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { CardPhotoScanner } from "@/components/CardPhotoScanner";
+import { TransactionDetailsFields } from "@/components/TransactionDetailsFields";
+import { createEmptyTransactionDetails } from "@/utils/transactionHelpers";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
@@ -48,6 +50,7 @@ export function BuyCalculator() {
   const [cashAmount, setCashAmount] = useState("");
   const [cashCurrency, setCashCurrency] = useState(secondaryCurrency || currency);
   const [cashDirection, setCashDirection] = useState("in"); // "in" = receiving cash, "out" = paying cash
+  const [transactionDetails, setTransactionDetails] = useState(() => createEmptyTransactionDetails());
   
   // Share buy offer state
   const [showShareModal, setShowShareModal] = useState(false);
@@ -432,26 +435,29 @@ export function BuyCalculator() {
 
       // Calculate value gained (market value - cost)
       const totalMarketValue = itemsIn.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
-      const totalCost = selectedTotals.finalValue;
-      const valueGained = totalMarketValue - totalCost;
+      const convertedTotalCost = selectedTotals.finalValue;
 
-      // Convert totalCost if needed
-      let convertedTotalCost = totalCost;
+      // Calculated deal values are always held in the primary currency. When
+      // the user chooses the secondary currency, preserve its converted amount
+      // as the source value instead of misreading the primary number as foreign.
       const inputCurrency = buyCurrency;
-      if (inputCurrency !== currency) {
-        console.log(`Converting purchase from ${inputCurrency} to ${currency}: ${convertedTotalCost}`);
-        convertedTotalCost = convertCurrency(convertedTotalCost, currency, inputCurrency);
-        console.log(`Converted purchase: ${convertedTotalCost}`);
-      }
+      const originalTotalCost = inputCurrency !== currency
+        ? convertCurrency(convertedTotalCost, inputCurrency, currency)
+        : convertedTotalCost;
+      const valueGained = totalMarketValue - convertedTotalCost;
       
       const transactionData = {
+        ...transactionDetails,
         type: "buy",
         totalValue: convertedTotalCost,
+        originalTotal: originalTotalCost,
+        originalCurrency: inputCurrency,
         itemsIn,
         itemsOut: [],
         valueGained,
         notes: `Deal completed as purchase: ${selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s)`,
-        currency
+        currency,
+        source: "buy_calculator",
       };
       
       // Only add inputCurrency if it's different from primary currency
@@ -459,14 +465,15 @@ export function BuyCalculator() {
         transactionData.inputCurrency = inputCurrency;
       }
       
-      await recordTransaction(db, user.uid, transactionData);
+      const savedTransaction = await recordTransaction(db, user.uid, transactionData);
 
       // Add cards to inventory
       const inventoryItems = [];
-      selectedItems.forEach(item => {
+      selectedItems.forEach((item, itemIndex) => {
         const qty = item.quantity || 1;
         const values = calculateItemValue(item);
-        const perUnitBuyPrice = values.finalUnit || 0;
+        const persistedLine = savedTransaction?.payload?.itemsIn?.[itemIndex];
+        const perUnitBuyPrice = persistedLine?.unitCost ?? values.finalUnit ?? 0;
         for (let i = 0; i < qty; i++) {
           const inventoryItem = {
             entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -482,6 +489,14 @@ export function BuyCalculator() {
             addedAt: Date.now(),
             buyPrice: perUnitBuyPrice,
             acquiredVia: "buy",
+            acquisitionTransactionId: savedTransaction?.id || null,
+            taxAcquisition: {
+              marginSchemeEligibility: transactionDetails.marginSchemeEligibility || "unreviewed",
+              counterpartyType: transactionDetails.counterpartyType || "unknown",
+              documentNumber: transactionDetails.documentNumber || "",
+              recordedCost: perUnitBuyPrice,
+              currency,
+            },
           };
           
           // Preserve manual entry information
@@ -633,20 +648,24 @@ export function BuyCalculator() {
         valueGained += cashDirection === "in" ? cashInPrimaryCurrency : -cashInPrimaryCurrency;
       }
 
-      let totalValue = selectedTotals.finalValue;
+      const totalValue = selectedTotals.finalValue;
       const inputCurrency = buyCurrency;
-      if (inputCurrency !== currency) {
-        totalValue = convertCurrency(totalValue, currency, inputCurrency);
-      }
+      const originalTotal = inputCurrency !== currency
+        ? convertCurrency(totalValue, inputCurrency, currency)
+        : totalValue;
 
       const transactionData = {
+        ...transactionDetails,
         type: "trade",
         totalValue,
+        originalTotal,
+        originalCurrency: inputCurrency,
         itemsIn,
         itemsOut,
         valueGained,
         notes: `Trade completed from deal calculator: ${itemsOut.length} card(s) out, ${itemsIn.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s) in${cashValue > 0 ? `, ${cashDirection === 'in' ? 'received' : 'paid'} ${formatCurrency(cashValue, cashCurrency)} cash` : ''}`,
-        currency
+        currency,
+        source: "buy_calculator_trade",
       };
 
       if (cashValue > 0) {
@@ -664,13 +683,14 @@ export function BuyCalculator() {
         transactionData.inputCurrency = inputCurrency;
       }
 
-      await recordTransaction(db, user.uid, transactionData);
+      const savedTransaction = await recordTransaction(db, user.uid, transactionData);
 
       const inventoryItems = [];
-      selectedItems.forEach(item => {
+      selectedItems.forEach((item, itemIndex) => {
         const qty = item.quantity || 1;
         const values = calculateItemValue(item);
-        const perUnitBuyPrice = values.finalUnit || 0;
+        const persistedLine = savedTransaction?.payload?.itemsIn?.[itemIndex];
+        const perUnitBuyPrice = persistedLine?.marketUnitPrice ?? persistedLine?.unitPrice ?? values.finalUnit ?? 0;
         for (let i = 0; i < qty; i++) {
           const inventoryItem = {
             entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -686,6 +706,15 @@ export function BuyCalculator() {
             addedAt: Date.now(),
             buyPrice: perUnitBuyPrice,
             acquiredVia: "trade",
+            acquisitionTransactionId: savedTransaction?.id || null,
+            taxAcquisition: {
+              marginSchemeEligibility: transactionDetails.marginSchemeEligibility || "unreviewed",
+              counterpartyType: transactionDetails.counterpartyType || "unknown",
+              documentNumber: transactionDetails.documentNumber || "",
+              valuation: perUnitBuyPrice,
+              valuationMethod: "recorded_fair_market_value",
+              currency,
+            },
           };
 
           if (item.isManualEntry) {
@@ -1336,6 +1365,14 @@ export function BuyCalculator() {
               </div>
             )}
             
+            {selectedIds.size > 0 && (
+              <TransactionDetailsFields
+                value={transactionDetails}
+                onChange={setTransactionDetails}
+                type="buy"
+              />
+            )}
+
             <div className="flex flex-wrap gap-3">
               <Button
                 size="sm"
