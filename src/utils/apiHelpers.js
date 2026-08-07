@@ -28,7 +28,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v4.5-stable';
+const CACHE_VERSION = 'v4.6-merged';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -118,6 +118,7 @@ async function apiSearchCardsRaw(
   {
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
     includeJapanese = true,
+    signal = null,
   } = {},
 ) {
   if (!query?.trim()) return [];
@@ -126,7 +127,7 @@ async function apiSearchCardsRaw(
     // Search both CardMarket (English) and JustTCG (Japanese) in parallel
     const searchPromises = [
       // CardMarket search (English cards)
-      fetch(`${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=${maxResults}`)
+      fetch(`${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=${maxResults}`, { signal })
         .then(r => r.ok ? r.json() : { success: false })
         .catch(() => ({ success: false })),
     ];
@@ -134,7 +135,7 @@ async function apiSearchCardsRaw(
     // Add Japanese card search if enabled
     if (includeJapanese) {
       searchPromises.push(
-        fetch(`${CLOUD_FUNCTIONS_BASE}/searchJapaneseCards?q=${encodeURIComponent(query)}&limit=20`)
+        fetch(`${CLOUD_FUNCTIONS_BASE}/searchJapaneseCards?q=${encodeURIComponent(query)}&limit=20`, { signal })
           .then(r => r.ok ? r.json() : { success: false })
           .catch(() => ({ success: false }))
       );
@@ -204,6 +205,7 @@ export async function apiSearchCards(
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
     includeJapanese = true,
     skipRanking = false, // Allow skipping ranking for hybrid search
+    signal = null,
   } = {},
 ) {
   if (!query?.trim()) return [];
@@ -219,7 +221,7 @@ export async function apiSearchCards(
   }
 
   // Fetch raw results
-  let items = await apiSearchCardsRaw(query, { maxResults, includeJapanese });
+  let items = await apiSearchCardsRaw(query, { maxResults, includeJapanese, signal });
   
   // If skipRanking is true, return raw results (used by hybrid search)
   if (skipRanking) {
@@ -365,7 +367,12 @@ export function enrichCardWithMarketPrices(card, marketPrices) {
  */
 export function formatSearchResults(results, query, limit) {
   if (!Array.isArray(results)) return [];
-  return results.slice(0, limit).map((card) => ({
+  return improveSearchResults(results, query, {
+    maxResults: limit,
+    enableDeduplication: true,
+    enableFiltering: true,
+    enableRanking: true,
+  }).map((card) => ({
     ...card,
     searchQuery: query,
   }));
@@ -549,11 +556,9 @@ export async function apiFetchMarketPrices(card) {
 }
 
 /**
- * Hybrid search using PriceCharting (primary) enriched with CardMarket (images)
- * CORRECTED FLOW:
- * - PriceCharting: PRIMARY search for card data (NO PRICES in search results)
- * - CardMarket: Image enrichment during search
- * - Prices: Fetched ON-DEMAND via apiFetchMarketPrices when user interacts with card
+ * Provider fallback search used when the shared card database has no match.
+ * CardMarket and Japanese results are normalized here; prices are fetched
+ * on-demand via apiFetchMarketPrices when the user selects a card.
  * 
  * Now includes query preprocessing for typo correction and set expansion!
  */
@@ -568,7 +573,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   if (!query?.trim()) return [];
   
   // STEP 0: Preprocess query (typo correction, set expansion)
-  const { processed: processedQuery, wasModified, corrections } = preprocessQuery(query);
+  const { processed: processedQuery, wasModified } = preprocessQuery(query);
   
   if (wasModified) {
     // Query preprocessed (typos/sets corrected)
@@ -750,59 +755,53 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Bail early if already aborted
   if (signal?.aborted) return [];
   
-  // Search BOTH APIs in parallel for comprehensive results
-  // Add timeout to prevent hanging (8s for CardMarket, 10s for PriceCharting)
+  // Keep a timeout guard around provider calls so a slow upstream cannot hold
+  // the UI indefinitely.
   const timeout = (ms) => new Promise((_, reject) => 
     setTimeout(() => reject(new Error('Search timeout')), ms)
   );
   
-  // Build search promises - include set-only search if we have set words
-  const searchPromises = [
-    // Primary search: Pokemon name
-    Promise.race([
-      apiSearchPriceCharting(searchQuery, { limit: maxResults }),
-      timeout(10000)
-    ]).catch(err => {
-      console.error('PriceCharting search error:', err.message);
-      return [];
+  const cardMarketResults = await Promise.race([
+    apiSearchCards(searchQuery, {
+      useCache: false,
+      maxResults,
+      skipRanking: true,
+      signal,
     }),
-    Promise.race([
-      apiSearchCards(searchQuery, { useCache: false, maxResults: maxResults, skipRanking: true }),
-      timeout(8000)
-    ]).catch(err => {
-      console.error('CardMarket search error:', err.message);
-      return [];
-    })
-  ];
-  
-  // Add set-only searches if applicable (to find cards FROM those sets)
-  // This handles cases like "classic collection" which needs to also search "celebrations"
-  // For rarity searches (Gold Star), use smaller result limit since we only need 1-3 per query
-  const isRaritySearch = (parsed.rarityFilters || []).length > 0;
-  const secondaryMaxResults = isRaritySearch ? 5 : 50;
-  for (const setQuery of setOnlyQueries) {
-    searchPromises.push(
+    timeout(8000),
+  ]).catch(err => {
+    if (err?.name !== 'AbortError') console.error('Card search error:', err.message);
+    return [];
+  });
+
+  // Secondary set/number searches used to fire for every query. They now run
+  // only as a fallback when the primary provider did not return enough useful
+  // candidates, dramatically reducing the common-case request fan-out.
+  let setSearchResults = [];
+  if (cardMarketResults.length < DEFAULT_SUGGESTION_LIMIT && setOnlyQueries.length > 0 && !signal?.aborted) {
+    const isRaritySearch = (parsed.rarityFilters || []).length > 0;
+    const secondaryMaxResults = isRaritySearch ? 5 : 50;
+    setSearchResults = await Promise.all(setOnlyQueries.map(setQuery =>
       Promise.race([
-        apiSearchCards(setQuery, { useCache: false, maxResults: secondaryMaxResults, skipRanking: true }),
-        timeout(8000)
+        apiSearchCards(setQuery, {
+          useCache: false,
+          maxResults: secondaryMaxResults,
+          skipRanking: true,
+          signal,
+        }),
+        timeout(8000),
       ]).catch(err => {
-        console.error(`Set search "${setQuery}" error:`, err.message);
+        if (err?.name !== 'AbortError') console.error(`Set search "${setQuery}" error:`, err.message);
         return [];
       })
-    );
+    ));
   }
-  
-  const searchResults = await Promise.all(searchPromises);
   
   // Bail if aborted while waiting for API responses
   if (signal?.aborted) return [];
   
-  const [priceChartingResults, cardMarketResults, ...setSearchResults] = searchResults;
-  
   // Merge all set search results into cardMarket results
   const combinedCardMarketResults = [...cardMarketResults, ...setSearchResults.flat()];
-  
-  // Results received from both APIs
   
   // Helper to normalize set names for better deduplication
   const normalizeSetName = (setName) => {
@@ -826,51 +825,19 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Create a Map to track unique cards (avoid duplicates)
   const cardMap = new Map();
   
-  // Track position scores for better ranking (earlier results from either API = higher priority)
-  const positionScores = new Map();
-  
   // Add CardMarket results (they have better images and set data)
   // Use combined results which includes set-only search results
-  combinedCardMarketResults.forEach((cmCard, index) => {
+  combinedCardMarketResults.forEach((cmCard) => {
     const key = createCardKey(cmCard);
     // Normalize field names (API returns card_number, we use number)
     cardMap.set(key, {
       ...cmCard,
       number: cmCard.number || cmCard.card_number, // Normalize card number field
       set: cmCard.set || cmCard.episode?.name, // Normalize set field
-      source: 'cardmarket',
+      source: cmCard.dataSource === 'justtcg' || cmCard._isJapaneseCard ? 'justtcg' : 'cardmarket',
       // CardMarket cards need priceChartingId for graded lookups
       priceChartingId: null,
     });
-    // Lower index = higher score (result #1 gets high score)
-    positionScores.set(key, 100 - index);
-  });
-  
-  // Enrich with PriceCharting data (adds priceChartingId for graded support)
-  priceChartingResults.forEach((pcCard, index) => {
-    const key = createCardKey(pcCard);
-    
-    if (cardMap.has(key)) {
-      // Card exists from CardMarket, just add PriceCharting ID
-      const existing = cardMap.get(key);
-      cardMap.set(key, {
-        ...existing,
-        priceChartingId: pcCard.priceChartingId,
-        fullName: pcCard.fullName, // Keep full name for reference
-      });
-      // Boost score if it's also early in PriceCharting results
-      const cmScore = positionScores.get(key) || 0;
-      const pcScore = 100 - index;
-      positionScores.set(key, cmScore + pcScore); // Combined score from both sources
-    } else {
-      // New card from PriceCharting only
-      cardMap.set(key, {
-        ...pcCard,
-        source: 'pricecharting',
-      });
-      // PriceCharting-only cards get their position score
-      positionScores.set(key, 100 - index);
-    }
   });
   
   // Convert Map back to array
@@ -903,8 +870,8 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   
   // Clean summary log (not verbose debug)
   const cmCount = finalResults.filter(c => c.source === 'cardmarket').length;
-  const pcCount = finalResults.filter(c => c.source === 'pricecharting').length;
-  if (import.meta.env.DEV) console.log(`✅ Search "${query}" → ${finalResults.length} results (${cmCount} CM, ${pcCount} PC)`);
+  const jpCount = finalResults.filter(c => c.source === 'justtcg').length;
+  if (import.meta.env.DEV) console.log(`✅ Search "${query}" → ${finalResults.length} results (${cmCount} CM, ${jpCount} JP)`);
   
   return finalResults;
 }
@@ -929,13 +896,14 @@ export async function apiSearchCardsCached(query, options = {}) {
   const {
     useCache = true,
     maxResults = MAX_SUGGESTION_LIMIT,
+    signal = null,
   } = options;
 
   // Searching with intelligent cache
   
   try {
     const searchUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/searchCards?q=${encodeURIComponent(query)}`;
-    const response = await fetch(searchUrl);
+    const response = await fetch(searchUrl, { signal });
     
     if (!response.ok) {
       throw new Error(`Search failed: ${response.statusText}`);
@@ -951,17 +919,23 @@ export async function apiSearchCardsCached(query, options = {}) {
     
     // If cached search returned results, use them
     if (data.results.length > 0) {
-      return data.results.slice(0, maxResults);
+      const results = improveSearchResults(data.results, query, {
+        maxResults,
+        enableDeduplication: true,
+        enableFiltering: true,
+        enableRanking: true,
+      });
+      if (useCache) setSearchCacheEntry(canonicalizeQuery(query), results);
+      return results;
     }
     
-    // No results from cache - fall back to hybrid search (PriceCharting + CardMarket)
-    // No cache results, falling back to hybrid search
-    return apiSearchCardsHybrid(query, options);
+    // No results from the database-backed endpoint: use the provider fallback.
+    return apiSearchCardsHybrid(query, { ...options, signal });
     
   } catch (error) {
+    if (error?.name === 'AbortError' || signal?.aborted) return [];
     console.error('❌ Cached search failed, falling back to hybrid search:', error.message);
     // Fallback to the existing hybrid search if cache search fails
-    return apiSearchCardsHybrid(query, options);
+    return apiSearchCardsHybrid(query, { ...options, signal });
   }
 }
-

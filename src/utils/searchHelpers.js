@@ -784,7 +784,7 @@ export function filterByRelevance(results, query) {
         
         // Match with word boundaries (handles "24/203", "024", etc.)
         // Split by common separators and check if any part matches
-        const cardParts = cardNum.split(/[\/\-_\s]+/);
+        const cardParts = cardNum.split(/[/_\s-]+/);
         if (cardParts.some(part => part === queryNum || normalizeCardNumber(part) === normalizeCardNumber(queryNum))) {
           return true;
         }
@@ -1037,7 +1037,10 @@ export function normalizeCardKey(card) {
     .replace(/\s+/g, ' ')
     .trim();
   
-  const number = String(card.number || '').toLowerCase().trim();
+  // Providers disagree on whether the printed denominator is included
+  // ("199" vs "199/165"). Within the same normalized set, the numerator is
+  // the stable card identity.
+  const number = normalizeCardNumber(card.number).split('/')[0];
   const set = normalizeSetName(card.set);
   
   // Primary key: name + number (most reliable)
@@ -1056,9 +1059,15 @@ export function calculateCompletenessScore(card) {
   if (card.set) score += 5;
   if (card.number) score += 5;
   if (card.rarity) score += 3;
-  if (card.prices?.tcgplayer) score += 3;
-  if (card.prices?.cardmarket) score += 3;
+  if (card.prices?.tcgplayer) score += 4;
+  if (card.prices?.cardmarket) score += 4;
   if (card.prices?.pricecharting) score += 3;
+  if (card.prices?.us) score += 2;
+  if (card.prices?.eu) score += 2;
+  if (card.gradedPrices && Object.keys(card.gradedPrices).length > 0) score += 4;
+  if (card.tcgplayerId || card.tcgPlayerId) score += 2;
+  if (card.cardMarketId) score += 2;
+  if (card.priceChartingId) score += 2;
   if (card.releaseDate) score += 2;
   if (card.artist) score += 1;
   
@@ -1069,72 +1078,99 @@ export function calculateCompletenessScore(card) {
  * Merge two cards, keeping the best data from each
  */
 export function mergeBestData(card1, card2) {
-  // Helper to get the best price object
-  const mergePrices = (prices1, prices2) => {
-    if (!prices1 && !prices2) return undefined;
-    if (!prices1) return prices2;
-    if (!prices2) return prices1;
-    
-    return {
-      tcgplayer: prices1.tcgplayer || prices2.tcgplayer,
-      cardmarket: prices1.cardmarket || prices2.cardmarket,
-      pricecharting: prices1.pricecharting || prices2.pricecharting,
-    };
+  const isPlainObject = (value) => Boolean(
+    value && typeof value === 'object' && !Array.isArray(value)
+  );
+  const hasValue = (value) => {
+    if (value === null || value === undefined || value === '') return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (isPlainObject(value)) return Object.keys(value).length > 0;
+    return true;
   };
-  
-  return {
-    // Prefer card with image
-    image: card1.image || card2.image,
-    
-    // Basic info (prefer non-empty values)
-    name: card1.name || card2.name,
-    set: card1.set || card2.set,
-    number: card1.number || card2.number,
-    rarity: card1.rarity || card2.rarity,
-    
-    // Merge prices
-    prices: mergePrices(card1.prices, card2.prices),
-    
-    // Keep links from both (prefer array)
-    links: card1.links || card2.links,
-    
-    // Keep both sources for reference
-    sources: [
-      ...(card1.sources || [card1.source]).filter(Boolean),
-      ...(card2.sources || [card2.source]).filter(Boolean),
-    ],
-    
-    // Additional metadata
-    releaseDate: card1.releaseDate || card2.releaseDate,
-    artist: card1.artist || card2.artist,
-    
-    // Preserve IDs from both
-    id: card1.id || card2.id,
-    slug: card1.slug || card2.slug,
-    entryId: card1.entryId || card2.entryId,
+  const mergeObjects = (preferred, fallback) => {
+    const merged = {};
+    const keys = new Set([
+      ...Object.keys(fallback || {}),
+      ...Object.keys(preferred || {}),
+    ]);
+    keys.forEach(key => {
+      const preferredValue = preferred?.[key];
+      const fallbackValue = fallback?.[key];
+      if (isPlainObject(preferredValue) && isPlainObject(fallbackValue)) {
+        merged[key] = mergeObjects(preferredValue, fallbackValue);
+      } else {
+        merged[key] = hasValue(preferredValue) ? preferredValue : fallbackValue;
+      }
+    });
+    return merged;
   };
+
+  const score1 = calculateCompletenessScore(card1);
+  const score2 = calculateCompletenessScore(card2);
+  const preferred = score2 > score1 ? card2 : card1;
+  const fallback = preferred === card1 ? card2 : card1;
+  const merged = mergeObjects(preferred, fallback);
+  const chooseDescriptiveValue = (...values) => values
+    .filter(hasValue)
+    .map(value => String(value).trim())
+    .sort((a, b) => b.length - a.length)[0];
+
+  // Use the full display label and printed number while retaining the richer
+  // record's nested prices, identifiers, grading data, and images.
+  merged.set = chooseDescriptiveValue(card1.set, card2.set) || '';
+  merged.number = chooseDescriptiveValue(card1.number, card2.number) || '';
+  merged.image = preferred.image || fallback.image || preferred.imageUrl || fallback.imageUrl;
+
+  const toSourceArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
+  const sources = [
+    ...toSourceArray(card1.sources),
+    card1.source,
+    card1.dataSource,
+    ...toSourceArray(card2.sources),
+    card2.source,
+    card2.dataSource,
+  ].filter(Boolean);
+  if (sources.length > 0) merged.sources = Array.from(new Set(sources));
+
+  return merged;
 }
 
 /**
  * Deduplicate results, merging duplicate cards
  */
 export function deduplicateResults(results) {
-  const cardMap = new Map();
-  
+  const identityGroups = new Map();
+
   for (const card of results) {
     const key = normalizeCardKey(card);
-    
-    if (!cardMap.has(key)) {
-      cardMap.set(key, card);
+    const [name, number, set] = key.split('::');
+    const baseKey = `${name}::${number}`;
+    if (!identityGroups.has(baseKey)) identityGroups.set(baseKey, new Map());
+    const setVariants = identityGroups.get(baseKey);
+
+    if (!setVariants.has(set)) {
+      setVariants.set(set, card);
     } else {
-      // Merge with existing card, keeping best data
-      const existing = cardMap.get(key);
-      const merged = mergeBestData(existing, card);
-      cardMap.set(key, merged);
+      setVariants.set(set, mergeBestData(setVariants.get(set), card));
     }
   }
-  
-  return Array.from(cardMap.values());
+
+  const deduplicated = [];
+  identityGroups.forEach(setVariants => {
+    const missingSetCard = setVariants.get('');
+    const knownSets = Array.from(setVariants.entries()).filter(([set]) => set);
+
+    // A record without set data is safe to merge only when one set candidate
+    // exists for that name and number. Otherwise keep it separate.
+    if (missingSetCard && knownSets.length === 1) {
+      deduplicated.push(mergeBestData(knownSets[0][1], missingSetCard));
+      return;
+    }
+
+    setVariants.forEach(card => deduplicated.push(card));
+  });
+
+  return deduplicated;
 }
 
 /**
@@ -1347,4 +1383,3 @@ export async function initSetCatalog(db) {
     console.warn('[initSetCatalog] Failed to load set catalog from Firestore:', error.message);
   }
 }
-

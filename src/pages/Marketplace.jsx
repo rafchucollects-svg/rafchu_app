@@ -1,4 +1,4 @@
-import { createElement, useState, useEffect, useMemo } from "react";
+import { createElement, useState, useEffect, useMemo, useDeferredValue } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,15 @@ import { ShoppingBag, Search, MessageCircle, MapPin, Star, Package, X, TrendingU
 import { useApp } from "@/contexts/AppContext";
 import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, computeItemMetrics } from "@/utils/cardHelpers";
 import { collection, getDocs, doc as firestoreDoc, getDoc, query, where, addDoc, serverTimestamp } from "firebase/firestore";
+import {
+  buildMarketplaceSearchIndex,
+  DEFAULT_MARKETPLACE_RESULT_LIMIT,
+  getMarketplaceCardKey,
+  searchMarketplace,
+} from "@/utils/marketplaceSearch";
+
+const MARKETPLACE_CACHE_TTL_MS = 5 * 60 * 1000;
+const marketplaceMemoryCache = new Map();
 
 /**
  * Marketplace Page (Collector Toolkit)
@@ -16,11 +25,12 @@ import { collection, getDocs, doc as firestoreDoc, getDoc, query, where, addDoc,
 export function Marketplace() {
   const { db, user, wishlistItems, collectionItems, currency, marketSource, userProfile, setVendorRequestModalOpen, addToWishlist, triggerQuickAddFeedback, communityImages, getImageForCard, refreshCommunityImages } = useApp();
   const navigate = useNavigate();
-  const [vendors, setVendors] = useState([]);
-  const [enrichedVendors, setEnrichedVendors] = useState([]);
+  const [vendorRecords, setVendorRecords] = useState([]);
+  const [popularityMap, setPopularityMap] = useState(() => new Map());
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState("all"); // "all", "cards", "vendors"
+  const [resultLimit, setResultLimit] = useState(DEFAULT_MARKETPLACE_RESULT_LIMIT);
   const [selectedCard, setSelectedCard] = useState(null); // For card detail modal
   const [messageModal, setMessageModal] = useState(null); // { vendor, cards }
   const [countryFilter, setCountryFilter] = useState(""); // Country filter
@@ -33,24 +43,37 @@ export function Marketplace() {
     localStorage.setItem('vendorCtaDismissed', 'true');
   };
 
-  // Load all vendors and their inventories
+  // Load marketplace data in parallel. Keep a short-lived in-memory snapshot so
+  // returning to this route is instant while fresh data loads in the background.
   useEffect(() => {
     if (!db || !user) {
       setLoading(false);
       return;
     }
 
+    let cancelled = false;
+    const cacheKey = user.uid;
+    const cached = marketplaceMemoryCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < MARKETPLACE_CACHE_TTL_MS) {
+      setVendorRecords(cached.vendorRecords);
+      setPopularityMap(cached.popularityMap);
+      setLoading(false);
+    }
+
     const loadVendors = async () => {
       try {
-        setLoading(true);
-        
-        // Get all user profiles
+        if (!cached) setLoading(true);
+
         const usersRef = collection(db, "users");
-        const usersSnapshot = await getDocs(usersRef);
-        
-        // Load all wishlists to calculate popular cards
         const wishlistsRef = collection(db, "collector_wishlists");
-        const wishlistsSnapshot = await getDocs(wishlistsRef);
+        const ratingsRef = collection(db, "ratings");
+        const [activeVendorsSnapshot, legacyVendorsSnapshot, wishlistsSnapshot, ratingsSnapshot] = await Promise.all([
+          getDocs(query(usersRef, where("vendorAccess.enabled", "==", true))),
+          getDocs(query(usersRef, where("isVendor", "==", true))),
+          getDocs(wishlistsRef),
+          getDocs(ratingsRef),
+        ]);
+
         const allWishlistItems = [];
         wishlistsSnapshot.forEach(doc => {
           const data = doc.data();
@@ -60,170 +83,129 @@ export function Marketplace() {
         });
         
         // Create a popularity map: cardId/name+set+number -> count
-        const popularityMap = new Map();
+        const nextPopularityMap = new Map();
         allWishlistItems.forEach(item => {
-          const key = item.cardId || `${item.name}-${item.set}-${item.number}`;
-          popularityMap.set(key, (popularityMap.get(key) || 0) + 1);
+          const key = getMarketplaceCardKey(item);
+          nextPopularityMap.set(key, (nextPopularityMap.get(key) || 0) + 1);
         });
-        
-        const vendorData = [];
-        
-        for (const userDoc of usersSnapshot.docs) {
+
+        const ratingsByVendor = new Map();
+        ratingsSnapshot.forEach(ratingDoc => {
+          const rating = ratingDoc.data();
+          if (!rating.toUserId) return;
+          const vendorRatings = ratingsByVendor.get(rating.toUserId) || [];
+          vendorRatings.push(rating);
+          ratingsByVendor.set(rating.toUserId, vendorRatings);
+        });
+
+        const vendorDocsById = new Map();
+        activeVendorsSnapshot.docs.forEach(userDoc => vendorDocsById.set(userDoc.id, userDoc));
+        legacyVendorsSnapshot.docs.forEach(userDoc => vendorDocsById.set(userDoc.id, userDoc));
+
+        const vendorProfiles = Array.from(vendorDocsById.values()).flatMap(userDoc => {
           const profile = userDoc.data();
-          
-          // Skip vendors who had access revoked (vendorAccess explicitly disabled)
-          if (profile.vendorAccess?.enabled === false) continue;
-          
-          // Only include vendors with active vendor access or legacy vendors
+          if (profile.vendorAccess?.enabled === false) return [];
           const hasActiveVendorAccess = profile.vendorAccess?.enabled === true && profile.vendorAccess?.status === "active";
           const isLegacyVendor = profile.isVendor === true && profile.vendorAccess?.enabled !== false;
-          
-          if (!hasActiveVendorAccess && !isLegacyVendor) continue;
-          
-          // Get their inventory. A vendor who hasn't enabled sharing will be
-          // denied by security rules; skip them instead of failing the whole
-          // marketplace load.
+          return hasActiveVendorAccess || isLegacyVendor ? [{ userDoc, profile }] : [];
+        });
+
+        const vendorResults = await Promise.allSettled(vendorProfiles.map(async ({ userDoc, profile }) => {
           const inventoryRef = firestoreDoc(db, "collections", userDoc.id);
-          let inventorySnap;
           try {
-            inventorySnap = await getDoc(inventoryRef);
-          } catch (err) {
-            console.warn(`Skipping vendor ${userDoc.id}: inventory not readable`, err?.code || err);
-            continue;
-          }
-          
-          if (inventorySnap.exists()) {
+            const inventorySnap = await getDoc(inventoryRef);
+            if (!inventorySnap.exists()) return null;
+
             const inventoryData = inventorySnap.data();
             const allItems = Array.isArray(inventoryData.items) ? inventoryData.items : [];
-            // Filter out cards excluded from sale
             const items = allItems.filter(item => !item.excludeFromSale);
-            
-            // Skip vendors with empty inventory
-            if (items.length === 0) continue;
-            
-            const vendorRoundUpPrices = inventoryData.roundUp || false; // Get vendor's round-up preference
-            
-            // Calculate matches with wishlist
-            const wishlistMatches = wishlistItems.filter(wishItem =>
-              items.some(invItem =>
-                invItem.cardId === wishItem.cardId ||
-                (invItem.name === wishItem.name && invItem.set === wishItem.set && invItem.number === wishItem.number)
-              )
-            );
-            
-            // Calculate popular cards count (cards that appear in many wishlists)
-            let popularCardsCount = 0;
-            items.forEach(item => {
-              const key = item.cardId || `${item.name}-${item.set}-${item.number}`;
-              const popularity = popularityMap.get(key) || 0;
-              if (popularity >= 2) { // Card is in 2+ wishlists = popular
-                popularCardsCount++;
-              }
-            });
-            
-            // Load vendor ratings
-            const ratingsQuery = query(
-              collection(db, "ratings"),
-              where("toUserId", "==", userDoc.id)
-            );
-            const ratingsSnap = await getDocs(ratingsQuery);
-            const ratingsData = ratingsSnap.docs.map(doc => doc.data());
-            
-            let ratingPercentage = null;
-            if (ratingsData.length > 0) {
-              const thumbsUpCount = ratingsData.filter(r => r.thumbsUp === true).length;
-              ratingPercentage = Math.round((thumbsUpCount / ratingsData.length) * 100);
-            }
-            
-            // Check location match
-            const locationMatch = userProfile?.country && profile.country === userProfile.country;
-            
-            vendorData.push({
+            if (items.length === 0) return null;
+
+            const ratingsData = ratingsByVendor.get(userDoc.id) || [];
+            const thumbsUpCount = ratingsData.filter(rating => rating.thumbsUp === true).length;
+
+            return {
               userId: userDoc.id,
               profile,
               inventory: items,
-              wishlistMatches: wishlistMatches.length,
               totalCards: items.length,
-              roundUpPrices: vendorRoundUpPrices,
-              ratingPercentage,
+              roundUpPrices: inventoryData.roundUp || false,
+              ratingPercentage: ratingsData.length > 0
+                ? Math.round((thumbsUpCount / ratingsData.length) * 100)
+                : null,
               totalRatings: ratingsData.length,
-              popularCardsCount,
-              locationMatch,
-            });
+            };
+          } catch (err) {
+            console.warn(`Skipping vendor ${userDoc.id}: inventory not readable`, err?.code || err);
+            return null;
           }
-        }
-        
-        // Smart sorting: prioritize location match, wishlist matches, popular cards, and ratings
-        vendorData.sort((a, b) => {
-          // 1. Location match (same country as user) - highest priority
-          if (a.locationMatch !== b.locationMatch) {
-            return a.locationMatch ? -1 : 1;
-          }
-          
-          // 2. Wishlist matches - very important
-          if (a.wishlistMatches !== b.wishlistMatches) {
-            return b.wishlistMatches - a.wishlistMatches;
-          }
-          
-          // 3. Popular cards count - helps discover new cards
-          if (a.popularCardsCount !== b.popularCardsCount) {
-            return b.popularCardsCount - a.popularCardsCount;
-          }
-          
-          // 4. Rating percentage - quality indicator
-          const aRating = a.ratingPercentage || 0;
-          const bRating = b.ratingPercentage || 0;
-          if (aRating !== bRating) {
-            return bRating - aRating;
-          }
-          
-          // 5. Total inventory size - more options
-          return b.totalCards - a.totalCards;
+        }));
+
+        const nextVendorRecords = vendorResults.flatMap(result =>
+          result.status === "fulfilled" && result.value ? [result.value] : []
+        );
+        if (cancelled) return;
+
+        marketplaceMemoryCache.set(cacheKey, {
+          timestamp: Date.now(),
+          vendorRecords: nextVendorRecords,
+          popularityMap: nextPopularityMap,
         });
-        
-        setVendors(vendorData);
+        setVendorRecords(nextVendorRecords);
+        setPopularityMap(nextPopularityMap);
       } catch (error) {
         console.error("Failed to load marketplace:", error);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     loadVendors();
-  }, [db, user, wishlistItems]);
+    return () => {
+      cancelled = true;
+    };
+  }, [db, user]);
 
-  // Lazy load community images for all vendor inventories
-  useEffect(() => {
-    if (vendors.length === 0) {
-      setEnrichedVendors([]);
-      return;
-    }
-    
-    // Check if any cards are missing images
-    const hasCardsWithoutImages = vendors.some(vendor => 
-      vendor.inventory.some(item => !item.image)
-    );
-    
-    // No cards without images? No need to fetch community images
-    if (!hasCardsWithoutImages) {
-      setEnrichedVendors(vendors);
-      return;
-    }
-    
-    // Cards without images exist - check if we have community images
-    if (!communityImages && refreshCommunityImages) {
-      // Lazy load community images on first need
-      console.log('📸 Lazy loading community images for marketplace...');
-      refreshCommunityImages().then(() => {
-        // After loading, apply images (will trigger this effect again with communityImages populated)
+  const vendors = useMemo(() => {
+    const wishlistKeys = new Set(wishlistItems.map(getMarketplaceCardKey));
+
+    return vendorRecords.map(vendor => {
+      let wishlistMatches = 0;
+      let popularCardsCount = 0;
+      vendor.inventory.forEach(item => {
+        const key = getMarketplaceCardKey(item);
+        if (wishlistKeys.has(key)) wishlistMatches += 1;
+        if ((popularityMap.get(key) || 0) >= 2) popularCardsCount += 1;
       });
-      // Set vendors without enrichment for now
-      setEnrichedVendors(vendors);
-      return;
+
+      return {
+        ...vendor,
+        wishlistMatches,
+        popularCardsCount,
+        locationMatch: Boolean(userProfile?.country && vendor.profile.country === userProfile.country),
+      };
+    }).sort((a, b) => {
+      if (a.locationMatch !== b.locationMatch) return a.locationMatch ? -1 : 1;
+      if (a.wishlistMatches !== b.wishlistMatches) return b.wishlistMatches - a.wishlistMatches;
+      if (a.popularCardsCount !== b.popularCardsCount) return b.popularCardsCount - a.popularCardsCount;
+      if ((a.ratingPercentage || 0) !== (b.ratingPercentage || 0)) {
+        return (b.ratingPercentage || 0) - (a.ratingPercentage || 0);
+      }
+      return b.totalCards - a.totalCards;
+    });
+  }, [vendorRecords, wishlistItems, popularityMap, userProfile?.country]);
+
+  // Lazy load community images only when at least one visible inventory needs them.
+  useEffect(() => {
+    const hasCardsWithoutImages = vendors.some(vendor => vendor.inventory.some(item => !item.image));
+    if (hasCardsWithoutImages && !communityImages && refreshCommunityImages) {
+      refreshCommunityImages();
     }
-    
-    // We have community images - enrich all vendor inventories
-    const enriched = vendors.map(vendor => ({
+  }, [vendors, communityImages, refreshCommunityImages]);
+
+  const enrichedVendors = useMemo(() => {
+    if (!communityImages) return vendors;
+    return vendors.map(vendor => ({
       ...vendor,
       inventory: vendor.inventory.map(item => {
         if (item.image) return item;
@@ -231,9 +213,7 @@ export function Marketplace() {
         return communityImage ? { ...item, image: communityImage } : item;
       })
     }));
-    
-    setEnrichedVendors(enriched);
-  }, [vendors, communityImages, getImageForCard, refreshCommunityImages]);
+  }, [vendors, communityImages, getImageForCard]);
 
   // Generate recommendations based on collector's collection
   const recommendations = useMemo(() => {
@@ -242,17 +222,14 @@ export function Marketplace() {
     // Extract sets and types from collector's collection
     const collectorSets = new Set(collectionItems.map(item => item.set).filter(Boolean));
     const collectorTypes = new Set(collectionItems.map(item => item.type).filter(Boolean));
+    const collectorCardKeys = new Set(collectionItems.map(getMarketplaceCardKey));
     
     // Find cards in vendor inventories that match collector's interests
     const allVendorCards = [];
     enrichedVendors.forEach(vendor => {
       vendor.inventory.forEach(card => {
         // Skip if collector already has this card
-        const alreadyHas = collectionItems.some(c => 
-          c.cardId === card.cardId || 
-          (c.name === card.name && c.set === card.set && c.number === card.number)
-        );
-        if (alreadyHas) return;
+        if (collectorCardKeys.has(getMarketplaceCardKey(card))) return;
 
         // Score based on set and type match
         let score = 0;
@@ -278,7 +255,7 @@ export function Marketplace() {
     allVendorCards
       .sort((a, b) => b.score - a.score)
       .forEach(card => {
-        const key = `${card.name}-${card.set}-${card.number}`;
+        const key = getMarketplaceCardKey(card);
         if (!seenCards.has(key) && uniqueCards.length < 5) {
           seenCards.add(key);
           uniqueCards.push(card);
@@ -335,48 +312,30 @@ export function Marketplace() {
     return Array.from(countries).sort();
   }, [enrichedVendors]);
 
-  // Search results: unified card and vendor search
-  const searchResults = useMemo(() => {
-    if (!searchQuery.trim()) return { cards: [], vendors: [] };
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const isSearchPending = searchQuery !== deferredSearchQuery;
+  const searchIndex = useMemo(
+    () => buildMarketplaceSearchIndex(enrichedVendors),
+    [enrichedVendors],
+  );
 
-    const term = searchQuery.toLowerCase();
-    const cardResults = new Map(); // key: cardId or name+set+number, value: { card, vendors: [] }
-    const vendorResults = [];
+  useEffect(() => {
+    setResultLimit(DEFAULT_MARKETPLACE_RESULT_LIMIT);
+  }, [deferredSearchQuery, searchMode, countryFilter]);
 
-    enrichedVendors.forEach(vendor => {
-      // Check if vendor name matches
-      const vendorMatches = vendor.profile.username?.toLowerCase().includes(term);
-      if (vendorMatches) {
-        vendorResults.push(vendor);
-      }
+  const searchResults = useMemo(
+    () => searchMarketplace(searchIndex, {
+      query: deferredSearchQuery,
+      mode: searchMode,
+      country: countryFilter,
+      limit: resultLimit,
+    }),
+    [searchIndex, deferredSearchQuery, searchMode, countryFilter, resultLimit],
+  );
 
-      // Check inventory for card matches
-      if (searchMode === "all" || searchMode === "cards") {
-        vendor.inventory.forEach(card => {
-          const cardMatches = 
-            String(card.name || "").toLowerCase().includes(term) ||
-            String(card.set || "").toLowerCase().includes(term) ||
-            String(card.number || "").toLowerCase().includes(term);
-
-          if (cardMatches) {
-            const key = card.cardId || `${card.name}-${card.set}-${card.number}`;
-            if (!cardResults.has(key)) {
-              cardResults.set(key, { card, vendors: [] });
-            }
-            cardResults.get(key).vendors.push({
-              ...vendor,
-              cardInstance: card, // Specific instance with condition and price
-            });
-          }
-        });
-      }
-    });
-
-    return {
-      cards: Array.from(cardResults.values()),
-      vendors: searchMode === "cards" ? [] : vendorResults,
-    };
-  }, [searchQuery, enrichedVendors, searchMode]);
+  const hasMoreSearchResults =
+    searchResults.totalCards > searchResults.cards.length ||
+    searchResults.totalVendors > searchResults.vendors.length;
 
   // Get market price for a card (based on collector's preference)
   const getMarketPrice = (card) => {
@@ -663,11 +622,17 @@ export function Marketplace() {
               <div className="flex items-center gap-3 flex-1">
                 <Search className="h-5 w-5 text-muted-foreground" />
                 <Input
+                  aria-label="Search marketplace cards and vendors"
                   placeholder="Search for cards or vendors..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="flex-1"
                 />
+                {isSearchPending && (
+                  <span className="text-xs font-semibold text-muted-foreground" role="status">
+                    Updating…
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <MapPin className="h-4 w-4 text-muted-foreground" />
@@ -727,13 +692,13 @@ export function Marketplace() {
           {/* Card Results */}
           {searchResults.cards.length > 0 && (
             <div className="mb-6">
-              <h2 className="text-xl font-bold mb-3">Card Results ({searchResults.cards.length})</h2>
+              <h2 className="text-xl font-bold mb-3">Card Results ({searchResults.totalCards})</h2>
               <div className="grid gap-3">
-                {searchResults.cards.map((result, idx) => {
+                {searchResults.cards.map((result) => {
                   const marketPrice = getMarketPrice(result.card);
                   return (
                     <Card
-                      key={idx}
+                      key={result.key}
                       className="rounded-2xl p-4 hover:bg-accent/40 transition cursor-pointer"
                       onClick={() => handleCardClick(result)}
                     >
@@ -744,6 +709,8 @@ export function Marketplace() {
                             <img
                               src={result.card.image}
                               alt={result.card.name}
+                              loading="lazy"
+                              decoding="async"
                               className="w-20 h-28 object-contain rounded-lg border shadow-sm"
                               onError={(e) => { e.target.style.display = 'none'; }}
                             />
@@ -800,7 +767,7 @@ export function Marketplace() {
           {/* Vendor Results */}
           {searchResults.vendors.length > 0 && (
             <div className="mb-6">
-              <h2 className="text-xl font-bold mb-3">Vendor Results ({searchResults.vendors.length})</h2>
+              <h2 className="text-xl font-bold mb-3">Vendor Results ({searchResults.totalVendors})</h2>
               <div className="grid gap-3">
                 {searchResults.vendors.map((vendor) => (
                   <Card
@@ -814,6 +781,8 @@ export function Marketplace() {
                           <img
                             src={vendor.profile.photoURL}
                             alt={vendor.profile.username}
+                            loading="lazy"
+                            decoding="async"
                             className="h-12 w-12 rounded-full object-cover"
                           />
                         ) : (
@@ -864,13 +833,24 @@ export function Marketplace() {
           )}
 
           {/* No Results */}
-          {searchResults.cards.length === 0 && searchResults.vendors.length === 0 && (
+          {!isSearchPending && searchResults.cards.length === 0 && searchResults.vendors.length === 0 && (
             <Card>
               <CardContent className="p-6 text-center text-muted-foreground">
                 <Search className="h-12 w-12 mx-auto mb-3" />
                 <p>No cards or vendors found matching "{searchQuery}"</p>
               </CardContent>
             </Card>
+          )}
+
+          {hasMoreSearchResults && (
+            <div className="mb-6 flex justify-center">
+              <Button
+                variant="outline"
+                onClick={() => setResultLimit(limit => limit + DEFAULT_MARKETPLACE_RESULT_LIMIT)}
+              >
+                Show more results
+              </Button>
+            </div>
           )}
         </>
       )}

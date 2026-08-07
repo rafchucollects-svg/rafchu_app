@@ -7,7 +7,7 @@ import { Store, Plus, LayoutGrid, Upload, ExternalLink, PlusCircle, Search } fro
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "@/contexts/AppContext";
 import {
-  apiSearchCardsHybrid,
+  apiSearchCardsCached,
   apiFetchCardDetails,
   apiFetchMarketPrices,
   apiFetchGradedPrices,
@@ -15,9 +15,11 @@ import {
   formatSearchResults,
   canonicalizeQuery,
   getSearchCacheEntry,
+  setSearchCacheEntry,
   DEFAULT_SUGGESTION_LIMIT,
   MAX_SUGGESTION_LIMIT 
 } from "@/utils/apiHelpers";
+import { searchCardDatabaseCache } from "@/utils/cardSearchCache";
 import { 
   SuggestionItem, 
   ConditionSelect,
@@ -51,6 +53,7 @@ export function CardSearch({ mode = "collector" }) {
   const isVendor = mode === "vendor";
   
   const {
+    db,
     user,
     query,
     setQuery,
@@ -81,7 +84,7 @@ export function CardSearch({ mode = "collector" }) {
     refreshCommunityImages,
   } = useApp();
 
-  const debounced = useDebouncedValue(query, 500);
+  const debounced = useDebouncedValue(query, 250);
   const lastFetchedCanonicalRef = useRef("");
   const activeSearchTokenRef = useRef(null);
   
@@ -140,6 +143,21 @@ export function CardSearch({ mode = "collector" }) {
     [suggestions],
   );
 
+  const prepareSearchResults = useCallback((results, searchValue) => {
+    const prepared = formatSearchResults(
+      results,
+      searchValue,
+      MAX_SUGGESTION_LIMIT,
+    );
+
+    if (!communityImages) return prepared;
+    return prepared.map(card => {
+      if (card.image) return card;
+      const image = getImageForCard(card);
+      return image ? { ...card, image } : card;
+    });
+  }, [communityImages, getImageForCard]);
+
   // Search effect
   useEffect(() => {
     const abortController = new AbortController();
@@ -157,11 +175,7 @@ export function CardSearch({ mode = "collector" }) {
 
     const cached = getSearchCacheEntry(canonical);
     if (cached?.results?.length) {
-      const prepared = formatSearchResults(
-        cached.results,
-        debounced,
-        MAX_SUGGESTION_LIMIT,
-      );
+      const prepared = prepareSearchResults(cached.results, debounced);
       setSuggestions(prepared);
       lastFetchedCanonicalRef.current = canonical;
       if (!cached.expired) {
@@ -179,17 +193,42 @@ export function CardSearch({ mode = "collector" }) {
 
     (async () => {
       try {
-        const results = await apiSearchCardsHybrid(debounced, {
-          useCache: false,
+        // Query the public Firestore card cache directly, avoiding a Cloud
+        // Function cold start on the common path.
+        if (db) {
+          try {
+            const databaseResults = await searchCardDatabaseCache(db, debounced, {
+              maxResults: MAX_SUGGESTION_LIMIT,
+              signal: abortController.signal,
+            });
+            if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
+            if (databaseResults.length > 0) {
+              const prepared = prepareSearchResults(databaseResults, debounced);
+              setSearchCacheEntry(canonical, prepared);
+              setSuggestions(prepared);
+              setLoading(false);
+              lastFetchedCanonicalRef.current = canonical;
+              activeSearchTokenRef.current = null;
+
+              if (prepared.some(card => !card.image) && !communityImages && refreshCommunityImages) {
+                refreshCommunityImages();
+              }
+              return;
+            }
+          } catch (cacheError) {
+            if (cacheError?.code !== "permission-denied" && cacheError?.name !== "AbortError") {
+              console.warn("Card database cache unavailable:", cacheError.message);
+            }
+          }
+        }
+
+        const results = await apiSearchCardsCached(debounced, {
+          useCache: true,
           maxResults: MAX_SUGGESTION_LIMIT,
           signal: abortController.signal,
         });
         if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
-        const prepared = formatSearchResults(
-          results,
-          debounced,
-          MAX_SUGGESTION_LIMIT,
-        );
+        const prepared = prepareSearchResults(results, debounced);
         
         // Apply community images - lazy load only if needed
         let enrichedResults = prepared;
@@ -205,14 +244,6 @@ export function CardSearch({ mode = "collector" }) {
                 }
                 return card;
               }));
-            });
-          } else if (communityImages) {
-            enrichedResults = prepared.map(card => {
-              if (!card.image) {
-                const image = getImageForCard(card);
-                if (image) return { ...card, image };
-              }
-              return card;
             });
           }
         }
@@ -233,7 +264,18 @@ export function CardSearch({ mode = "collector" }) {
     })();
 
     return () => abortController.abort();
-  }, [debounced, setError, setShowAllSuggestions, setSuggestions, setLoading]);
+  }, [
+    db,
+    communityImages,
+    debounced,
+    getImageForCard,
+    prepareSearchResults,
+    refreshCommunityImages,
+    setError,
+    setLoading,
+    setShowAllSuggestions,
+    setSuggestions,
+  ]);
 
   // Pick card handler
   const pickCard = async (item) => {
@@ -622,7 +664,7 @@ export function CardSearch({ mode = "collector" }) {
     } else {
       handleQuickAddBuy(activeCard);
     }
-  }, [activeCard, isGradedFilter, gradedPrice, selectedGradingCompany, selectedGrade, currency, buyItems, setBuyItems, triggerQuickAddFeedback, handleQuickAddBuy]);
+  }, [activeCard, isGradedFilter, gradedPrice, selectedGradingCompany, selectedGrade, buyItems, setBuyItems, triggerQuickAddFeedback, handleQuickAddBuy]);
   
   // Handler for graded modal submission
   const handleGradedModalSubmit = useCallback(async ({ card, gradingCompany, grade, isGraded }) => {
@@ -791,9 +833,9 @@ export function CardSearch({ mode = "collector" }) {
           {/* Suggestions */}
           {visibleSuggestions.length > 0 && (
             <div className="divide-y rounded-xl border">
-              {visibleSuggestions.map((s) => (
+              {visibleSuggestions.map((s, index) => (
                 <SuggestionItem
-                  key={`${s.id}-${s.slug}`}
+                  key={`${s.cardKey || s.id || s.tcgplayerId || s.priceChartingId || `${s.name}-${s.set}-${s.number}`}-${index}`}
                   item={s}
                   onPick={pickCard}
                   onQuickAddCollection={handleQuickAddCollection}

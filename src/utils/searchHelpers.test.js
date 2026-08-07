@@ -391,6 +391,16 @@ describe("normalizeCardKey", () => {
     const card2 = { name: "Pikachu", number: "25", set: "Base Set" };
     expect(normalizeCardKey(card1)).not.toBe(normalizeCardKey(card2));
   });
+
+  it("normalizes provider set aliases and printed number denominators", () => {
+    const cachedCard = { name: "Charizard ex", number: 199, set: "151" };
+    const providerCard = {
+      name: "Charizard ex",
+      number: "199/165",
+      set: "Scarlet & Violet 151",
+    };
+    expect(normalizeCardKey(cachedCard)).toBe(normalizeCardKey(providerCard));
+  });
 });
 
 describe("calculateCompletenessScore", () => {
@@ -431,6 +441,40 @@ describe("mergeBestData", () => {
     expect(merged.prices.tcgplayer.market_price).toBe(10);
     expect(merged.prices.cardmarket.lowest_near_mint).toBe(8);
   });
+
+  it("deep-merges complementary provider data and keeps descriptive labels", () => {
+    const priced = {
+      name: "Charizard ex",
+      set: "151",
+      number: 199,
+      image: "https://example.com/charizard.png",
+      cardMarketId: "2682-trade-record",
+      prices: {
+        tcgplayer: { market_price: 380.19 },
+        cardmarket: { average: 432.58 },
+      },
+      source: "cardmarket-cache",
+    };
+    const descriptive = {
+      name: "Charizard ex",
+      set: "Scarlet & Violet 151",
+      number: "199/165",
+      cardMarketId: 2682,
+      prices: { tcgplayer: { low_price: 323.16 } },
+      gradedPrices: { "PSA-10": 900 },
+      source: "tcgplayer",
+    };
+
+    const merged = mergeBestData(priced, descriptive);
+    expect(merged.set).toBe("Scarlet & Violet 151");
+    expect(merged.number).toBe("199/165");
+    expect(merged.image).toBe(priced.image);
+    expect(merged.prices.tcgplayer.market_price).toBe(380.19);
+    expect(merged.prices.tcgplayer.low_price).toBe(323.16);
+    expect(merged.prices.cardmarket.average).toBe(432.58);
+    expect(merged.gradedPrices["PSA-10"]).toBe(900);
+    expect(merged.sources).toEqual(expect.arrayContaining(["cardmarket-cache", "tcgplayer"]));
+  });
 });
 
 describe("deduplicateResults", () => {
@@ -461,6 +505,38 @@ describe("deduplicateResults", () => {
 
   it("handles empty array", () => {
     expect(deduplicateResults([])).toEqual([]);
+  });
+
+  it("merges the duplicate Charizard 151 cache records into one complete card", () => {
+    const cards = [
+      {
+        name: "Charizard ex",
+        set: "151",
+        number: 199,
+        image: "https://example.com/charizard.png",
+        prices: {
+          tcgplayer: { market_price: 380.19 },
+          cardmarket: { average: 432.58 },
+        },
+      },
+      {
+        name: "Charizard ex",
+        set: "Scarlet & Violet 151",
+        number: "199",
+        rarity: "Special Illustration Rare",
+      },
+    ];
+
+    const deduped = deduplicateResults(cards);
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0]).toMatchObject({
+      name: "Charizard ex",
+      set: "Scarlet & Violet 151",
+      number: "199",
+      rarity: "Special Illustration Rare",
+    });
+    expect(deduped[0].prices.tcgplayer.market_price).toBe(380.19);
+    expect(deduped[0].prices.cardmarket.average).toBe(432.58);
   });
 });
 
