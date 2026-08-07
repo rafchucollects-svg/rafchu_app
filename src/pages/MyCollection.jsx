@@ -1,11 +1,12 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Package, Trash2, ArrowRight, X, Download, Share2, Filter, Edit2, Check, Upload, Award } from "lucide-react";
+import { Package, Trash2, ArrowRight, X, Download, Share2, Filter, Edit2, Check, Upload, Award, LogIn, Search, TrendingUp } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
-import { computeInventoryTotals, formatCurrency, saveCollection, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, exportToCSV, getConditionColorClass, convertCurrency } from "@/utils/cardHelpers";
+import { formatCurrency, saveCollection, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, exportToCSV, getConditionColorClass, convertCurrency } from "@/utils/cardHelpers";
 import { ConditionSelect, PriceRow } from "@/components/CardComponents";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
@@ -34,7 +35,6 @@ export function MyCollection() {
     setCollectionSortDir,
     marketSource,
     currency,
-    tradeItems,
     setTradeItems,
     triggerQuickAddFeedback,
     communityImages,
@@ -323,19 +323,6 @@ export function MyCollection() {
     }
   };
 
-  // Update condition
-  const updateCondition = async (entryId, newCondition) => {
-    if (!user || !db) return;
-    try {
-      const updatedItems = collectionItems.map(item =>
-        item.entryId === entryId ? { ...item, condition: newCondition } : item
-      );
-      await saveCollectorCollection(updatedItems);
-    } catch (error) {
-      console.error("Failed to update condition", error);
-    }
-  };
-
   // Update manual price
   const updateManualPrice = async (entryId, manualPrice) => {
     if (!user || !db) return;
@@ -572,11 +559,35 @@ export function MyCollection() {
 
   if (!user) {
     return (
-      <div className="max-w-6xl mx-auto">
-        <Card>
-          <CardContent className="p-6 text-center">
-            <Package className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
-            <p className="text-muted-foreground">Please sign in to view your collection.</p>
+      <div className="mx-auto max-w-5xl">
+        <Card className="overflow-hidden border-slate-800 bg-slate-950 text-white shadow-[0_28px_80px_rgba(15,23,42,.2)]">
+          <CardContent className="grid gap-8 p-7 sm:p-10 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-center">
+            <div>
+              <div className="mb-5 grid h-12 w-12 place-items-center rounded-2xl bg-amber-300 text-slate-950 shadow-[3px_3px_0_rgba(255,255,255,.18)]">
+                <Package className="h-5 w-5" />
+              </div>
+              <p className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-amber-300">Your cards</p>
+              <h1 className="mt-2 text-3xl font-extrabold tracking-[-0.05em] sm:text-4xl">Turn your binder into a living portfolio.</h1>
+              <p className="mt-4 max-w-xl text-sm leading-7 text-slate-300">Track condition, grade, quantity, and live market value—then share or export the collection whenever you need it.</p>
+              <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+                <Button onClick={() => window.dispatchEvent(new Event("rafchu:open-login"))} className="!border-amber-300 !bg-amber-300 !text-slate-950 hover:!bg-amber-200">
+                  <LogIn className="mr-2 h-4 w-4" /> Sign in to view your collection
+                </Button>
+                <Link to="/search"><Button variant="outline" className="w-full border-slate-700 bg-slate-900 text-white hover:border-amber-300 hover:bg-slate-800 hover:text-white sm:w-auto"><Search className="mr-2 h-4 w-4" /> Search cards</Button></Link>
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-5">
+              <div className="text-xs font-bold text-slate-400">Collection overview</div>
+              <div className="mt-2 text-3xl font-extrabold tracking-[-0.05em]">€12,840.60</div>
+              <div className="mt-2 flex items-center gap-1.5 text-xs font-bold text-emerald-300"><TrendingUp className="h-3.5 w-3.5" /> €734.20 this month</div>
+              <div className="mt-6 h-16 rounded-xl bg-[linear-gradient(145deg,rgba(246,204,68,.05),rgba(246,204,68,.18))] p-3">
+                <div className="h-full w-full border-b-2 border-amber-300 [clip-path:polygon(0_75%,12%_62%,24%_68%,38%_45%,51%_54%,64%_27%,76%_35%,89%_10%,100%_18%,100%_100%,0_100%)] bg-amber-300/15" />
+              </div>
+              <div className="mt-5 grid grid-cols-2 gap-3 text-xs">
+                <div className="rounded-xl bg-slate-800 p-3"><div className="text-slate-400">Cards</div><strong className="mt-1 block text-lg">238</strong></div>
+                <div className="rounded-xl bg-slate-800 p-3"><div className="text-slate-400">Sets</div><strong className="mt-1 block text-lg">42</strong></div>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -584,13 +595,11 @@ export function MyCollection() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="mb-6 flex items-center gap-3">
-        <Package className="h-8 w-8 text-purple-600" />
-        <div>
-          <h1 className="text-3xl font-bold">My Collection</h1>
-          <p className="text-muted-foreground">Collector Toolkit</p>
-        </div>
+    <div className="mx-auto max-w-7xl">
+      <div className="mb-6">
+        <p className="mb-2 text-[10px] font-extrabold uppercase tracking-[0.16em] text-amber-700">Your cards</p>
+        <h1 className="text-3xl font-extrabold tracking-[-0.05em] sm:text-4xl">My collection</h1>
+        <p className="mt-2 text-sm text-muted-foreground">Track condition, grade, quantity, and live portfolio value.</p>
       </div>
 
       {/* Controls */}

@@ -1,526 +1,365 @@
-import { useState, useEffect } from "react";
-import { Link, useLocation, Outlet } from "react-router-dom";
+import { createElement, useEffect, useState } from "react";
+import { Link, Outlet, useLocation } from "react-router-dom";
+import {
+  ChevronRight,
+  FileText,
+  Heart,
+  Image,
+  LogIn,
+  LogOut,
+  Menu,
+  MessageCircle,
+  Package,
+  Receipt,
+  Search,
+  Settings,
+  ShoppingBag,
+  Sparkles,
+  Store,
+  TrendingUp,
+  User,
+  X,
+} from "lucide-react";
+import { motion as Motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { Menu, LogIn, LogOut, Home, User, Package, Store, ShoppingBag, MessageCircle, Settings, ChevronDown, ChevronRight, X, Sparkles, Search, FileText, Receipt, Image } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { OnboardingModal } from "./OnboardingModal";
 import { VendorAccessRequestModal } from "./VendorAccessRequestModal";
 import { FeedbackModal } from "./FeedbackModal";
 import { LoginModal } from "./LoginModal";
-import { motion as Motion, AnimatePresence } from "framer-motion";
 
-/**
- * Layout component with hamburger navigation drawer
- * Shows route structure for My User, Collector Toolkit, and Vendor Toolkit
- */
+const collectorNavigation = [
+  { label: "Card search", to: "/search", icon: Search },
+  { label: "My collection", to: "/collector/collection", icon: Package },
+  { label: "Wishlist", to: "/collector/wishlist", icon: Heart },
+  { label: "Marketplace", to: "/collector/marketplace", icon: ShoppingBag },
+  { label: "Insights", to: "/collector/insights", icon: TrendingUp },
+];
+
+const connectionNavigation = [
+  { label: "Messages", to: "/collector/messages", icon: MessageCircle },
+];
+
+const vendorNavigation = [
+  { label: "Inventory", to: "/vendor/inventory", icon: Store },
+  { label: "Vendor insights", to: "/vendor/insights", icon: TrendingUp },
+  { label: "Wishlist insights", to: "/vendor/wishlist-insights", icon: Heart },
+  { label: "Deal calculator", to: "/vendor/deal-calculator", icon: Sparkles },
+  { label: "Transaction log", to: "/vendor/transaction-log", icon: Receipt },
+  { label: "Transaction summary", to: "/vendor/transaction-summary", icon: FileText },
+  { label: "Expenses", to: "/vendor/expenses", icon: Receipt },
+  { label: "Tax reporting", to: "/vendor/tax-reporting", icon: FileText },
+  { label: "Story sale", to: "/vendor/story-sale", icon: Image },
+];
 
 export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordReset, onLogout }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [expandedSection, setExpandedSection] = useState(null);
   const [loginModalOpen, setLoginModalOpen] = useState(false);
-  const [comingSoonBannerVisible, setComingSoonBannerVisible] = useState(true);
+  const [comingSoonVisible, setComingSoonVisible] = useState(true);
   const [vendorCtaDismissed, setVendorCtaDismissed] = useState(false);
-  const { user, userProfile, needsOnboarding, setNeedsOnboarding, setUserProfile, quickAddFeedback, vendorRequestModalOpen, setVendorRequestModalOpen, feedbackModalOpen, setFeedbackModalOpen, setCurrentPath } = useApp();
+  const {
+    user,
+    userProfile,
+    needsOnboarding,
+    setNeedsOnboarding,
+    setUserProfile,
+    quickAddFeedback,
+    vendorRequestModalOpen,
+    setVendorRequestModalOpen,
+    feedbackModalOpen,
+    setFeedbackModalOpen,
+    setCurrentPath,
+    marketSource,
+    currency,
+  } = useApp();
   const location = useLocation();
+
+  const isSharedView = location.search.includes("inventory=") || location.search.includes("collection=");
+  const hasVendorAccess = Boolean(userProfile?.vendorAccess?.enabled || userProfile?.isVendor);
 
   useEffect(() => {
     if (setCurrentPath) setCurrentPath(location.pathname);
+    setDrawerOpen(false);
   }, [location.pathname, setCurrentPath]);
-  
-  // Load dismissed state from localStorage
+
   useEffect(() => {
-    const dismissed = localStorage.getItem('comingSoonBannerDismissed');
-    if (dismissed === 'true') {
-      setComingSoonBannerVisible(false);
-    }
-    const vendorCtaDismissedState = localStorage.getItem('vendorCtaDismissed');
-    if (vendorCtaDismissedState === 'true') {
-      setVendorCtaDismissed(true);
-    }
+    setComingSoonVisible(localStorage.getItem("comingSoonBannerDismissed") !== "true");
+    setVendorCtaDismissed(localStorage.getItem("vendorCtaDismissed") === "true");
   }, []);
-  
-  const dismissComingSoonBanner = () => {
-    setComingSoonBannerVisible(false);
-    localStorage.setItem('comingSoonBannerDismissed', 'true');
+
+  useEffect(() => {
+    const openLogin = () => setLoginModalOpen(true);
+    window.addEventListener("rafchu:open-login", openLogin);
+    return () => window.removeEventListener("rafchu:open-login", openLogin);
+  }, []);
+
+  const dismissComingSoon = () => {
+    setComingSoonVisible(false);
+    localStorage.setItem("comingSoonBannerDismissed", "true");
   };
-  
+
   const dismissVendorCta = () => {
     setVendorCtaDismissed(true);
-    localStorage.setItem('vendorCtaDismissed', 'true');
+    localStorage.setItem("vendorCtaDismissed", "true");
   };
-  
+
+  const isActive = (path) => {
+    if (path === "/search") return location.pathname === path || location.pathname === "/collector/search";
+    return location.pathname === path || location.pathname.startsWith(`${path}/`);
+  };
+
   const handleOnboardingComplete = (profile) => {
     setUserProfile(profile);
     setNeedsOnboarding(false);
   };
 
-  const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/');
+  const renderNavGroup = (label, items) => (
+    <div className="space-y-1">
+      <div className="px-3 pb-1 pt-4 text-[10px] font-extrabold uppercase tracking-[0.16em] text-muted-foreground">
+        {label}
+      </div>
+      {items.map(({ label: itemLabel, to, icon }) => (
+        <Link
+          key={to}
+          to={to}
+          className={`group flex min-h-11 items-center gap-3 rounded-xl border px-3 text-sm font-semibold transition-all ${
+            isActive(to)
+              ? "border-amber-300/80 bg-amber-100/80 text-foreground shadow-sm"
+              : "border-transparent text-muted-foreground hover:border-border hover:bg-card hover:text-foreground"
+          }`}
+        >
+          {createElement(icon, { className: `h-[18px] w-[18px] ${isActive(to) ? "text-amber-700" : "group-hover:text-foreground"}` })}
+          <span>{itemLabel}</span>
+          {isActive(to) && <ChevronRight className="ml-auto h-4 w-4 text-amber-700" />}
+        </Link>
+      ))}
+    </div>
+  );
+
+  const navigationContent = (
+    <>
+      {renderNavGroup("Collect", collectorNavigation)}
+      {renderNavGroup("Connect", connectionNavigation)}
+
+      {hasVendorAccess && renderNavGroup("Vendor tools", vendorNavigation)}
+
+      {!hasVendorAccess && !vendorCtaDismissed && (
+        <div className="relative mx-1 mt-5 overflow-hidden rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
+          <button
+            onClick={dismissVendorCta}
+            className="absolute right-2 top-2 rounded-lg p-1 text-emerald-800 hover:bg-emerald-100"
+            aria-label="Dismiss vendor invitation"
+          >
+            <X className="h-4 w-4" />
+          </button>
+          <div className="mb-3 grid h-9 w-9 place-items-center rounded-xl bg-emerald-700 text-white shadow-sm">
+            <Store className="h-4 w-4" />
+          </div>
+          <h3 className="pr-5 text-sm font-extrabold">Selling cards too?</h3>
+          <p className="mt-1 text-xs leading-5 text-emerald-800">Unlock inventory, deal, and transaction tools.</p>
+          <button
+            onClick={() => {
+              setDrawerOpen(false);
+              setVendorRequestModalOpen(true);
+            }}
+            className="mt-3 w-full rounded-xl bg-emerald-800 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-900"
+          >
+            Request vendor access
+          </button>
+        </div>
+      )}
+
+      {comingSoonVisible && (
+        <div className="relative mx-1 mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-950">
+          <button
+            onClick={dismissComingSoon}
+            className="absolute right-2 top-2 rounded-lg p-1 text-amber-800 hover:bg-amber-100"
+            aria-label="Dismiss coming soon note"
+          >
+            <X className="h-4 w-4" />
+          </button>
+          <div className="flex items-center gap-2 text-xs font-extrabold">
+            <Sparkles className="h-4 w-4 text-amber-700" />
+            More cards are coming
+          </div>
+          <p className="mt-2 pr-2 text-[11px] leading-4 text-amber-800">Japanese, graded, and sealed products are next.</p>
+        </div>
+      )}
+    </>
+  );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50">
-      {/* Onboarding Modal */}
+    <div className="min-h-screen bg-background text-foreground">
       {user && needsOnboarding && (
         <OnboardingModal user={user} onComplete={handleOnboardingComplete} />
       )}
-      
-      {/* Header */}
-      <header className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{
-        /* Safari-specific fixes for sticky positioning */
-        WebkitBackdropFilter: 'blur(8px)',
-        backdropFilter: 'blur(8px)',
-      }}>
-        <div className="flex h-14 items-center px-4 gap-3">
-          {/* Hide menu on shared views */}
-          {!location.search.includes('inventory=') && !location.search.includes('collection=') && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setDrawerOpen(true)}
-              aria-label="Open menu"
+
+      <header className="sticky top-0 z-30 border-b border-border/80 bg-card/95 shadow-[0_1px_0_rgba(15,23,42,0.02)] backdrop-blur-xl">
+        <div className="grid h-[72px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 lg:grid-cols-[224px_minmax(260px,620px)_minmax(220px,1fr)] lg:px-6">
+          <div className="flex items-center gap-3">
+            {!isSharedView && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setDrawerOpen(true)}
+                className="lg:hidden"
+                aria-label="Open navigation"
+              >
+                <Menu className="h-5 w-5" />
+              </Button>
+            )}
+            <Link to="/" className="flex min-w-0 items-center gap-3" aria-label="Rafchu home">
+              <div className="relative grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl border-2 border-slate-950 bg-amber-300 shadow-[3px_3px_0_#0f172a]">
+                <img
+                  src="/rafchu-logo.png"
+                  alt=""
+                  className="h-full w-full object-cover"
+                  onError={(event) => { event.currentTarget.style.display = "none"; }}
+                />
+              </div>
+              <div className="hidden min-w-0 sm:block">
+                <div className="truncate text-lg font-extrabold tracking-[-0.04em]">Rafchu</div>
+                <div className="truncate text-[10px] font-extrabold uppercase tracking-[0.14em] text-muted-foreground">Card command center</div>
+              </div>
+            </Link>
+          </div>
+
+          {!isSharedView ? (
+            <Link
+              to="/search"
+              className="hidden h-11 items-center gap-3 rounded-xl border border-border bg-muted/70 px-4 text-sm text-muted-foreground shadow-inner transition hover:border-amber-300 hover:bg-card md:flex"
             >
-              <Menu className="h-5 w-5" />
-            </Button>
-          )}
-          
-          <Link to="/" className="flex items-center gap-2 min-w-0">
-            <img 
-              src="/rafchu-logo.png" 
-              alt="Logo" 
-              className="h-8 w-8 rounded-full flex-shrink-0"
-              onError={(e) => { e.target.style.display = 'none'; }}
-            />
-            <span className="font-bold text-lg sm:text-xl truncate">Rafchu Marketplace</span>
-          </Link>
+              <Search className="h-4 w-4" />
+              <span className="min-w-0 flex-1 truncate">Search cards, sets, and numbers…</span>
+              <span className="rounded-md border bg-card px-1.5 py-0.5 text-[10px] font-bold">⌘ K</span>
+            </Link>
+          ) : <div />}
 
-          <div className="flex-1" />
-
-          {/* Quick access buttons - Hidden on shared views */}
-          {!location.search.includes('inventory=') && !location.search.includes('collection=') && user && (
-            <div className="flex items-center gap-2">
-              <Link to="/user/profile">
-                <Button variant="ghost" size="sm">
-                  <Settings className="h-4 w-4 mr-1" />
-                  <span className="hidden sm:inline">Profile & Settings</span>
-                </Button>
-              </Link>
-              <Link to="/collector/messages">
-                <Button variant="ghost" size="sm">
-                  <MessageCircle className="h-4 w-4 mr-1" />
-                  <span className="hidden sm:inline">Messages</span>
-                </Button>
-              </Link>
-            </div>
-          )}
-
-          {/* Auth buttons - Hidden on shared views */}
-          {!location.search.includes('inventory=') && !location.search.includes('collection=') && (
-            <>
-              {user ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground hidden md:inline">
-                    {user.displayName || user.email}
-                  </span>
-                  <Button variant="outline" size="sm" onClick={onLogout}>
-                    <LogOut className="h-4 w-4 mr-1" />
-                    <span className="hidden sm:inline">Sign Out</span>
-                  </Button>
-                </div>
-              ) : (
-                <Button variant="default" size="sm" onClick={() => setLoginModalOpen(true)}>
-                  <LogIn className="h-4 w-4 mr-1" />
-                  Sign In
-                </Button>
-              )}
-            </>
-          )}
+          <div className="flex items-center justify-end gap-2">
+            {!isSharedView && (
+              <div className="hidden rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground xl:block">
+                {(marketSource === "tcg" ? "TCGPlayer" : "CardMarket")} · {currency || "USD"}
+              </div>
+            )}
+            {!isSharedView && user && (
+              <>
+                <Link to="/collector/messages" aria-label="Messages">
+                  <Button variant="ghost" size="icon"><MessageCircle className="h-4 w-4" /></Button>
+                </Link>
+                <Link to="/user/profile" aria-label="Profile and settings">
+                  <Button variant="ghost" size="icon"><Settings className="h-4 w-4" /></Button>
+                </Link>
+              </>
+            )}
+            {!isSharedView && (user ? (
+              <Button variant="outline" size="sm" onClick={onLogout} aria-label="Sign out">
+                <LogOut className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">Sign out</span>
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => setLoginModalOpen(true)} className="bg-slate-950 text-white hover:bg-slate-800">
+                <LogIn className="mr-1.5 h-4 w-4" /> Sign in
+              </Button>
+            ))}
+          </div>
         </div>
       </header>
 
-      {/* Navigation Drawer */}
+      {isSharedView ? (
+        <main><Outlet /></main>
+      ) : (
+        <div className="lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
+          <aside className="sticky top-[72px] hidden h-[calc(100vh-72px)] flex-col overflow-y-auto border-r border-border/80 bg-card px-4 pb-5 lg:flex">
+            {navigationContent}
+            <div className="mt-auto space-y-1 pt-5">
+              <Link to="/user/profile" className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-muted-foreground transition hover:bg-muted hover:text-foreground">
+                <User className="h-[18px] w-[18px]" /> Profile & settings
+              </Link>
+              <button
+                onClick={() => setFeedbackModalOpen(true)}
+                className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-semibold text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <MessageCircle className="h-[18px] w-[18px]" /> Send feedback
+              </button>
+            </div>
+          </aside>
+
+          <main className="min-w-0 px-4 pb-24 pt-6 sm:px-6 lg:px-8 lg:pb-10 lg:pt-8">
+            <Outlet />
+          </main>
+        </div>
+      )}
+
+      {!isSharedView && (
+        <nav className="fixed inset-x-3 bottom-3 z-20 grid h-16 grid-cols-4 rounded-2xl border border-border bg-card/95 p-1.5 shadow-2xl backdrop-blur-xl lg:hidden" aria-label="Primary navigation">
+          {[
+            { label: "Search", to: "/search", icon: Search },
+            { label: "Collection", to: "/collector/collection", icon: Package },
+            { label: "Market", to: "/collector/marketplace", icon: ShoppingBag },
+            { label: "Messages", to: "/collector/messages", icon: MessageCircle },
+          ].map(({ label, to, icon }) => (
+            <Link
+              key={to}
+              to={to}
+              className={`flex flex-col items-center justify-center gap-1 rounded-xl text-[10px] font-bold transition ${isActive(to) ? "bg-amber-100 text-amber-950" : "text-muted-foreground"}`}
+            >
+              {createElement(icon, { className: "h-[18px] w-[18px]" })}{label}
+            </Link>
+          ))}
+        </nav>
+      )}
+
       <AnimatePresence>
         {drawerOpen && (
           <>
-            <Motion.div
+            <Motion.button
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-40 bg-black/30"
+              className="fixed inset-0 z-40 bg-slate-950/45 backdrop-blur-sm lg:hidden"
               onClick={() => setDrawerOpen(false)}
+              aria-label="Close navigation"
             />
-            <Motion.div
-              initial={{ x: -300 }}
+            <Motion.aside
+              initial={{ x: -320 }}
               animate={{ x: 0 }}
-              exit={{ x: -300 }}
-              transition={{ type: "spring", damping: 25, stiffness: 200 }}
-              className="fixed left-0 top-0 bottom-0 z-50 w-72 bg-background border-r shadow-xl overflow-y-auto"
+              exit={{ x: -320 }}
+              transition={{ type: "spring", damping: 27, stiffness: 240 }}
+              className="fixed inset-y-0 left-0 z-50 w-[300px] overflow-y-auto border-r border-border bg-card px-4 pb-6 shadow-2xl lg:hidden"
             >
-              <div className="p-4 flex flex-col gap-2">
-                {/* Header */}
-                <div className="flex items-center justify-between pb-2 border-b mb-2">
-                  <h2 className="text-lg font-bold">Navigation</h2>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setDrawerOpen(false)}
-                  >
-                    ✕
-                  </Button>
+              <div className="sticky top-0 z-10 flex h-[72px] items-center justify-between border-b bg-card">
+                <div className="flex items-center gap-3">
+                  <div className="grid h-9 w-9 place-items-center rounded-xl border-2 border-slate-950 bg-amber-300 text-lg font-black shadow-[2px_2px_0_#0f172a]">ϟ</div>
+                  <div><div className="font-extrabold">Rafchu</div><div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Navigation</div></div>
                 </div>
-
-                {/* Marketplace */}
-                <Link
-                  to="/collector/marketplace"
-                  onClick={() => setDrawerOpen(false)}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-accent transition-colors ${
-                    isActive('/collector/marketplace') ? 'bg-accent font-medium' : ''
-                  }`}
-                >
-                  <ShoppingBag className="h-5 w-5" />
-                  <span className="text-base">Marketplace</span>
-                </Link>
-
-                {/* Card Search */}
-                <Link
-                  to="/search"
-                  onClick={() => setDrawerOpen(false)}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-accent transition-colors ${
-                    isActive('/search') ? 'bg-accent font-medium' : ''
-                  }`}
-                >
-                  <Search className="h-5 w-5" />
-                  <span className="text-base">Card Search</span>
-                </Link>
-
-                {/* My User Section */}
-                <div>
-                  <button
-                    onClick={() => setExpandedSection(expandedSection === 'user' ? null : 'user')}
-                    className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg hover:bg-accent transition-colors ${
-                      isActive('/user') ? 'bg-accent font-medium' : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <User className="h-5 w-5" />
-                      <span className="text-base">My User</span>
-                    </div>
-                    {expandedSection === 'user' ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4" />
-                    )}
-                  </button>
-                  <AnimatePresence>
-                    {expandedSection === 'user' && (
-                      <Motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="pl-8 pt-1 flex flex-col gap-1">
-                          <Link
-                            to="/user/profile"
-                            onClick={() => setDrawerOpen(false)}
-                            className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                              isActive('/user/profile') ? 'bg-accent font-medium' : ''
-                            }`}
-                          >
-                            Profile & Settings
-                          </Link>
-                        </div>
-                      </Motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {/* Collector Toolkit Section */}
-                <div>
-                  <button
-                    onClick={() => setExpandedSection(expandedSection === 'collector' ? null : 'collector')}
-                    className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg hover:bg-accent transition-colors ${
-                      isActive('/collector') ? 'bg-accent font-medium' : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Package className="h-5 w-5 text-purple-600" />
-                      <span className="text-base">Collector Toolkit</span>
-                    </div>
-                    {expandedSection === 'collector' ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4" />
-                    )}
-                  </button>
-                  <AnimatePresence>
-                    {expandedSection === 'collector' && (
-                      <Motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="pl-8 pt-1 flex flex-col gap-1">
-                          <Link
-                            to="/collector/collection"
-                            onClick={() => setDrawerOpen(false)}
-                            className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                              isActive('/collector/collection') ? 'bg-accent font-medium' : ''
-                            }`}
-                          >
-                            My Collection
-                          </Link>
-                          <Link
-                            to="/collector/wishlist"
-                            onClick={() => setDrawerOpen(false)}
-                            className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                              isActive('/collector/wishlist') ? 'bg-accent font-medium' : ''
-                            }`}
-                          >
-                            Wishlist
-                          </Link>
-                          <Link
-                            to="/collector/messages"
-                            onClick={() => setDrawerOpen(false)}
-                            className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                              isActive('/collector/messages') ? 'bg-accent font-medium' : ''
-                            }`}
-                          >
-                            Messages
-                          </Link>
-                          <Link
-                            to="/collector/insights"
-                            onClick={() => setDrawerOpen(false)}
-                            className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                              isActive('/collector/insights') ? 'bg-accent font-medium' : ''
-                            }`}
-                          >
-                            Collection Insights
-                          </Link>
-                          {/* Trade Binder - Hidden until functionality is built out
-                          <Link
-                            to="/collector/trade-binder"
-                            onClick={() => setDrawerOpen(false)}
-                            className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                              isActive('/collector/trade-binder') ? 'bg-accent font-medium' : ''
-                            }`}
-                          >
-                            Trade Binder
-                          </Link>
-                          */}
-                        </div>
-                      </Motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {/* Vendor Toolkit Section - Only shown when vendor access is enabled */}
-                {(userProfile?.vendorAccess?.enabled || userProfile?.isVendor) && (
-                  <div>
-                    <button
-                      onClick={() => setExpandedSection(expandedSection === 'vendor' ? null : 'vendor')}
-                      className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg hover:bg-accent transition-colors ${
-                        isActive('/vendor') ? 'bg-accent font-medium' : ''
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Store className="h-5 w-5 text-green-600" />
-                        <span className="text-base">Vendor Toolkit</span>
-                        {userProfile?.vendorAccess?.tier && (
-                          <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-semibold">
-                            {userProfile.vendorAccess.tier.toUpperCase()}
-                          </span>
-                        )}
-                      </div>
-                      {expandedSection === 'vendor' ? (
-                        <ChevronDown className="h-4 w-4" />
-                      ) : (
-                        <ChevronRight className="h-4 w-4" />
-                      )}
-                    </button>
-                    <AnimatePresence>
-                      {expandedSection === 'vendor' && (
-                        <Motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.2 }}
-                          className="overflow-hidden"
-                        >
-                          <div className="pl-8 pt-1 flex flex-col gap-1">
-                            <Link
-                              to="/vendor/inventory"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/inventory') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              My Inventory
-                            </Link>
-                            <Link
-                              to="/vendor/insights"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/insights') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              Inventory Insights
-                            </Link>
-                            <Link
-                              to="/vendor/wishlist-insights"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/wishlist-insights') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              Wishlist Insights
-                            </Link>
-                            <Link
-                              to="/vendor/deal-calculator"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/deal-calculator') || isActive('/vendor/trade-calculator') || isActive('/vendor/buy-calculator') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              Deal Calculator
-                            </Link>
-                            <Link
-                              to="/vendor/transaction-log"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/transaction-log') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              Transaction Log
-                            </Link>
-                            <Link
-                              to="/vendor/transaction-summary"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm ${
-                                isActive('/vendor/transaction-summary') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              Transaction Summary
-                            </Link>
-                            <Link
-                              to="/vendor/expenses"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm flex items-center gap-2 ${
-                                isActive('/vendor/expenses') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              <Receipt className="h-3.5 w-3.5 text-green-600" />
-                              Expense Tracker
-                            </Link>
-                            <Link
-                              to="/vendor/tax-reporting"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm flex items-center gap-2 ${
-                                isActive('/vendor/tax-reporting') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              <FileText className="h-3.5 w-3.5 text-green-600" />
-                              Tax Reporting
-                            </Link>
-                            <Link
-                              to="/vendor/story-sale"
-                              onClick={() => setDrawerOpen(false)}
-                              className={`px-4 py-2 rounded-lg hover:bg-accent text-sm flex items-center gap-2 ${
-                                isActive('/vendor/story-sale') ? 'bg-accent font-medium' : ''
-                              }`}
-                            >
-                              <Image className="h-3.5 w-3.5 text-green-600" />
-                              Story Sale Generator
-                            </Link>
-                          </div>
-                        </Motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                )}
-
-                {/* Vendor Toolkit Promotion - Only show if user doesn't have vendor access */}
-                {!userProfile?.vendorAccess?.enabled && !userProfile?.isVendor && !vendorCtaDismissed && (
-                  <div className="mt-6 pt-4 border-t">
-                    <div className="bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-lg p-4 relative">
-                      <button
-                        onClick={dismissVendorCta}
-                        className="absolute top-2 right-2 p-1 hover:bg-green-200 rounded-full transition-colors"
-                        aria-label="Dismiss"
-                      >
-                        <X className="h-4 w-4 text-green-700" />
-                      </button>
-                      <div className="flex items-start gap-3 mb-3">
-                        <div className="bg-green-600 p-2 rounded-lg">
-                          <Store className="h-5 w-5 text-white" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-bold text-green-900 text-sm">Upgrade to Vendor Toolkit</h3>
-                          <p className="text-xs text-green-700 mt-1">
-                            Manage inventory, track sales, and grow your business
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => {
-                          setDrawerOpen(false);
-                          setVendorRequestModalOpen(true);
-                        }}
-                        className="block w-full bg-green-600 hover:bg-green-700 text-white text-center py-2 px-3 rounded-lg text-sm font-semibold transition-colors"
-                      >
-                        Request Early Access
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Submit Feedback - Always Visible */}
-                <div className="mt-6 pt-6 border-t border-gray-200">
-                  <button
-                    onClick={() => {
-                      setDrawerOpen(false);
-                      setFeedbackModalOpen(true);
-                    }}
-                    className="flex items-center gap-3 px-4 py-3 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors w-full"
-                  >
-                    <MessageCircle className="h-5 w-5" />
-                    <span className="font-medium">Submit Feedback</span>
-                  </button>
-                </div>
+                <Button variant="ghost" size="icon" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X className="h-5 w-5" /></Button>
               </div>
-            </Motion.div>
+              {navigationContent}
+              <div className="mt-5 border-t pt-4">
+                <button onClick={() => setFeedbackModalOpen(true)} className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-semibold text-muted-foreground hover:bg-muted">
+                  <MessageCircle className="h-[18px] w-[18px]" /> Send feedback
+                </button>
+              </div>
+            </Motion.aside>
           </>
         )}
       </AnimatePresence>
 
-      {/* Quick Add Feedback Toast */}
       <AnimatePresence>
         {quickAddFeedback && (
           <Motion.div
-            initial={{ opacity: 0, y: 50 }}
+            initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
-            className="fixed bottom-4 right-4 z-50 bg-primary text-primary-foreground px-4 py-2 rounded-lg shadow-lg"
+            exit={{ opacity: 0, y: 18 }}
+            className="fixed bottom-24 right-4 z-50 rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm font-bold text-white shadow-2xl lg:bottom-5"
           >
             {quickAddFeedback}
           </Motion.div>
         )}
       </AnimatePresence>
 
-      {/* Vendor Access Request Modal */}
-      <VendorAccessRequestModal 
-        isOpen={vendorRequestModalOpen} 
-        onClose={() => setVendorRequestModalOpen(false)} 
-      />
-
-      {/* Feedback Modal */}
-      <FeedbackModal 
-        isOpen={feedbackModalOpen} 
-        onClose={() => setFeedbackModalOpen(false)} 
-      />
-
-      {/* Login Modal */}
+      <VendorAccessRequestModal isOpen={vendorRequestModalOpen} onClose={() => setVendorRequestModalOpen(false)} />
+      <FeedbackModal isOpen={feedbackModalOpen} onClose={() => setFeedbackModalOpen(false)} />
       <LoginModal
         isOpen={loginModalOpen}
         onClose={() => setLoginModalOpen(false)}
@@ -529,53 +368,6 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
         onEmailLogin={onEmailLogin}
         onPasswordReset={onPasswordReset}
       />
-
-      {/* Coming Soon Banner - Hidden on shared views */}
-      {comingSoonBannerVisible && !location.search.includes('inventory=') && !location.search.includes('collection=') && (
-        <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white py-2 sm:py-3 px-3 sm:px-4 shadow-lg">
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-4">
-            <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
-              <Sparkles className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0" />
-              <div className="text-xs sm:text-sm truncate">
-                <span className="font-semibold">Soon:</span>{' '}
-                <span className="hidden sm:inline">Japanese Cards • Graded Cards • Sealed Products</span>
-                <span className="sm:hidden">JP Cards • Graded • Sealed</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-1 flex-shrink-0">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-white hover:bg-white/20 h-7 sm:h-8 text-xs sm:text-sm px-2"
-                onClick={() => setFeedbackModalOpen(true)}
-              >
-                <MessageCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-                <span className="hidden sm:inline">Submit Feedback</span>
-                <span className="sm:hidden">Feedback</span>
-              </Button>
-              <button
-                onClick={dismissComingSoonBanner}
-                className="p-1 hover:bg-white/20 rounded-full transition-colors"
-                aria-label="Dismiss banner"
-              >
-                <X className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Main content */}
-      {location.search.includes('inventory=') || location.search.includes('collection=') ? (
-        <main>
-          <Outlet />
-        </main>
-      ) : (
-        <main className="container mx-auto px-3 sm:px-4 py-4 sm:py-6">
-          <Outlet />
-        </main>
-      )}
     </div>
   );
 }
-

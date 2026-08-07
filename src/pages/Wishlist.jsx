@@ -2,7 +2,7 @@ import { useMemo, useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Heart, Trash2, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { Heart, Trash2, TrendingUp, TrendingDown, Minus, LogIn } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { formatCurrency, computeTcgPrice, getCardmarketAvg } from "@/utils/cardHelpers";
 
@@ -143,11 +143,14 @@ export function Wishlist() {
 
   if (!user) {
     return (
-      <div className="max-w-6xl mx-auto">
-        <Card>
-          <CardContent className="p-6 text-center">
-            <Heart className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
-            <p className="text-muted-foreground">Please sign in to view your wishlist.</p>
+      <div className="mx-auto max-w-4xl">
+        <Card className="overflow-hidden border-rose-200 bg-gradient-to-br from-card to-rose-50">
+          <CardContent className="flex flex-col items-center px-6 py-14 text-center sm:py-20">
+            <div className="mb-5 grid h-14 w-14 place-items-center rounded-2xl bg-rose-100 text-rose-600"><Heart className="h-6 w-6" /></div>
+            <p className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-rose-600">Your next finds</p>
+            <h1 className="mt-2 text-3xl font-extrabold tracking-[-0.05em] sm:text-4xl">Keep every wanted card in reach.</h1>
+            <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">Build a wishlist, watch price movement, and see which marketplace vendors have a match.</p>
+            <Button onClick={() => window.dispatchEvent(new Event("rafchu:open-login"))} className="mt-7"><LogIn className="mr-2 h-4 w-4" /> Sign in to view your wishlist</Button>
           </CardContent>
         </Card>
       </div>
@@ -155,13 +158,11 @@ export function Wishlist() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="mb-6 flex items-center gap-3">
-        <Heart className="h-8 w-8 text-pink-600" />
-        <div>
-          <h1 className="text-3xl font-bold">Wishlist</h1>
-          <p className="text-muted-foreground">Collector Toolkit</p>
-        </div>
+    <div className="mx-auto max-w-7xl">
+      <div className="mb-6">
+        <p className="mb-2 text-[10px] font-extrabold uppercase tracking-[0.16em] text-rose-600">Your next finds</p>
+        <h1 className="text-3xl font-extrabold tracking-[-0.05em] sm:text-4xl">Wishlist</h1>
+        <p className="mt-2 text-sm text-muted-foreground">Track prices and find vendors who already have what you want.</p>
       </div>
 
       {/* Controls */}

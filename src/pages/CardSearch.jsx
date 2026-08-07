@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Package, Store, Plus, ShoppingBag, Heart, LayoutGrid, Calculator, MessageSquare, Upload, ExternalLink, PlusCircle } from "lucide-react";
+import { Store, Plus, LayoutGrid, Upload, ExternalLink, PlusCircle, Search } from "lucide-react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "@/contexts/AppContext";
 import {
@@ -75,7 +75,6 @@ export function CardSearch({ mode = "collector" }) {
     buyItems,
     setBuyItems,
     triggerQuickAddFeedback,
-    setFeedbackModalOpen,
     userProfile,
     communityImages,
     getImageForCard,
@@ -730,75 +729,42 @@ export function CardSearch({ mode = "collector" }) {
   }, [isGradedFilter, activeCard, selectedGradingCompany, selectedGrade]);
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="mb-4 sm:mb-6 flex items-center gap-3">
-        {isVendor ? (
-          <Store className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
-        ) : (
-          <Package className="h-6 w-6 sm:h-8 sm:w-8 text-purple-600" />
-        )}
+    <div className="mx-auto max-w-7xl">
+      <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold">Card Search</h1>
-          <p className="text-sm text-muted-foreground">
-            {isVendor ? "Vendor" : "Collector"} Toolkit
+          <p className="mb-2 text-[10px] font-extrabold uppercase tracking-[0.16em] text-amber-700">
+            {isVendor ? "Vendor inventory" : "Card discovery"}
           </p>
+          <h1 className="text-3xl font-extrabold tracking-[-0.05em] sm:text-4xl">Find the right card, fast.</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+            Search by card, set, or number. Rafchu applies your preferred market source and currency automatically.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Link to={isVendor ? "/vendor/inventory" : "/collector/collection"}>
+            <Button variant="outline" size="sm">
+              <LayoutGrid className="mr-1.5 h-4 w-4" /> {isVendor ? "Inventory" : "Collection"}
+            </Button>
+          </Link>
         </div>
       </div>
 
-      {/* Quick Access Buttons */}
-      <div className="mb-3 sm:mb-4 flex flex-wrap gap-1.5 sm:gap-2">
-        <Link to="/collector/marketplace">
-          <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
-            <ShoppingBag className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-            Marketplace
-          </Button>
-        </Link>
-        {isVendor ? (
-          <>
-            <Link to="/vendor/inventory">
-              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
-                <LayoutGrid className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-                Inventory
-              </Button>
-            </Link>
-            <Link to="/vendor/deal-calculator">
-              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
-                <Calculator className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-                Deal
-              </Button>
-            </Link>
-          </>
-        ) : (
-          <>
-            <Link to="/collector/collection">
-              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
-                <LayoutGrid className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-                Collection
-              </Button>
-            </Link>
-            <Link to="/collector/wishlist">
-              <Button variant="outline" size="sm" className="text-xs sm:text-sm h-7 sm:h-9 px-2 sm:px-3">
-                <Heart className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1" />
-                Wishlist
-              </Button>
-            </Link>
-          </>
-        )}
-      </div>
-
       {/* Search Input */}
-      <Card className="rounded-2xl p-3 sm:p-4 shadow">
+      <Card className="border-border/90 p-4 shadow-[0_16px_45px_rgba(29,26,18,0.075)] sm:p-5">
         <CardContent className="space-y-4 p-0">
           <div className="flex flex-col gap-2 sm:gap-3 sm:flex-row sm:items-center">
-            <Input
-              placeholder="Search by name, set, or number..."
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="h-9 sm:h-10 text-sm sm:text-base"
-            />
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search name, set, or card number…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="h-12 pl-11 pr-4 text-sm font-semibold sm:text-base"
+              />
+            </div>
             {!isGradedFilter && (
-              <div className="flex items-center gap-2">
-                <span className="text-sm opacity-70">
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-muted/50 px-3 py-1.5 sm:justify-start">
+                <span className="text-xs font-bold text-muted-foreground">
                   Default condition
                 </span>
                 <ConditionSelect
@@ -811,7 +777,7 @@ export function CardSearch({ mode = "collector" }) {
               variant={isGradedFilter ? "default" : "outline"}
               size="sm"
               onClick={() => setIsGradedFilter(!isGradedFilter)}
-              className="whitespace-nowrap"
+              className={isGradedFilter ? "whitespace-nowrap border-amber-300 bg-amber-300 text-slate-950 hover:bg-amber-200" : "whitespace-nowrap"}
             >
               {isGradedFilter ? "✓ Graded Only" : "Ungraded"}
             </Button>
@@ -1064,19 +1030,6 @@ export function CardSearch({ mode = "collector" }) {
           </Card>
         </Motion.div>
       )}
-
-      {/* Submit Feedback Button */}
-      <div className="mt-8 text-center">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setFeedbackModalOpen(true)}
-          className="text-gray-500 hover:text-gray-700"
-        >
-          <MessageSquare className="mr-2 h-4 w-4" />
-          Submit Feedback
-        </Button>
-      </div>
 
       {/* v2.1: Add Card Modal with Variants, Graded, and Japanese support */}
       <AddCardModal

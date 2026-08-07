@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo } from "react";
+import { createElement, useState, useEffect, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ShoppingBag, Search, MessageCircle, MapPin, Star, Package, X, TrendingUp, Mail, Store, User, Heart, ThumbsUp, Award } from "lucide-react";
+import { ShoppingBag, Search, MessageCircle, MapPin, Star, Package, X, TrendingUp, Mail, Store, User, Heart, ThumbsUp, Award, Sparkles, LogIn } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
-import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, computeItemMetrics, getConditionColorClass } from "@/utils/cardHelpers";
+import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, computeItemMetrics } from "@/utils/cardHelpers";
 import { collection, getDocs, doc as firestoreDoc, getDoc, query, where, addDoc, serverTimestamp } from "firebase/firestore";
 
 /**
@@ -35,7 +35,7 @@ export function Marketplace() {
 
   // Load all vendors and their inventories
   useEffect(() => {
-    if (!db) {
+    if (!db || !user) {
       setLoading(false);
       return;
     }
@@ -190,7 +190,7 @@ export function Marketplace() {
     };
 
     loadVendors();
-  }, [db, wishlistItems]);
+  }, [db, user, wishlistItems]);
 
   // Lazy load community images for all vendor inventories
   useEffect(() => {
@@ -495,25 +495,88 @@ export function Marketplace() {
 
   if (!user) {
     return (
-      <div className="max-w-6xl mx-auto">
-        <Card>
-          <CardContent className="p-6 text-center">
-            <ShoppingBag className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
-            <p className="text-muted-foreground">Please sign in to browse the marketplace.</p>
-          </CardContent>
-        </Card>
+      <div className="mx-auto max-w-7xl">
+        <section className="relative overflow-hidden rounded-[28px] border border-slate-800 bg-slate-950 px-6 py-10 text-white shadow-[0_28px_80px_rgba(15,23,42,0.24)] sm:px-10 sm:py-14 lg:grid lg:grid-cols-[minmax(0,1.15fr)_minmax(340px,.85fr)] lg:items-center lg:gap-12 lg:px-14 lg:py-16">
+          <div className="relative z-10 max-w-2xl">
+            <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.12em] text-amber-200">
+              <Sparkles className="h-3.5 w-3.5" /> Built for collectors and vendors
+            </div>
+            <h1 className="max-w-xl text-4xl font-extrabold leading-[1.03] tracking-[-0.055em] sm:text-5xl lg:text-6xl">
+              Know your cards. Find your next one.
+            </h1>
+            <p className="mt-5 max-w-xl text-base leading-7 text-slate-300 sm:text-lg">
+              Search live prices, organize your collection, and discover trusted vendors with the cards already on your wishlist.
+            </p>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <Button
+                size="lg"
+                onClick={() => window.dispatchEvent(new Event("rafchu:open-login"))}
+                className="!border-amber-300 !bg-amber-300 !text-slate-950 hover:!bg-amber-200"
+              >
+                <LogIn className="mr-2 h-4 w-4" /> Sign in to Rafchu
+              </Button>
+              <Link to="/search">
+                <Button size="lg" variant="outline" className="w-full border-slate-700 bg-slate-900 text-white hover:border-amber-300 hover:bg-slate-800 hover:text-white sm:w-auto">
+                  <Search className="mr-2 h-4 w-4" /> Explore card search
+                </Button>
+              </Link>
+            </div>
+            <div className="mt-8 flex flex-wrap gap-x-6 gap-y-3 text-xs font-semibold text-slate-400">
+              <span className="flex items-center gap-2"><Award className="h-4 w-4 text-amber-300" /> Multi-source pricing</span>
+              <span className="flex items-center gap-2"><Heart className="h-4 w-4 text-rose-300" /> Wishlist matching</span>
+              <span className="flex items-center gap-2"><Store className="h-4 w-4 text-emerald-300" /> Vendor discovery</span>
+            </div>
+          </div>
+
+          <div className="relative mt-12 min-h-[330px] lg:mt-0" aria-label="Featured card collection illustration">
+            <div className="absolute inset-5 rounded-full bg-amber-300/20 blur-3xl" />
+            {[
+              { name: "Charizard", meta: "Base Set · 4/102", icon: "♨", className: "left-[4%] top-14 -rotate-[12deg] bg-gradient-to-br from-rose-400 to-amber-300" },
+              { name: "Pikachu ex", meta: "Surging Sparks", icon: "ϟ", className: "left-1/2 top-0 z-10 -translate-x-1/2 rotate-[2deg] bg-gradient-to-br from-amber-200 to-yellow-400" },
+              { name: "Mewtwo VSTAR", meta: "Crown Zenith", icon: "✧", className: "right-[3%] top-20 rotate-[13deg] bg-gradient-to-br from-violet-400 to-fuchsia-300" },
+            ].map((card) => (
+              <div key={card.name} className={`absolute w-[150px] rounded-[14px] border-[5px] border-amber-100 p-2 text-slate-950 shadow-2xl sm:w-[170px] ${card.className}`}>
+                <div className="flex items-center justify-between text-[8px] font-black"><span>{card.name}</span><span>HP 120</span></div>
+                <div className="mt-2 grid aspect-[1.14] place-items-center rounded-lg border border-slate-900/20 bg-white/65 text-5xl font-black">{card.icon}</div>
+                <div className="mt-2 text-[7px] font-bold">{card.meta}</div>
+                <div className="mt-2 h-1 rounded-full bg-slate-900/25" />
+                <div className="mt-1 h-1 w-3/4 rounded-full bg-slate-900/20" />
+                <div className="mt-1 h-1 w-1/2 rounded-full bg-slate-900/15" />
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="grid gap-4 py-6 md:grid-cols-3">
+          {[
+            { icon: Search, title: "Search without the guesswork", copy: "Find English, Japanese, graded, and raw cards with the right set and number." },
+            { icon: TrendingUp, title: "See the market clearly", copy: "Use the market source and currency that match where you actually buy and sell." },
+            { icon: ShoppingBag, title: "Shop around your wishlist", copy: "Surface vendors through card matches, location, inventory depth, and community ratings." },
+          ].map(({ icon, title, copy }) => (
+            <Card key={title} className="group p-5 transition hover:-translate-y-1 hover:border-amber-300 hover:shadow-xl">
+              <CardContent className="p-0">
+                <div className="mb-4 grid h-11 w-11 place-items-center rounded-xl bg-amber-100 text-amber-800 transition group-hover:bg-amber-300 group-hover:text-slate-950">
+                  {createElement(icon, { className: "h-5 w-5" })}
+                </div>
+                <h2 className="text-base font-extrabold">{title}</h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">{copy}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </section>
       </div>
     );
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="mb-6 flex items-center gap-3">
-        <ShoppingBag className="h-8 w-8 text-purple-600" />
+    <div className="mx-auto max-w-7xl">
+      <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <h1 className="text-3xl font-bold">Marketplace</h1>
-          <p className="text-muted-foreground">Find vendors with cards you're looking for</p>
+          <p className="mb-2 text-[10px] font-extrabold uppercase tracking-[0.16em] text-amber-700">Buy and trade</p>
+          <h1 className="text-3xl font-extrabold tracking-[-0.045em] sm:text-4xl">Marketplace</h1>
+          <p className="mt-2 text-sm text-muted-foreground">Discover vendors through your wishlist, location, and collecting interests.</p>
         </div>
+        <Link to="/search"><Button><Search className="mr-2 h-4 w-4" /> Browse all cards</Button></Link>
       </div>
 
       {/* Vendor Toolkit Promotion - Only show if user doesn't have vendor access */}

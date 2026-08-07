@@ -140,32 +140,34 @@ export function LoginModal({ isOpen, onClose, onGoogleLogin, onEmailSignUp, onEm
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" style={{
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm" style={{
       WebkitOverflowScrolling: 'touch',
     }}>
-      <Card className="w-full max-w-md relative" style={{
+      <Card className="relative w-full max-w-md overflow-hidden border-border bg-card shadow-[0_30px_90px_rgba(15,23,42,.35)]" style={{
         WebkitOverflowScrolling: 'touch',
       }}>
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors"
+          className="absolute right-4 top-4 z-10 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           disabled={loading}
+          aria-label="Close sign in"
         >
           <X className="h-5 w-5" />
         </button>
 
-        <CardHeader className="text-center">
-          <div className="mx-auto w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center mb-3">
-            <span className="text-2xl">🎴</span>
+        <CardHeader className="pb-4 pt-8 text-center">
+          <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl border-2 border-slate-950 bg-amber-300 text-2xl font-black text-slate-950 shadow-[3px_3px_0_#0f172a]">
+            ϟ
           </div>
-          <CardTitle className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+          <p className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-amber-700">Your Rafchu account</p>
+          <CardTitle className="mt-1 text-2xl font-extrabold tracking-[-0.045em] text-foreground">
             {mode === "signin" && "Sign In"}
             {mode === "signup" && "Create Account"}
             {mode === "reset" && "Reset Password"}
           </CardTitle>
         </CardHeader>
         
-        <CardContent>
+        <CardContent className="px-6 pb-7 sm:px-7">
           {/* Error Message */}
           {error && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
@@ -236,7 +238,7 @@ export function LoginModal({ isOpen, onClose, onGoogleLogin, onEmailSignUp, onEm
                   <div className="w-full border-t border-gray-300"></div>
                 </div>
                 <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white text-gray-500">Or</span>
+                  <span className="bg-card px-2 text-muted-foreground">Or</span>
                 </div>
               </div>
 
@@ -347,7 +349,7 @@ export function LoginModal({ isOpen, onClose, onGoogleLogin, onEmailSignUp, onEm
                   <div className="w-full border-t border-gray-300"></div>
                 </div>
                 <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white text-gray-500">Or</span>
+                  <span className="bg-card px-2 text-muted-foreground">Or</span>
                 </div>
               </div>
 
@@ -432,4 +434,3 @@ export function LoginModal({ isOpen, onClose, onGoogleLogin, onEmailSignUp, onEm
     </div>
   );
 }
-
