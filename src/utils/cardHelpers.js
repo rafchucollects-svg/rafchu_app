@@ -422,25 +422,12 @@ export function computeSuggestedPrice({
   return Math.max(cmBase, safeTcg);
 }
 
-function medianPositive(values) {
-  const sorted = values
-    .map((value) => Number(value) || 0)
-    .filter((value) => value > 0)
-    .sort((a, b) => a - b);
-  if (sorted.length === 0) return 0;
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[middle - 1] + sorted[middle]) / 2
-    : sorted[middle];
-}
-
 /**
- * Build the four ungraded pricing views shown throughout the app.
+ * Build the ungraded pricing views shown throughout the app.
  *
  * Seller Ask intentionally preserves the existing suggested-price rule.
- * Fair Market uses the median so one unusually high/low feed cannot dominate.
- * Preferred Market follows the user's chosen data source, and Quick Sale uses
- * the lower immediately actionable market/listing benchmark.
+ * Preferred Market follows the user's chosen data source, while Quick Sale
+ * uses the lower immediately actionable market/listing benchmark.
  */
 export function computeMarketValues(
   source,
@@ -454,28 +441,38 @@ export function computeMarketValues(
   const tcg = computeTcgPrice(source, condition, targetCurrency) || 0;
   const cmAvg = getCardmarketAvg(source, condition, targetCurrency) || 0;
   const cmLowest = getCardmarketLowest(source, condition, targetCurrency) || 0;
+  let normalizedOverride = overridePrice;
+  if (normalizedOverride == null) {
+    const storedOverride = source?.overridePrice ?? source?.manualPrice ?? source?.customPrice;
+    if (storedOverride != null && !Number.isNaN(Number(storedOverride))) {
+      const storedCurrency = source?.overridePrice != null
+        ? source?.overridePriceCurrency
+        : source?.manualPriceCurrency;
+      normalizedOverride = storedCurrency && storedCurrency !== targetCurrency
+        ? convertCurrency(Number(storedOverride), targetCurrency, storedCurrency)
+        : Number(storedOverride);
+    }
+  }
   const sellerAsk = computeSuggestedPrice({
     tcg,
     cmAvg,
     cmLowest,
     condition,
-    overridePrice,
+    overridePrice: normalizedOverride,
   });
-  const fairMarket = medianPositive([tcg, cmAvg, cmLowest]);
 
   const prefersTcg = marketSource === "tcg" || marketSource === "tcgplayer";
   const preferredMarket = prefersTcg
-    ? (tcg || fairMarket)
-    : (cmAvg || cmLowest || fairMarket);
+    ? (tcg || cmAvg || cmLowest)
+    : (cmAvg || cmLowest || tcg);
 
   const liquidBenchmarks = [tcg, cmLowest].filter((value) => value > 0);
   const quickSale = liquidBenchmarks.length > 0
     ? Math.min(...liquidBenchmarks)
-    : fairMarket;
+    : preferredMarket;
 
   return {
     sellerAsk,
-    fairMarket,
     preferredMarket,
     quickSale,
     benchmarks: { tcg, cmAvg, cmLowest },

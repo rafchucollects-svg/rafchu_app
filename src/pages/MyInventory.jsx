@@ -12,6 +12,7 @@ import {
   computeSalePayout,
 } from "@/utils/consignmentHelpers";
 import { ConditionSelect, CardPrices, ExternalLinks } from "@/components/CardComponents";
+import { InventoryMarketValues } from "@/components/InventoryMarketValues";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
@@ -2304,7 +2305,16 @@ export function MyInventory() {
                   )}
                 </div>
 
-                {/* Row 3: exclude + markup buttons + actions */}
+                {/* Row 3: ungraded market values, matching the card details view */}
+                <InventoryMarketValues
+                  card={item}
+                  condition={item.condition || "NM"}
+                  currency={currency}
+                  formatPrice={formatPrice}
+                  marketSource="tcg"
+                />
+
+                {/* Row 4: exclude + markup buttons + actions */}
                 <div className="flex items-center gap-1.5 pl-6 sm:pl-7" onClick={(e) => e.stopPropagation()}>
                   <label className="flex items-center gap-1 text-[10px] cursor-pointer whitespace-nowrap flex-shrink-0">
                     <input

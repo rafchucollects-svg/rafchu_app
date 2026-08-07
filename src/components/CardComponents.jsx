@@ -2,6 +2,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ExternalLink, Heart } from "lucide-react";
 import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, computeMarketValues, formatCurrency, convertCurrency, CONDITION_STYLES } from "@/utils/cardHelpers";
+import { getMarketValueCards } from "@/utils/marketValueDisplay";
 
 /**
  * Shared card display components
@@ -68,32 +69,7 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
     targetCurrency: currency,
     marketSource,
   });
-  const marketValueCards = [
-    {
-      label: "Seller Ask",
-      value: marketValues.sellerAsk,
-      description: "Current pricing rule",
-      className: "border-amber-200 bg-amber-50/70",
-    },
-    {
-      label: "Fair Market",
-      value: marketValues.fairMarket,
-      description: `Median of ${marketValues.availableBenchmarkCount} benchmark${marketValues.availableBenchmarkCount === 1 ? "" : "s"}`,
-      className: "border-blue-200 bg-blue-50/70",
-    },
-    {
-      label: "Preferred Market",
-      value: marketValues.preferredMarket,
-      description: marketValues.preferredSource,
-      className: "border-violet-200 bg-violet-50/70",
-    },
-    {
-      label: "Quick Sale",
-      value: marketValues.quickSale,
-      description: "Lower liquid benchmark",
-      className: "border-emerald-200 bg-emerald-50/70",
-    },
-  ];
+  const marketValueCards = getMarketValueCards(marketValues);
   const fmtMarketValue = (value) => value > 0 ? fmt(value) : "—";
   
   return (
@@ -113,9 +89,9 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
               </span>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {marketValueCards.map((item) => (
-              <div key={item.label} className={`rounded-xl border p-3 ${item.className}`}>
+              <div key={item.key} className={`rounded-xl border p-3 ${item.className}`}>
                 <div className="text-xs font-medium text-muted-foreground">{item.label}</div>
                 <div className="mt-1 text-lg font-bold tabular-nums">{fmtMarketValue(item.value)}</div>
                 <div className="mt-1 text-[11px] text-muted-foreground">{item.description}</div>

@@ -313,7 +313,6 @@ describe("computeMarketValues", () => {
       marketSource: "cardmarket",
     });
     expect(values.sellerAsk).toBe(12);
-    expect(values.fairMarket).toBe(10);
     expect(values.preferredMarket).toBe(12);
     expect(values.quickSale).toBe(8);
     expect(values.availableBenchmarkCount).toBe(3);
@@ -334,10 +333,19 @@ describe("computeMarketValues", () => {
       { prices: { tcgplayer: { market_price: 9, currency: "EUR" } } },
       { targetCurrency: "EUR", marketSource: "cardmarket" },
     );
-    expect(values.fairMarket).toBe(9);
     expect(values.preferredMarket).toBe(9);
     expect(values.quickSale).toBe(9);
     expect(values.availableBenchmarkCount).toBe(1);
+  });
+
+  it("uses the current manual inventory price only for Seller Ask", () => {
+    const values = computeMarketValues(
+      { overridePrice: 600, overridePriceCurrency: "EUR", prices: {} },
+      { targetCurrency: "EUR", marketSource: "tcg" },
+    );
+    expect(values.sellerAsk).toBe(600);
+    expect(values.preferredMarket).toBe(0);
+    expect(values.quickSale).toBe(0);
   });
 });
 
