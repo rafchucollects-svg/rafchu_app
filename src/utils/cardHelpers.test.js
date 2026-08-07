@@ -373,6 +373,20 @@ describe("computeItemMetrics", () => {
     expect(eur.suggested).not.toBe(100);
     expect(eur.suggested).toBeGreaterThan(0);
   });
+
+  it("normalizes provider currencies before choosing a suggested price", () => {
+    const item = {
+      condition: "NM",
+      prices: {
+        tcgplayer: { market_price: 100, currency: "USD" },
+        cardmarket: { "30d_average": 100, currency: "EUR" },
+      },
+    };
+    const metrics = computeItemMetrics(item, "USD");
+    expect(metrics.tcg).toBe(100);
+    expect(metrics.cmAvg).toBeGreaterThan(100);
+    expect(metrics.suggested).toBe(metrics.cmAvg);
+  });
 });
 
 describe("computeInventoryTotals", () => {
@@ -593,6 +607,46 @@ describe("normalizeApiCard", () => {
     expect(card.id).toBeUndefined();
     expect(card.name).toBeUndefined();
     expect(card.prices.cardmarket.currency).toBe("EUR");
+  });
+
+  it("preserves canonical IDs, provider metadata, availability, and graded sales", () => {
+    const card = normalizeApiCard({
+      id: "sv3pt5-199",
+      name: "Charizard ex",
+      card_number: "199/165",
+      tcgid: "sv3pt5-199",
+      cardmarket_id: 2682,
+      tcgplayer_id: 517045,
+      episode: {
+        name: "151",
+        code: "MEW",
+        series: { name: "Scarlet & Violet" },
+      },
+      prices: {
+        cardmarket: {
+          currency: "EUR",
+          available_items: 42,
+          graded: { psa: { "10": { price: 900 } } },
+        },
+        tcg_player: { currency: "USD", market_price: 380.19 },
+        ebay: {
+          currency: "USD",
+          graded: { psa: { "10": { median_price: 925, sample_size: 12 } } },
+        },
+      },
+    });
+
+    expect(card).toMatchObject({
+      set: "Scarlet & Violet 151",
+      setName: "151",
+      setSeries: "Scarlet & Violet",
+      setCode: "MEW",
+      tcgid: "sv3pt5-199",
+      cardMarketId: 2682,
+      tcgplayerId: 517045,
+    });
+    expect(card.prices.cardmarket.availableItems).toBe(42);
+    expect(card.prices.ebay.graded.psa["10"].sample_size).toBe(12);
   });
 });
 

@@ -5,7 +5,7 @@ import { Input } from './ui/input';
 import { Card, CardContent } from './ui/card';
 import { useApp } from '@/contexts/AppContext';
 import { convertCurrency, formatCurrency } from '@/utils/cardHelpers';
-import { apiFetchMarketPrices } from '@/utils/apiHelpers';
+import { apiFetchGradedPrices, apiFetchMarketPrices, getEmbeddedGradedPrices } from '@/utils/apiHelpers';
 import { ConsignmentFields } from './ConsignmentFields';
 import {
   DEFAULT_CONSIGNOR_PCT,
@@ -43,6 +43,9 @@ const GRADING_COMPANIES = [
   { value: 'ACE', label: 'ACE' },
   { value: 'Other', label: 'Other' },
 ];
+
+const formatProviderPrice = (value, providerCurrency) =>
+  Number(value) > 0 ? formatCurrency(Number(value), providerCurrency || 'USD') : '–';
 
 const GRADES = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6', '5', '4', '3', '2', '1'];
 
@@ -175,51 +178,11 @@ export function AddCardModal({
     const fetchAvailableGrades = async () => {
       setFetchingAvailableGrades(true);
       try {
-        console.log('🔍 Fetching available grades for', gradingCompany);
-        
-        const params = new URLSearchParams();
-        
-        if (card.priceChartingId) {
-          params.append('priceChartingId', card.priceChartingId);
-        } else if (card.name) {
-          params.append('name', card.name);
-          if (card.set) params.append('set', card.set);
-          if (card.number) params.append('number', card.number);
-        }
-        
-        // Fetch with a dummy grade to get all grades back
-        params.append('grade', '10');
-        params.append('company', gradingCompany);
-        
-        const url = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchGradedPrices?${params}`;
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.success && data.graded?.allGrades) {
-          // Extract available grades for this company
-          const companyKey = gradingCompany.toLowerCase();
-          const companyGrades = data.graded.allGrades[companyKey] || {};
-          
-          // Filter to only grades with non-zero prices
-          const available = {};
-          Object.entries(companyGrades).forEach(([gradeKey, price]) => {
-            if (price && price > 0) {
-              available[gradeKey] = price;
-            }
-          });
-          
-          console.log(`✅ Available ${gradingCompany} grades:`, Object.keys(available));
-          setAvailableGrades(available);
-        } else {
-          // No grades available, set empty object
-          console.warn('⚠️ No graded pricing data found');
-          setAvailableGrades({});
-        }
+        const embedded = getEmbeddedGradedPrices(card, gradingCompany);
+        const available = Object.fromEntries(
+          Object.entries(embedded).map(([gradeKey, value]) => [gradeKey, value.price]),
+        );
+        setAvailableGrades(Object.keys(available).length > 0 ? available : null);
       } catch (error) {
         console.error('❌ Error fetching available grades:', error);
         // On error, show all grades (fallback)
@@ -287,46 +250,14 @@ export function AddCardModal({
     return filtered;
   }, [card]);
 
-  // Auto-fetch graded price from PriceCharting when grade is selected
+  // Resolve graded price from verified provider data when grade is selected.
   useEffect(() => {
     if (!isGraded || !gradingCompany || !grade || !card) return;
     
     const fetchGradedPrice = async () => {
       setFetchingGradedPrice(true);
       try {
-        console.log('🏆 Fetching graded price from PriceCharting for:', {
-          name: card.name,
-          priceChartingId: card.priceChartingId,
-          company: gradingCompany,
-          grade
-        });
-        
-        // Fetch from new graded prices endpoint
-        const params = new URLSearchParams();
-        
-        if (card.priceChartingId) {
-          params.append('priceChartingId', card.priceChartingId);
-        } else if (card.name) {
-          params.append('name', card.name);
-          if (card.set) params.append('set', card.set);
-          if (card.number) params.append('number', card.number);
-        }
-        
-        params.append('grade', grade);
-        params.append('company', gradingCompany);
-        
-        const url = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchGradedPrices?${params}`;
-        console.log('📡 Fetching graded price:', url.replace(/priceChartingId=\d+/, 'priceChartingId=***'));
-        
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-          console.error('❌ API response not OK:', response.status);
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-        
-        const data = await response.json();
-        console.log('📦 Graded price response:', data);
+        const data = await apiFetchGradedPrices(card, gradingCompany, grade);
         
         if (!data.success || !data.graded) {
           console.warn('⚠️ No graded price data found');
@@ -335,7 +266,11 @@ export function AddCardModal({
           return;
         }
         
-        const priceUSD = data.graded.price;
+        const priceUSD = convertCurrency(
+          data.graded.price,
+          'USD',
+          data.graded.currency || 'USD',
+        );
         
         if (priceUSD && priceUSD > 0) {
           const priceConverted = convertCurrency(priceUSD, currency || 'USD');
@@ -525,11 +460,11 @@ export function AddCardModal({
                               <div className="grid grid-cols-2 gap-2 text-sm">
                                 <div>
                                   <span className="text-muted-foreground">Average:</span>
-                                  <span className="ml-2 font-semibold">€{marketPrices.eu.avg.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.eu.avg, marketPrices.eu.currency || 'EUR')}</span>
                                 </div>
                                 <div>
                                   <span className="text-muted-foreground">Low:</span>
-                                  <span className="ml-2 font-semibold">€{marketPrices.eu.low.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.eu.low, marketPrices.eu.currency || 'EUR')}</span>
                                 </div>
                               </div>
                             </div>
@@ -537,27 +472,20 @@ export function AddCardModal({
                             <p className="text-sm text-yellow-600">⚠️ CardMarket pricing not available for this card</p>
                           )
                         ) : (
-                          // Show US prices (TCGPlayer or PriceCharting fallback) - DEFAULT
+                          // Show US prices (TCGPlayer) - DEFAULT
                           marketPrices.us?.found ? (
-                            <div className={`bg-white p-3 rounded border ${marketPrices.us.fallback ? 'border-purple-200' : 'border-green-200'}`}>
-                              <p className={`text-xs font-semibold mb-2 ${marketPrices.us.fallback ? 'text-purple-600' : 'text-green-600'}`}>
-                                {marketPrices.us.fallback ? '🔄 PriceCharting (Fallback)' : '🇺🇸 US Market (TCGPlayer)'}
-                              </p>
+                            <div className="bg-white p-3 rounded border border-green-200">
+                              <p className="text-xs font-semibold mb-2 text-green-600">🇺🇸 US Market (TCGPlayer)</p>
                               <div className="grid grid-cols-2 gap-2 text-sm">
                                 <div>
                                   <span className="text-muted-foreground">Market:</span>
-                                  <span className="ml-2 font-semibold">${marketPrices.us.market.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.us.market, marketPrices.us.currency)}</span>
                                 </div>
                                 <div>
                                   <span className="text-muted-foreground">Low:</span>
-                                  <span className="ml-2 font-semibold">${marketPrices.us.low.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.us.low, marketPrices.us.currency)}</span>
                                 </div>
                               </div>
-                              {marketPrices.us.fallback && (
-                                <p className="text-xs text-purple-600 mt-2">
-                                  ℹ️ Using PriceCharting data (not in TCGPlayer/CardMarket)
-                                </p>
-                              )}
                             </div>
                           ) : (
                             <p className="text-sm text-yellow-600">⚠️ TCGPlayer pricing not available for this card</p>
@@ -570,29 +498,22 @@ export function AddCardModal({
                     {mode === 'vendor' && (
                       <div className="space-y-2">
                         {marketPrices.us?.found && (
-                          <div className={`bg-white p-3 rounded border ${marketPrices.us.fallback ? 'border-purple-200' : 'border-green-200'}`}>
-                            <p className={`text-xs font-semibold mb-2 ${marketPrices.us.fallback ? 'text-purple-600' : 'text-green-600'}`}>
-                              {marketPrices.us.fallback ? '🔄 PriceCharting (Fallback)' : '🇺🇸 US Market (TCGPlayer)'}
-                            </p>
+                          <div className="bg-white p-3 rounded border border-green-200">
+                            <p className="text-xs font-semibold mb-2 text-green-600">🇺🇸 US Market (TCGPlayer)</p>
                             <div className="grid grid-cols-3 gap-2 text-sm">
                               <div>
                                 <span className="text-muted-foreground">Market:</span>
-                                <span className="ml-1 font-semibold">${marketPrices.us.market.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.us.market, marketPrices.us.currency)}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Low:</span>
-                                <span className="ml-1 font-semibold">${marketPrices.us.low.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.us.low, marketPrices.us.currency)}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Mid:</span>
-                                <span className="ml-1 font-semibold">${marketPrices.us.mid.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.us.mid, marketPrices.us.currency)}</span>
                               </div>
                             </div>
-                            {marketPrices.us.fallback && (
-                              <p className="text-xs text-purple-600 mt-2">
-                                ℹ️ Using PriceCharting data (not in TCGPlayer/CardMarket)
-                              </p>
-                            )}
                           </div>
                         )}
                         
@@ -602,15 +523,15 @@ export function AddCardModal({
                             <div className="grid grid-cols-3 gap-2 text-sm">
                               <div>
                                 <span className="text-muted-foreground">Average:</span>
-                                <span className="ml-1 font-semibold">€{marketPrices.eu.avg.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.eu.avg, marketPrices.eu.currency || 'EUR')}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Low:</span>
-                                <span className="ml-1 font-semibold">€{marketPrices.eu.low.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.eu.low, marketPrices.eu.currency || 'EUR')}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Trend:</span>
-                                <span className="ml-1 font-semibold">€{marketPrices.eu.trend.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.eu.trend, marketPrices.eu.currency || 'EUR')}</span>
                               </div>
                             </div>
                           </div>
@@ -891,5 +812,3 @@ export function AddCardModal({
     </div>
   );
 }
-
-

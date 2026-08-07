@@ -329,16 +329,19 @@ fetchFXRates();
 // Card Pricing Helpers
 // =============================
 
-export function computeTcgPrice(source, condition = "NM") {
+export function computeTcgPrice(source, condition = "NM", targetCurrency = null) {
   const base =
     Number(
       source?.prices?.tcgplayer?.market_price ??
         source?.prices?.tcgplayer?.mid_price,
     ) || 0;
-  return base * getConditionMultiplier(condition);
+  const adjusted = base * getConditionMultiplier(condition);
+  if (!targetCurrency || adjusted <= 0) return adjusted;
+  const sourceCurrency = source?.prices?.tcgplayer?.currency || targetCurrency || "USD";
+  return convertCurrency(adjusted, targetCurrency, sourceCurrency);
 }
 
-export function getCardmarketLowest(source, condition = "NM") {
+export function getCardmarketLowest(source, condition = "NM", targetCurrency = null) {
   const cm = source?.prices?.cardmarket || {};
   const candidates = [
     cm.lowest7,
@@ -352,8 +355,10 @@ export function getCardmarketLowest(source, condition = "NM") {
   for (const value of candidates) {
     const num = Number(value);
     if (!Number.isNaN(num) && num > 0) {
-      // Apply condition multiplier for non-NM cards
-      return num * getConditionMultiplier(condition);
+      const adjusted = num * getConditionMultiplier(condition);
+      return targetCurrency
+        ? convertCurrency(adjusted, targetCurrency, cm.currency || targetCurrency || "EUR")
+        : adjusted;
     }
   }
   const fallback =
@@ -361,10 +366,13 @@ export function getCardmarketLowest(source, condition = "NM") {
     Number(cm.lowest_near_mint) ||
     Number(cm.average) ||
     0;
-  return fallback * getConditionMultiplier(condition);
+  const adjusted = fallback * getConditionMultiplier(condition);
+  return targetCurrency && adjusted > 0
+    ? convertCurrency(adjusted, targetCurrency, cm.currency || targetCurrency || "EUR")
+    : adjusted;
 }
 
-export function getCardmarketAvg(source, condition = "NM") {
+export function getCardmarketAvg(source, condition = "NM", targetCurrency = null) {
   const cm = source?.prices?.cardmarket || {};
   // Try 30d average first, then fall back to 7d
   const candidates = [
@@ -383,8 +391,10 @@ export function getCardmarketAvg(source, condition = "NM") {
   for (const value of candidates) {
     const num = Number(value);
     if (!Number.isNaN(num) && num > 0) {
-      // Apply condition multiplier for non-NM cards
-      return num * getConditionMultiplier(condition);
+      const adjusted = num * getConditionMultiplier(condition);
+      return targetCurrency
+        ? convertCurrency(adjusted, targetCurrency, cm.currency || targetCurrency || "EUR")
+        : adjusted;
     }
   }
   return 0;
@@ -462,9 +472,9 @@ export function computeItemMetrics(item, userCurrency = 'USD') {
   
   // Standard calculation for ungraded cards
   const condition = item.condition || "NM";
-  const tcg = computeTcgPrice(item, condition);
-  const cmAvg = getCardmarketAvg(item, condition) || 0;
-  const cmLowest = getCardmarketLowest(item, condition) || 0;
+  const tcg = computeTcgPrice(item, condition, userCurrency);
+  const cmAvg = getCardmarketAvg(item, condition, userCurrency) || 0;
+  const cmLowest = getCardmarketLowest(item, condition, userCurrency) || 0;
   const suggested = computeSuggestedPrice({
     tcg,
     cmAvg,
@@ -540,6 +550,20 @@ export async function recordTransaction(db, uid, entry) {
  */
 export function normalizeApiCard(raw) {
   const d = raw?.data ?? raw;
+  const episode = d?.episode || {};
+  const episodeName = episode?.name ?? d?.episode_name ?? d?.set_name ?? d?.set;
+  const seriesName = episode?.series?.name ?? d?.series_name ?? d?.series;
+  const displaySet = seriesName && episodeName &&
+    !String(episodeName).toLowerCase().includes(String(seriesName).toLowerCase())
+    ? `${seriesName} ${episodeName}`
+    : episodeName;
+  const cardmarketPrices = d?.prices?.cardmarket || {};
+  const tcgplayerPrices = d?.prices?.tcg_player || d?.prices?.tcgplayer || {};
+  const ebayPrices = d?.prices?.ebay || {};
+  const cardMarketId = d?.cardmarket_id ?? d?.cardMarketId;
+  const tcgplayerId = d?.tcgplayer_id ?? d?.tcgplayerId ?? d?.tcgPlayerId;
+  const fetchedAt = d?.pricesLastUpdated ?? d?.lastUpdated ?? new Date().toISOString();
+
   return {
     id: d?.id ?? d?.card_id,
     name: d?.name,
@@ -547,37 +571,63 @@ export function normalizeApiCard(raw) {
     slug: d?.slug,
     number: d?.card_number ?? d?.collector_number ?? d?.number,
     rarity: d?.rarity,
-    set: d?.episode?.name ?? d?.episode_name ?? d?.set_name,
-    setSlug: d?.episode?.slug ?? d?.episode_slug,
+    set: displaySet,
+    setName: episodeName,
+    setSeries: seriesName,
+    setCode: episode?.code ?? d?.set_code,
+    setSlug: episode?.slug ?? d?.episode_slug,
+    setLogo: episode?.logo ?? d?.set_logo,
+    releaseDate: episode?.released_at ?? d?.released_at ?? d?.releaseDate,
+    setCardsTotal: episode?.cards_total ?? d?.cards_total,
+    setCardsPrintedTotal: episode?.cards_printed_total ?? d?.cards_printed_total,
     image: d?.image ?? d?.images?.[0],
-    links: d?.links || {},
+    links: {
+      ...(d?.links || {}),
+      ...(d?.tcggo_url ? { tcggo: d.tcggo_url } : {}),
+    },
     tcgid: d?.tcgid,
+    cardMarketId,
+    cardmarketId: cardMarketId,
+    tcgplayerId,
+    tcgPlayerId: tcgplayerId,
+    providerIds: {
+      tcgid: d?.tcgid,
+      cardmarket: cardMarketId,
+      tcgplayer: tcgplayerId,
+    },
     supertype: d?.supertype,
     product_type: d?.product_type || d?.type,
     hp: d?.hp,
     artist: d?.artist?.name ?? d?.artist_name,
+    language: d?.language ?? (d?.isJapanese ? "Japanese" : "English"),
+    isJapanese: Boolean(d?.isJapanese || d?._isJapaneseCard),
+    variants: Array.isArray(d?.variants) ? d.variants : [],
+    dataSource: d?.dataSource || d?.source || "cardmarket",
+    pricesLastUpdated: fetchedAt,
     prices: {
       cardmarket: {
-        currency: d?.prices?.cardmarket?.currency || "EUR",
+        ...cardmarketPrices,
+        currency: cardmarketPrices?.currency || "EUR",
         lowest_near_mint:
-          Number(d?.prices?.cardmarket?.lowest_near_mint) || null,
+          Number(cardmarketPrices?.lowest_near_mint) || null,
         avg7:
           Number(
-            d?.prices?.cardmarket?.["7d_average"] ??
-              d?.prices?.cardmarket?.avg7,
+            cardmarketPrices?.["7d_average"] ?? cardmarketPrices?.avg7,
           ) || null,
         avg30:
           Number(
-            d?.prices?.cardmarket?.["30d_average"] ??
-              d?.prices?.cardmarket?.avg30,
+            cardmarketPrices?.["30d_average"] ?? cardmarketPrices?.avg30,
           ) || null,
-        graded: d?.prices?.cardmarket?.graded || {},
+        availableItems: Number(cardmarketPrices?.available_items) || null,
+        graded: cardmarketPrices?.graded || {},
       },
       tcgplayer: {
-        currency: d?.prices?.tcg_player?.currency || "EUR",
-        market_price: Number(d?.prices?.tcg_player?.market_price) || null,
-        mid_price: Number(d?.prices?.tcg_player?.mid_price) || null,
+        ...tcgplayerPrices,
+        currency: tcgplayerPrices?.currency || "USD",
+        market_price: Number(tcgplayerPrices?.market_price) || null,
+        mid_price: Number(tcgplayerPrices?.mid_price) || null,
       },
+      ebay: ebayPrices,
     },
   };
 }
@@ -609,7 +659,7 @@ export function tokenize(q) {
   // Split on spaces and punctuation BUT keep apostrophes attached to words
   // This regex splits on anything that's not: letters, numbers, or apostrophes between letters
   return normalized
-    .split(/[\s,;:!?\-_\(\)\[\]{}]+/) // Split on whitespace and common separators
+    .split(/[\s,;:!?\-_()[\]{}]+/) // Split on whitespace and common separators
     .map(token => token.replace(/^[']+|[']+$/g, '')) // Trim leading/trailing apostrophes
     .filter(Boolean);
 }
@@ -773,4 +823,3 @@ export function buildHistoryEntry(items) {
     ...totals,
   };
 }
-

@@ -9,7 +9,13 @@
 import { normalizeApiCard } from './cardHelpers';
 
 // Import improved search helpers (ranking is done ONCE via improveSearchResults)
-import { improveSearchResults, preprocessQuery, parseQuery } from './searchHelpers';
+import {
+  improveSearchResults,
+  isStrongSearchMatch,
+  mergeBestData,
+  preprocessQuery,
+  parseQuery,
+} from './searchHelpers';
 
 // Cloud Functions base URL (secure - no API keys exposed)
 const CLOUD_FUNCTIONS_BASE = 'https://us-central1-rafchu-tcg-app.cloudfunctions.net';
@@ -28,7 +34,7 @@ export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v4.6-merged';
+const CACHE_VERSION = 'v4.8-strong-provider-match';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -64,10 +70,21 @@ const cardDetailCache = new Map();
 /**
  * Normalize search query for caching (includes version for cache invalidation)
  */
-export function canonicalizeQuery(query) {
+export function canonicalizeQuery(query, languageScope = 'english') {
   if (!query || typeof query !== "string") return "";
   const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
-  return `${CACHE_VERSION}:${normalized}`;
+  return `${CACHE_VERSION}:${languageScope}:${normalized}`;
+}
+
+export function matchesLanguageScope(card, languageScope = 'english') {
+  const isJapanese = Boolean(
+    card?.isJapanese ||
+    card?._isJapaneseCard ||
+    String(card?.language || '').toLowerCase().startsWith('jap'),
+  );
+  if (languageScope === 'all') return true;
+  if (languageScope === 'japanese') return isJapanese;
+  return !isJapanese;
 }
 
 /**
@@ -117,7 +134,7 @@ async function apiSearchCardsRaw(
   query,
   {
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
-    includeJapanese = true,
+    includeJapanese = false,
     signal = null,
   } = {},
 ) {
@@ -203,14 +220,14 @@ export async function apiSearchCards(
     useCache = true,
     allowExpired = false,
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
-    includeJapanese = true,
+    includeJapanese = false,
     skipRanking = false, // Allow skipping ranking for hybrid search
     signal = null,
   } = {},
 ) {
   if (!query?.trim()) return [];
 
-  const canonical = canonicalizeQuery(query);
+  const canonical = canonicalizeQuery(query, includeJapanese ? 'all' : 'english');
   if (useCache) {
     const cached = getSearchCacheEntry(canonical);
     if (cached && cached.results.length) {
@@ -256,6 +273,15 @@ export async function apiFetchCardDetails(card) {
 
   if (cacheKey && cardDetailCache.has(cacheKey)) {
     return cardDetailCache.get(cacheKey);
+  }
+
+  const hasCanonicalIdentity = Boolean(
+    card.tcgid || card.tcgplayerId || card.tcgPlayerId || card.cardmarketId || card.cardMarketId,
+  );
+  const hasCoreDetails = Boolean(card.name && card.set && card.number && card.image && card.rarity);
+  if (hasCanonicalIdentity && hasCoreDetails) {
+    if (cacheKey) cardDetailCache.set(cacheKey, card);
+    return card;
   }
 
   // Try to fetch card details via Cloud Function if we have an ID
@@ -325,39 +351,62 @@ export function enrichCardWithMarketPrices(card, marketPrices) {
   if (!card || !marketPrices) return card;
 
   card.prices = card.prices || {};
-  card.isFallbackPrice = false;
 
   // US / TCGPlayer prices
   if (marketPrices.us?.found) {
     card.prices.tcgplayer = {
+      ...(card.prices.tcgplayer || {}),
       market_price: marketPrices.us.market,
       low_price: marketPrices.us.low,
       mid_price: marketPrices.us.mid,
       high_price: marketPrices.us.high,
+      currency: marketPrices.us.currency || card.prices.tcgplayer?.currency || 'USD',
+      source: marketPrices.us.source || 'TCGPlayer',
+      lastUpdated: marketPrices.us.lastUpdated || new Date().toISOString(),
       tcgPlayerId: marketPrices.us.tcgPlayerId || null,
     };
     if (marketPrices.us.tcgPlayerId) {
       card.tcgPlayerId = marketPrices.us.tcgPlayerId;
       card.tcgplayerId = marketPrices.us.tcgPlayerId;
     }
-    card.priceSource = marketPrices.us.fallback ? 'PriceCharting' : 'TCGPlayer';
-    if (marketPrices.us.fallback === true) {
-      card.isFallbackPrice = true;
-      card.prices.pricecharting = marketPrices.us.market;
-    }
+    card.priceSource = marketPrices.us.source || 'TCGPlayer';
   }
 
   // EU / CardMarket prices
   if (marketPrices.eu?.found) {
     card.prices.cardmarket = {
+      ...(card.prices.cardmarket || {}),
       avg30: marketPrices.eu.avg,
       avg7: marketPrices.eu.trend,
       lowest_near_mint: marketPrices.eu.low,
       averageSellPrice: marketPrices.eu.avg,
       lowPrice: marketPrices.eu.low,
       trendPrice: marketPrices.eu.trend,
+      currency: marketPrices.eu.currency || card.prices.cardmarket?.currency || 'EUR',
+      availableItems: marketPrices.eu.availableItems ?? card.prices.cardmarket?.availableItems ?? null,
+      countryLows: marketPrices.eu.countryLows || card.prices.cardmarket?.countryLows || {},
+      graded: marketPrices.eu.graded || card.prices.cardmarket?.graded || {},
+      lastUpdated: marketPrices.eu.lastUpdated || new Date().toISOString(),
     };
+    if (marketPrices.eu.ebayGraded && Object.keys(marketPrices.eu.ebayGraded).length > 0) {
+      card.prices.ebay = {
+        ...(card.prices.ebay || {}),
+        currency: marketPrices.eu.ebayCurrency || card.prices.ebay?.currency || 'USD',
+        graded: marketPrices.eu.ebayGraded,
+      };
+    }
+    if (marketPrices.eu.cardmarketId) {
+      card.cardMarketId = marketPrices.eu.cardmarketId;
+      card.cardmarketId = marketPrices.eu.cardmarketId;
+    }
+    if (marketPrices.eu.tcgplayerId && !card.tcgplayerId && !card.tcgPlayerId) {
+      card.tcgplayerId = marketPrices.eu.tcgplayerId;
+      card.tcgPlayerId = marketPrices.eu.tcgplayerId;
+    }
+    if (marketPrices.eu.tcgid) card.tcgid = marketPrices.eu.tcgid;
   }
+
+  card.pricesLastUpdated = marketPrices.timestamp || new Date().toISOString();
 
   return card;
 }
@@ -378,108 +427,91 @@ export function formatSearchResults(results, query, limit) {
   }));
 }
 
-/**
- * Generate unique ID
- */
-export function uniqueId() {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+function numericPrice(value) {
+  const price = Number(value);
+  return Number.isFinite(price) && price > 0 ? price : 0;
+}
+
+function timestampToMillis(value) {
+  if (!value) return 0;
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  if (typeof value?.seconds === 'number') return value.seconds * 1000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function getEmbeddedMarketPrices(card) {
+  const tcg = card?.prices?.tcgplayer || {};
+  const cm = card?.prices?.cardmarket || {};
+  const market = numericPrice(tcg.market_price ?? tcg.mid_price);
+  const cmAverage = numericPrice(cm.avg30 ?? cm['30d_average'] ?? cm.avg7 ?? cm['7d_average']);
+  const cmLow = numericPrice(cm.lowest_near_mint ?? cm.lowest ?? cm.lowest_price);
+  const timestamp = card?.pricesLastUpdated || tcg.lastUpdated || cm.lastUpdated || null;
+
+  return {
+    us: market > 0 ? {
+      found: true,
+      source: tcg.source || 'TCGPlayer',
+      market,
+      low: numericPrice(tcg.low_price) || null,
+      mid: numericPrice(tcg.mid_price) || market,
+      high: numericPrice(tcg.high_price) || null,
+      currency: tcg.currency || 'USD',
+      tcgPlayerId: card?.tcgplayerId || card?.tcgPlayerId || tcg.tcgPlayerId || null,
+      lastUpdated: tcg.lastUpdated || timestamp,
+    } : { found: false, source: 'TCGPlayer' },
+    eu: cmAverage > 0 || cmLow > 0 ? {
+      found: true,
+      source: 'CardMarket',
+      avg: cmAverage || cmLow,
+      low: cmLow || cmAverage,
+      trend: numericPrice(cm.avg7 ?? cm['7d_average'] ?? cm.trend) || cmAverage || cmLow,
+      currency: cm.currency || 'EUR',
+      availableItems: cm.availableItems ?? cm.available_items ?? null,
+      countryLows: cm.countryLows || {},
+      lastUpdated: cm.lastUpdated || timestamp,
+    } : { found: false, source: 'CardMarket' },
+    timestamp,
+  };
+}
+
+export function hasFreshEmbeddedMarketPrices(card, maxAgeMs = CACHE_DURATION_MS) {
+  const embedded = getEmbeddedMarketPrices(card);
+  if (!embedded.us?.found && !embedded.eu?.found) return false;
+  const updatedAt = timestampToMillis(embedded.timestamp);
+  return updatedAt > 0 && Date.now() - updatedAt <= maxAgeMs;
+}
+
+function normalizeGradedEntry(entry) {
+  if (typeof entry === 'number') return { price: numericPrice(entry), sampleSize: null };
+  return {
+    price: numericPrice(entry?.median_price ?? entry?.medianPrice ?? entry?.price),
+    sampleSize: Number(entry?.sample_size ?? entry?.sampleSize) || null,
+  };
+}
+
+export function getEmbeddedGradedPrices(card, gradingCompany) {
+  const companyKey = String(gradingCompany || 'PSA').toLowerCase();
+  const ebayCompany = card?.prices?.ebay?.graded?.[companyKey] || {};
+  const cardmarketCompany = card?.prices?.cardmarket?.graded?.[companyKey] || {};
+  const allGrades = {};
+
+  Object.entries(cardmarketCompany).forEach(([key, value]) => {
+    const grade = String(key).toLowerCase().replace(companyKey, '').replace(/_/g, '.');
+    const normalized = normalizeGradedEntry(value);
+    if (grade && normalized.price > 0) allGrades[grade] = normalized;
+  });
+  Object.entries(ebayCompany).forEach(([grade, value]) => {
+    const normalized = normalizeGradedEntry(value);
+    if (normalized.price > 0) allGrades[String(grade)] = normalized;
+  });
+
+  return allGrades;
 }
 
 /**
- * =============================================================================
- * TRIPLE API INTEGRATION (v2.1)
- * All external API calls routed through Cloud Functions for security
- * =============================================================================
- */
-
-/**
- * Search PriceCharting API directly (PRIMARY SEARCH SOURCE)
- * This provides comprehensive card data including all graded prices
- */
-export async function apiSearchPriceCharting(query, { limit = 50 } = {}) {
-  if (!query?.trim()) return [];
-  
-  try {
-    const url = `${CLOUD_FUNCTIONS_BASE}/searchPriceChartingCards?query=${encodeURIComponent(query)}&limit=${limit}`;
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.warn('PriceCharting search failed:', response.status);
-      return [];
-    }
-    
-    const data = await response.json();
-    
-    if (!data.success || !data.results) {
-      return [];
-    }
-    
-    // Transform PriceCharting results to our normalized format
-    // Cloud Function already parses and returns: name, set, number, fullName, priceChartingId
-    return data.results.map(card => {
-      return {
-        id: card.id || uniqueId(),
-        name: card.name,
-        set: card.set || '',
-        number: card.number || '',
-        rarity: card.rarity || '',
-        image: null, // Will be enriched from CardMarket
-        priceChartingId: card.priceChartingId,
-        fullName: card.fullName,
-        // Store raw PriceCharting data for reference
-        priceChartingData: card,
-      };
-    });
-  } catch (error) {
-    console.error('Error searching PriceCharting:', error);
-    return [];
-  }
-}
-
-/**
- * Fetch comprehensive prices for a specific card from all three APIs
- * Returns pricing data from PriceCharting, Pokemon Price Tracker, and CardMarket
- */
-export async function apiFetchComprehensivePrices(card, { isGraded = false, grade = null } = {}) {
-  if (!card?.name) return null;
-  
-  try {
-    const params = new URLSearchParams({
-      name: card.name,
-      ...(card.set && { set: card.set }),
-      ...(card.number && { number: card.number }),
-      ...(isGraded && { isGraded: 'true' }),
-      ...(grade && { grade: grade }),
-    });
-    
-    const url = `${CLOUD_FUNCTIONS_BASE}/fetchComprehensivePrices?${params}`;
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.warn('Comprehensive prices fetch failed:', response.status);
-      return null;
-    }
-    
-    const data = await response.json();
-    
-    if (!data.success) {
-      return null;
-    }
-    
-    return data.prices;
-  } catch (error) {
-    console.error('Error fetching comprehensive prices:', error);
-    return null;
-  }
-}
-
-/**
- * Fetch on-demand market prices for a specific card
- * Called when user clicks a card or adds to collection/inventory
- * Returns both US (TCGPlayer) and EU (CardMarket) prices
- */
-/**
- * Fetch graded card prices from PriceCharting via Cloud Function
+ * Resolve graded prices from data already supplied by CardMarket/eBay. PSA can
+ * additionally fall back to Pokemon Price Tracker, the supported live source.
  */
 export async function apiFetchGradedPrices(card, gradingCompany, grade) {
   if (!card) {
@@ -494,41 +526,91 @@ export async function apiFetchGradedPrices(card, gradingCompany, grade) {
     return { success: false, error: 'Card name is required' };
   }
   
+  const company = gradingCompany || 'PSA';
+  const gradeKey = String(grade || '10');
+  const embeddedGrades = getEmbeddedGradedPrices(card, company);
+  const embedded = embeddedGrades[gradeKey];
+  if (embedded?.price > 0) {
+    const hasEbayGrade = Boolean(card?.prices?.ebay?.graded?.[company.toLowerCase()]?.[gradeKey]);
+    return {
+      success: true,
+      card: { name: cardName, tcgplayerId: card.tcgplayerId || card.tcgPlayerId || null },
+      graded: {
+        company,
+        grade: gradeKey,
+        price: embedded.price,
+        currency: hasEbayGrade
+          ? (card?.prices?.ebay?.currency || 'USD')
+          : (card?.prices?.cardmarket?.currency || 'EUR'),
+        sampleSize: embedded.sampleSize,
+        source: hasEbayGrade ? 'eBay sold listings' : 'CardMarket graded data',
+        allGrades: { [company.toLowerCase()]: Object.fromEntries(
+          Object.entries(embeddedGrades).map(([itemGrade, value]) => [itemGrade, value.price]),
+        ) },
+      },
+    };
+  }
+
+  if (String(company).toUpperCase() !== 'PSA') {
+    return { success: false, error: `No verified ${company} ${gradeKey} market data is available` };
+  }
+
   try {
     const params = new URLSearchParams({
       name: cardName,
       set: card.set || card.episode?.name || '',
-      number: card.number || card.card_number || '',
-      company: gradingCompany || 'PSA',
-      grade: grade || '10'
+      cardNumber: card.number || card.card_number || '',
+      grade: gradeKey,
     });
     
-    const url = `${CLOUD_FUNCTIONS_BASE}/fetchGradedPrices?${params.toString()}`;
-    // Fetching graded price
+    const url = `${CLOUD_FUNCTIONS_BASE}/getPsaGradedPrice?${params.toString()}`;
     const response = await fetch(url);
     
     if (!response.ok) {
-      console.error('Failed to fetch graded prices:', response.status, response.statusText);
       return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
     }
     
     const data = await response.json();
-    // Graded price fetched
-    return data;
+    if (!data.success || !numericPrice(data.price)) return data;
+    return {
+      success: true,
+      card: {
+        name: data.cardName || cardName,
+        set: data.setName || card.set,
+        number: data.cardNumber || card.number,
+        tcgplayerId: data.tcgPlayerId || card.tcgplayerId || card.tcgPlayerId || null,
+      },
+      graded: {
+        company: 'PSA',
+        grade: gradeKey,
+        price: numericPrice(data.price),
+        currency: 'USD',
+        confidence: data.confidence || null,
+        source: 'Pokemon Price Tracker / eBay',
+        allGrades: { psa: { [gradeKey]: numericPrice(data.price) } },
+      },
+    };
   } catch (error) {
     console.error('Error fetching graded prices:', error);
     return { success: false, error: error.message };
   }
 }
 
-export async function apiFetchMarketPrices(card) {
+export async function apiFetchMarketPrices(card, { force = false } = {}) {
   try {
-    // Fetching on-demand prices
+    if (!force && hasFreshEmbeddedMarketPrices(card)) {
+      return getEmbeddedMarketPrices(card);
+    }
     
     const params = new URLSearchParams({
       name: card.name,
       ...(card.set && { set: card.set }),
       ...(card.number && { number: card.number }),
+      ...(card.setCode && { setCode: card.setCode }),
+      ...(card.setSeries && { series: card.setSeries }),
+      ...((card.tcgplayerId || card.tcgPlayerId) && { tcgplayerId: card.tcgplayerId || card.tcgPlayerId }),
+      ...((card.cardmarketId || card.cardMarketId) && { cardmarketId: card.cardmarketId || card.cardMarketId }),
+      ...(card.tcgid && { tcgid: card.tcgid }),
     });
     
     const url = `${CLOUD_FUNCTIONS_BASE}/fetchMarketPrices?${params}`;
@@ -568,6 +650,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     allowExpired = false, 
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
     signal = null,
+    languageScope = 'english',
   } = options;
   
   if (!query?.trim()) return [];
@@ -742,7 +825,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   }
   
   // Check cache first (using original query for cache key)
-  const canonical = canonicalizeQuery(query);
+  const canonical = canonicalizeQuery(query, languageScope);
   if (useCache) {
     const cached = getSearchCacheEntry(canonical);
     if (cached && cached.results.length) {
@@ -765,6 +848,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     apiSearchCards(searchQuery, {
       useCache: false,
       maxResults,
+      includeJapanese: languageScope !== 'english',
       skipRanking: true,
       signal,
     }),
@@ -786,6 +870,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
         apiSearchCards(setQuery, {
           useCache: false,
           maxResults: secondaryMaxResults,
+          includeJapanese: languageScope !== 'english',
           skipRanking: true,
           signal,
         }),
@@ -830,18 +915,21 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   combinedCardMarketResults.forEach((cmCard) => {
     const key = createCardKey(cmCard);
     // Normalize field names (API returns card_number, we use number)
-    cardMap.set(key, {
+    const normalizedCard = {
       ...cmCard,
       number: cmCard.number || cmCard.card_number, // Normalize card number field
       set: cmCard.set || cmCard.episode?.name, // Normalize set field
       source: cmCard.dataSource === 'justtcg' || cmCard._isJapaneseCard ? 'justtcg' : 'cardmarket',
-      // CardMarket cards need priceChartingId for graded lookups
-      priceChartingId: null,
-    });
+    };
+    cardMap.set(
+      key,
+      cardMap.has(key) ? mergeBestData(cardMap.get(key), normalizedCard) : normalizedCard,
+    );
   });
   
   // Convert Map back to array
-  let finalResults = Array.from(cardMap.values());
+  let finalResults = Array.from(cardMap.values())
+    .filter(card => matchesLanguageScope(card, languageScope));
   
   // Applying search improvements (filter, dedupe, rank)
   
@@ -897,9 +985,14 @@ export async function apiSearchCardsCached(query, options = {}) {
     useCache = true,
     maxResults = MAX_SUGGESTION_LIMIT,
     signal = null,
+    languageScope = 'english',
+    skipDatabaseCache = false,
   } = options;
 
   // Searching with intelligent cache
+  if (skipDatabaseCache || languageScope !== 'english') {
+    return apiSearchCardsHybrid(query, { ...options, signal, languageScope });
+  }
   
   try {
     const searchUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/searchCards?q=${encodeURIComponent(query)}`;
@@ -919,14 +1012,51 @@ export async function apiSearchCardsCached(query, options = {}) {
     
     // If cached search returned results, use them
     if (data.results.length > 0) {
-      const results = improveSearchResults(data.results, query, {
+      const cachedResults = improveSearchResults(data.results, query, {
         maxResults,
         enableDeduplication: true,
         enableFiltering: true,
         enableRanking: true,
       });
-      if (useCache) setSearchCacheEntry(canonicalizeQuery(query), results);
-      return results;
+      const hasRichStrongMatch = cachedResults.some(card => {
+        const hasIdentity = Boolean(
+          card.tcgid || card.tcgplayerId || card.tcgPlayerId || card.cardmarketId || card.cardMarketId,
+        );
+        const hasPrice = Number(
+          card.prices?.tcgplayer?.market_price ||
+          card.prices?.cardmarket?.lowest_near_mint ||
+          card.prices?.cardmarket?.avg30,
+        ) > 0;
+        return hasIdentity && hasPrice && Boolean(card.image) && isStrongSearchMatch(card, query);
+      });
+
+      if (hasRichStrongMatch) {
+        if (useCache) setSearchCacheEntry(canonicalizeQuery(query, languageScope), cachedResults);
+        return cachedResults;
+      }
+
+      // Keep the fast cache candidates visible in the final merge, but do not
+      // let weak or sparse matches prevent a real provider lookup.
+      const providerResults = await apiSearchCardsHybrid(query, {
+        ...options,
+        useCache: false,
+        signal,
+        languageScope,
+      });
+      const mergedResults = improveSearchResults(
+        [...cachedResults, ...providerResults],
+        query,
+        {
+          maxResults,
+          enableDeduplication: true,
+          enableFiltering: true,
+          enableRanking: true,
+        },
+      );
+      if (useCache && mergedResults.length > 0) {
+        setSearchCacheEntry(canonicalizeQuery(query, languageScope), mergedResults);
+      }
+      return mergedResults;
     }
     
     // No results from the database-backed endpoint: use the provider fallback.

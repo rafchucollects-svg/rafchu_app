@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildCardDatabaseSearchTerms } from "./cardSearchCache";
+import {
+  buildCardDatabaseSearchTerms,
+  selectCardDatabaseQueryTerms,
+} from "./cardSearchCache";
 
 describe("buildCardDatabaseSearchTerms", () => {
   it("normalizes and deduplicates card search terms", () => {
@@ -18,5 +21,15 @@ describe("buildCardDatabaseSearchTerms", () => {
 
   it("handles empty input", () => {
     expect(buildCardDatabaseSearchTerms("  ")).toEqual([]);
+  });
+});
+
+describe("selectCardDatabaseQueryTerms", () => {
+  it("queries Firestore with the most descriptive name term", () => {
+    expect(selectCardDatabaseQueryTerms("charizard ex 199")).toEqual(["charizard"]);
+  });
+
+  it("skips generic card words before falling back to a number", () => {
+    expect(selectCardDatabaseQueryTerms("pokemon ex 151")).toEqual(["151"]);
   });
 });

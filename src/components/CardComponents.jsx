@@ -1,7 +1,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ExternalLink, Heart } from "lucide-react";
-import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, CONDITION_STYLES } from "@/utils/cardHelpers";
+import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, convertCurrency, CONDITION_STYLES } from "@/utils/cardHelpers";
 
 /**
  * Shared card display components
@@ -29,15 +29,25 @@ export function PriceRow({ label, value }) {
 
 // Card prices display
 export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor", marketSource = "tcg", currency = "USD" }) {
-  const cm = card?.prices?.cardmarket;
-  const tcgPrice = computeTcgPrice(card, condition);
-  const baseTcg =
-    Number(card?.prices?.tcgplayer?.market_price ?? card?.prices?.tcgplayer?.mid_price) ||
-    0;
-  const cmAvg = getCardmarketAvg(card) || 0;
-  const cmLowest = getCardmarketLowest(card) || 0;
+  const tcgPrice = computeTcgPrice(card, condition, currency);
+  const baseTcg = computeTcgPrice(card, "NM", currency);
+  const cmAvg = getCardmarketAvg(card, "NM", currency) || 0;
+  const cmLowest = getCardmarketLowest(card, condition, currency) || 0;
+  const cmLowestNm = getCardmarketLowest(card, "NM", currency) || 0;
+  const cmCurrency = card?.prices?.cardmarket?.currency || 'EUR';
+  const tcgCurrency = card?.prices?.tcgplayer?.currency || 'USD';
+  const cmAvg7 = convertCurrency(
+    Number(card?.prices?.cardmarket?.avg7 ?? card?.prices?.cardmarket?.["7d_average"]) || 0,
+    currency,
+    cmCurrency,
+  );
+  const tcgMid = convertCurrency(
+    Number(card?.prices?.tcgplayer?.mid_price) || 0,
+    currency,
+    tcgCurrency,
+  );
   const diff = tcgPrice - (cmAvg || cmLowest || 0);
-  const fmt = formatPrice || ((value) => formatCurrency(value ?? 0));
+  const fmt = formatPrice || ((value) => formatCurrency(value ?? 0, currency));
   const conditionBadgeEl = (
     <span
       className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${conditionClasses(condition, "badge")}`}
@@ -46,27 +56,17 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
     </span>
   );
   
-  // Check if we're using PriceCharting fallback
-  const isFallback = card?.isFallbackPrice;
-  const fallbackPrice = card?.prices?.tcgplayer?.market_price || 0;
-  
   // For collector mode, show only selected market
   const isCollector = mode === "collector";
   const showTcg = !isCollector || marketSource === "tcg";
   const showCardmarket = !isCollector || marketSource === "cardmarket";
   
-  // Determine if we should show PriceCharting box instead of empty TCG/CM boxes
   const hasTcgData = baseTcg > 0;
   const hasCmData = cmAvg > 0 || cmLowest > 0;
   
-  // Show PriceCharting if fallback and the market we're showing has no data
-  const showPriceChartingForTcg = showTcg && isFallback && !hasTcgData;
-  const showPriceChartingForCm = showCardmarket && isFallback && !hasCmData;
-  
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      {/* TCGplayer box OR PriceCharting fallback */}
-      {showTcg && !showPriceChartingForTcg && (
+      {showTcg && (
         <Card className="rounded-2xl p-4 shadow">
           <CardContent className="space-y-2 p-0">
             <div className="mb-2 font-semibold">TCGplayer ({currency})</div>
@@ -94,57 +94,16 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
             />
             <PriceRow
               label="Mid"
-              value={fmt(card?.prices?.tcgplayer?.mid_price || 0)}
+              value={fmt(tcgMid)}
             />
           </CardContent>
         </Card>
       )}
-      
-      {showPriceChartingForTcg && (
-        <Card className="rounded-2xl p-4 shadow border-purple-200 bg-purple-50">
-          <CardContent className="space-y-2 p-0">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="font-semibold text-purple-700">PriceCharting ({currency})</span>
-              {card?.name && (
-                <a
-                  href={`https://www.pricecharting.com/game/pokemon-cards?q=${encodeURIComponent(card.name)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 underline"
-                >
-                  View <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-            </div>
-            <PriceRow
-              label={
-                <>
-                  <span>Market</span>
-                  {conditionBadgeEl}
-                </>
-              }
-              value={fmt(fallbackPrice)}
-            />
-            <PriceRow
-              label="Low (Est.)"
-              value={fmt(fallbackPrice * 0.8)}
-            />
-            <PriceRow
-              label="High (Est.)"
-              value={fmt(fallbackPrice * 1.2)}
-            />
-            <div className="text-xs text-purple-600 mt-2 pt-2 border-t border-purple-200">
-              ℹ️ Using PriceCharting data (not in TCGPlayer)
-            </div>
-          </CardContent>
-        </Card>
-      )}
-      
-      {/* CardMarket box OR PriceCharting fallback */}
-      {showCardmarket && !showPriceChartingForCm && (
+
+      {showCardmarket && (
         <Card className="rounded-2xl p-4 shadow">
           <CardContent className="space-y-2 p-0">
-            <div className="mb-2 font-semibold">CardMarket (EUR)</div>
+            <div className="mb-2 font-semibold">CardMarket ({currency})</div>
             <PriceRow label="Lowest Listing" value={fmt(cmLowest)} />
             <PriceRow
               label={
@@ -157,38 +116,16 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
                   </span>
                 </>
               }
-              value={fmt(cm?.lowest_near_mint || 0)}
+              value={fmt(cmLowestNm)}
             />
-            <PriceRow label="7d Avg" value={fmt(card?.prices?.cardmarket?.avg7 || 0)} />
-            <PriceRow label="30d Avg" value={fmt(cm?.avg30 || 0)} />
-          </CardContent>
-        </Card>
-      )}
-      
-      {showPriceChartingForCm && (
-        <Card className="rounded-2xl p-4 shadow border-purple-200 bg-purple-50">
-          <CardContent className="space-y-2 p-0">
-            <div className="mb-2 font-semibold text-purple-700">PriceCharting ({currency})</div>
-            <PriceRow
-              label={
-                <>
-                  <span>Market</span>
-                  {conditionBadgeEl}
-                </>
-              }
-              value={fmt(fallbackPrice)}
-            />
-            <PriceRow
-              label="Low (Est.)"
-              value={fmt(fallbackPrice * 0.8)}
-            />
-            <PriceRow
-              label="High (Est.)"
-              value={fmt(fallbackPrice * 1.2)}
-            />
-            <div className="text-xs text-purple-600 mt-2 pt-2 border-t border-purple-200">
-              ℹ️ Using PriceCharting data (not in CardMarket)
-            </div>
+            <PriceRow label="7d Avg" value={fmt(cmAvg7)} />
+            <PriceRow label="30d Avg" value={fmt(cmAvg)} />
+            {Number(card?.prices?.cardmarket?.availableItems || card?.prices?.cardmarket?.available_items) > 0 && (
+              <PriceRow
+                label="Listings"
+                value={String(card.prices.cardmarket.availableItems || card.prices.cardmarket.available_items)}
+              />
+            )}
           </CardContent>
         </Card>
       )}
@@ -350,4 +287,3 @@ export function ExternalLinks({ links }) {
     </div>
   );
 }
-

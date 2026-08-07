@@ -16,6 +16,7 @@ import { CardImageReplacer } from "@/components/CardImageReplacer";
 import { needsImage } from "@/utils/imageHelpers";
 import { toast } from "@/components/ui/Toaster";
 import { confirm } from "@/components/ui/ConfirmDialog";
+import { apiFetchGradedPrices } from "@/utils/apiHelpers";
 
 /**
  * My Collection Page (Collector Toolkit)
@@ -411,22 +412,16 @@ export function MyCollection() {
       setUpdatingGradePrice(true);
       let newGradedPrice = selectedCardDetails.gradedPrice;
 
-      // If graded card, fetch new price from PriceCharting
+      // Refresh from supported graded market data when available.
       if (selectedCardDetails.isGraded) {
         try {
-          const apiUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchGradedPrices?name=${encodeURIComponent(
-            selectedCardDetails.name || ''
-          )}&set=${encodeURIComponent(selectedCardDetails.set || '')}&number=${encodeURIComponent(
-            selectedCardDetails.number || ''
-          )}&company=${encodeURIComponent(editGradingCompany)}&grade=${encodeURIComponent(editGrade)}`;
-          
-          const response = await fetch(apiUrl);
-
-          if (response.ok) {
-            const data = await response.json();
-            if (data.graded && data.graded.price) {
-              newGradedPrice = data.graded.price; // Price is in USD
-            }
+          const data = await apiFetchGradedPrices(selectedCardDetails, editGradingCompany, editGrade);
+          if (data?.success && data.graded?.price) {
+            newGradedPrice = convertCurrency(
+              data.graded.price,
+              'USD',
+              data.graded.currency || 'USD',
+            );
           }
         } catch (err) {
           console.warn("Failed to fetch updated graded price:", err);
@@ -1459,11 +1454,11 @@ export function MyCollection() {
                               <>
                                 <PriceRow
                                   label={`Market (${selectedCardDetails.condition || "NM"})`}
-                                  value={formatPrice(computeTcgPrice(selectedCardDetails, selectedCardDetails.condition || "NM"))}
+                                  value={formatPrice(computeTcgPrice(selectedCardDetails, selectedCardDetails.condition || "NM", currency))}
                                 />
                                 <PriceRow
                                   label="Market (NM)"
-                                  value={formatPrice(selectedCardDetails.prices?.tcgplayer?.market_price || 0)}
+                                  value={formatPrice(computeTcgPrice(selectedCardDetails, "NM", currency))}
                                 />
                                 <PriceRow
                                   label="Mid"
@@ -1471,25 +1466,16 @@ export function MyCollection() {
                                 />
                               </>
                             ) : (
-                              <>
-                                {selectedCardDetails.prices?.pricecharting ? (
-                                  <PriceRow
-                                    label="Market Price"
-                                    value={formatPrice(convertCurrency(selectedCardDetails.prices.pricecharting, currency, 'USD'))}
-                                  />
-                                ) : (
-                                  <div className="text-sm text-muted-foreground">No pricing data available</div>
-                                )}
-                              </>
+                              <div className="text-sm text-muted-foreground">No pricing data available</div>
                             )}
                           </>
                         ) : (
                           <>
-                            {getCardmarketAvg(selectedCardDetails) > 0 || getCardmarketLowest(selectedCardDetails) > 0 ? (
+                            {getCardmarketAvg(selectedCardDetails, "NM", currency) > 0 || getCardmarketLowest(selectedCardDetails, "NM", currency) > 0 ? (
                               <>
                                 <PriceRow 
                                   label="Lowest Listing" 
-                                  value={formatPrice(getCardmarketLowest(selectedCardDetails))} 
+                                  value={formatPrice(getCardmarketLowest(selectedCardDetails, "NM", currency))}
                                 />
                                 <PriceRow
                                   label="Lowest (NM)"
@@ -1505,16 +1491,7 @@ export function MyCollection() {
                                 />
                               </>
                             ) : (
-                              <>
-                                {selectedCardDetails.prices?.pricecharting ? (
-                                  <PriceRow
-                                    label="Market Price"
-                                    value={formatPrice(convertCurrency(selectedCardDetails.prices.pricecharting, currency, 'USD'))}
-                                  />
-                                ) : (
-                                  <div className="text-sm text-muted-foreground">No pricing data available</div>
-                                )}
-                              </>
+                              <div className="text-sm text-muted-foreground">No pricing data available</div>
                             )}
                           </>
                         )}

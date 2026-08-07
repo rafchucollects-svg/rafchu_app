@@ -406,7 +406,19 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       rarity: card.rarity || '',
       image: card.image || null,
       prices: card.prices || {},
+      pricesLastUpdated: card.pricesLastUpdated || null,
       links: card.links || {},
+      tcgid: card.tcgid || null,
+      tcgplayerId: card.tcgplayerId || card.tcgPlayerId || null,
+      cardmarketId: card.cardmarketId || card.cardMarketId || null,
+      setName: card.setName || null,
+      setSeries: card.setSeries || null,
+      setCode: card.setCode || null,
+      releaseDate: card.releaseDate || null,
+      artist: card.artist || null,
+      hp: card.hp || null,
+      dataSource: card.dataSource || card.source || null,
+      variants: Array.isArray(card.variants) ? card.variants : [],
       addedAt: Date.now(),
       condition: options.condition || defaultCondition,
       quantity: options.quantity || 1,
@@ -424,10 +436,11 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       gradingCompany: options.gradingCompany || null,
       grade: options.grade || null,
       gradedPrice: options.gradedPrice || null,
+      gradedPriceCurrency: options.gradedPrice ? (options.gradedPriceCurrency || 'USD') : null,
       
       // v2.1: Language and Japanese support
-      language: options.language || 'English',
-      isJapanese: options.isJapanese || false,
+      language: options.language || card.language || 'English',
+      isJapanese: Boolean(options.isJapanese || card.isJapanese),
       manualPrice: options.manualPrice || card.manualPrice || null,
       manualPriceCurrency: options.manualPriceCurrency || card.manualPriceCurrency || null,
       
@@ -821,4 +834,3 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
-

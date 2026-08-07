@@ -8,7 +8,9 @@ import {
   filterByRelevance,
   scoreRelevance,
   rankByRelevance,
+  isStrongSearchMatch,
   normalizeCardKey,
+  getCanonicalCardId,
   calculateCompletenessScore,
   mergeBestData,
   deduplicateResults,
@@ -305,8 +307,23 @@ describe("filterByRelevance", () => {
 
   it("filters by set words", () => {
     const filtered = filterByRelevance(cards, "Charizard evolutions");
-    expect(filtered.length).toBeGreaterThanOrEqual(1);
-    expect(filtered.some((c) => c.set === "Evolutions")).toBe(true);
+    expect(filtered).toEqual([
+      expect.objectContaining({ name: "Charizard EX", set: "Evolutions" }),
+    ]);
+  });
+
+  it("does not silently discard a requested set when no set matches", () => {
+    expect(filterByRelevance(cards, "Charizard Team Rocket Returns")).toEqual([]);
+  });
+
+  it("requires every word in a multi-word set filter", () => {
+    const setCards = [
+      { name: "Charizard", number: "4", set: "Team Rocket" },
+      { name: "Charizard", number: "4", set: "Team Rocket Returns" },
+    ];
+    expect(filterByRelevance(setCards, "Charizard Team Rocket Returns")).toEqual([
+      expect.objectContaining({ set: "Team Rocket Returns" }),
+    ]);
   });
 });
 
@@ -375,6 +392,29 @@ describe("rankByRelevance (searchHelpers)", () => {
   });
 });
 
+describe("isStrongSearchMatch", () => {
+  it("accepts a canonical name prefix with an exact printed number", () => {
+    expect(isStrongSearchMatch(
+      { name: "Charizard ex", number: "199/165" },
+      "charizard 199",
+    )).toBe(true);
+  });
+
+  it("does not let a related suffix-name cache hit suppress enrichment", () => {
+    expect(isStrongSearchMatch(
+      { name: "Ooyama's Pikachu", number: "25" },
+      "pikachu 25",
+    )).toBe(false);
+  });
+
+  it("requires an exact numerator when a card number is requested", () => {
+    expect(isStrongSearchMatch(
+      { name: "Pikachu", number: "125/198" },
+      "pikachu 25",
+    )).toBe(false);
+  });
+});
+
 // ==============================
 // Deduplication
 // ==============================
@@ -400,6 +440,30 @@ describe("normalizeCardKey", () => {
       set: "Scarlet & Violet 151",
     };
     expect(normalizeCardKey(cachedCard)).toBe(normalizeCardKey(providerCard));
+  });
+
+  it("keeps English and Japanese printings distinct", () => {
+    const english = { name: "Charizard ex", number: "199", set: "151", language: "English" };
+    const japanese = { ...english, language: "Japanese", isJapanese: true };
+    expect(normalizeCardKey(english)).not.toBe(normalizeCardKey(japanese));
+  });
+
+  it("keeps materially different card variants distinct", () => {
+    const normal = { name: "Pikachu", number: "25", set: "Base Set", variant: "standard" };
+    const reverse = { ...normal, variant: "reverse holo" };
+    expect(normalizeCardKey(normal)).not.toBe(normalizeCardKey(reverse));
+  });
+});
+
+describe("getCanonicalCardId", () => {
+  it("prefers the cross-provider TCG identity", () => {
+    expect(getCanonicalCardId({ tcgid: "SV3PT5-199", tcgplayerId: 517045 }))
+      .toBe("tcgid:sv3pt5-199");
+  });
+
+  it("uses provider IDs before a normalized print identity", () => {
+    expect(getCanonicalCardId({ tcgplayerId: 517045, language: "English" }))
+      .toBe("tcgplayer:517045:english");
   });
 });
 
@@ -505,6 +569,16 @@ describe("deduplicateResults", () => {
 
   it("handles empty array", () => {
     expect(deduplicateResults([])).toEqual([]);
+  });
+
+  it("does not merge different languages or print variants", () => {
+    const base = { name: "Pikachu", number: "25", set: "Base Set" };
+    const cards = [
+      { ...base, language: "English", variant: "standard" },
+      { ...base, language: "Japanese", variant: "standard" },
+      { ...base, language: "English", variant: "reverse holo" },
+    ];
+    expect(deduplicateResults(cards)).toHaveLength(3);
   });
 
   it("merges the duplicate Charizard 151 cache records into one complete card", () => {

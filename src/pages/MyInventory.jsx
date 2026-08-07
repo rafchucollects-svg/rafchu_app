@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye, Percent } from "lucide-react";
+import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye, Percent } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { computeInventoryTotals, formatCurrency, computeItemMetrics, exportToCSV, getConditionColorClass, recordTransaction, convertCurrency } from "@/utils/cardHelpers";
 import {
@@ -19,7 +19,7 @@ import { CashManager } from "@/components/CashManager";
 import { needsImage } from "@/utils/imageHelpers";
 import { CardLadderImport } from "@/components/CardLadderImport";
 import { CardImageReplacer } from "@/components/CardImageReplacer";
-import { apiFetchMarketPrices } from "@/utils/apiHelpers";
+import { apiFetchGradedPrices, apiFetchMarketPrices } from "@/utils/apiHelpers";
 import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc, updateDoc } from "firebase/firestore";
 import { CardSearch } from "./CardSearch";
 import { toast } from "@/components/ui/Toaster";
@@ -459,22 +459,16 @@ export function MyInventory() {
       setUpdatingGradePrice(true);
       let newGradedPrice = cardDetailsModal.gradedPrice;
 
-      // If graded card, fetch new price from PriceCharting
+      // Refresh from supported graded market data when available.
       if (cardDetailsModal.isGraded) {
         try {
-          const apiUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchGradedPrices?name=${encodeURIComponent(
-            cardDetailsModal.name || ''
-          )}&set=${encodeURIComponent(cardDetailsModal.set || '')}&number=${encodeURIComponent(
-            cardDetailsModal.number || ''
-          )}&company=${encodeURIComponent(editGradingCompany)}&grade=${encodeURIComponent(editGrade)}`;
-          
-          const response = await fetch(apiUrl);
-
-          if (response.ok) {
-            const data = await response.json();
-            if (data.graded && data.graded.price) {
-              newGradedPrice = data.graded.price; // Price is in USD
-            }
+          const data = await apiFetchGradedPrices(cardDetailsModal, editGradingCompany, editGrade);
+          if (data?.success && data.graded?.price) {
+            newGradedPrice = convertCurrency(
+              data.graded.price,
+              'USD',
+              data.graded.currency || 'USD',
+            );
           }
         } catch (err) {
           console.warn("Failed to fetch updated graded price:", err);
@@ -2986,18 +2980,8 @@ export function MyInventory() {
                     <CardContent className="p-0">
                       <div className="mb-2 flex items-center justify-between">
                         <span className="font-semibold text-purple-700">
-                          PriceCharting - {cardDetailsModal.gradingCompany} {cardDetailsModal.grade} ({currency})
+                          Graded market — {cardDetailsModal.gradingCompany} {cardDetailsModal.grade} ({currency})
                         </span>
-                        {cardDetailsModal.name && (
-                          <a
-                            href={`https://www.pricecharting.com/game/pokemon-cards?q=${encodeURIComponent(cardDetailsModal.name)}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 underline"
-                          >
-                            View <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
                       </div>
                       <div className="text-lg font-bold">
                         {formatPrice(convertCurrency(parseFloat(cardDetailsModal.gradedPrice), currency))}
@@ -3482,4 +3466,3 @@ export function MyInventory() {
     </div>
   );
 }
-

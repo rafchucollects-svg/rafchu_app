@@ -206,9 +206,9 @@ export function TradeCalculator() {
         const src = item.manualPriceCurrency || 'USD';
         marketPrice = convertCurrency(parseFloat(item.manualPrice), currency, src);
       } else {
-        const tcg = computeTcgPrice(item, item.condition);
-        const cmAvg = getCardmarketAvg(item, item.condition) || 0;
-        const cmLow = getCardmarketLowest(item, item.condition) || 0;
+        const tcg = computeTcgPrice(item, item.condition, currency);
+        const cmAvg = getCardmarketAvg(item, item.condition, currency) || 0;
+        const cmLow = getCardmarketLowest(item, item.condition, currency) || 0;
         const valid = [tcg, cmAvg, cmLow].filter(p => p > 0);
         marketPrice = valid.length > 0 ? Math.min(...valid) : 0;
       }
@@ -256,19 +256,14 @@ export function TradeCalculator() {
     }
     
     // For ungraded cards, use market prices
-    const tcg = computeTcgPrice(item, item.condition) * pct;
-    const cmAvg = (getCardmarketAvg(item, item.condition) || 0) * pct;
-    const cmLowest = (getCardmarketLowest(item, item.condition) || 0) * pct;
+    const tcg = computeTcgPrice(item, item.condition, currency) * pct;
+    const cmAvg = (getCardmarketAvg(item, item.condition, currency) || 0) * pct;
+    const cmLowest = (getCardmarketLowest(item, item.condition, currency) || 0) * pct;
     
-    // Check for PriceCharting fallback if other prices are 0
     let suggested = 0;
     if (tcg > 0 || cmAvg > 0 || cmLowest > 0) {
       const validPrices = [tcg, cmAvg, cmLowest].filter(p => p > 0);
       suggested = validPrices.length > 0 ? Math.min(...validPrices) : 0;
-    } else if (item.prices?.pricecharting) {
-      // Use PriceCharting fallback (in USD, need to convert)
-      const pcPrice = convertCurrency(parseFloat(item.prices.pricecharting), currency, 'USD');
-      suggested = pcPrice * pct;
     }
     
     const finalValue = item.overrideValue ?? suggested;
@@ -403,9 +398,9 @@ export function TradeCalculator() {
         } else if (item.isManualEntry && item.manualPrice) {
           unitPrice = convertCurrency(item.manualPrice, currency, item.manualPriceCurrency || 'USD');
         } else {
-          const tcgFull = computeTcgPrice(item, item.condition) || 0;
-          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
-          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const tcgFull = computeTcgPrice(item, item.condition, currency) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition, currency) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition, currency) || 0;
           const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
           unitPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }
@@ -536,9 +531,9 @@ export function TradeCalculator() {
           marketSuggested = convertCurrency(item.gradedPrice, currency);
         } else {
           // Calculate market suggested price (100%, not trade percentage)
-          const tcgFull = computeTcgPrice(item, item.condition) || 0;
-          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
-          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const tcgFull = computeTcgPrice(item, item.condition, currency) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition, currency) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition, currency) || 0;
           const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
           marketSuggested = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }

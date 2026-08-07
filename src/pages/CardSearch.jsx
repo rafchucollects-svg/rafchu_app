@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Store, Plus, LayoutGrid, Upload, ExternalLink, PlusCircle, Search } from "lucide-react";
+import { Store, Plus, LayoutGrid, Upload, PlusCircle, Search } from "lucide-react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "@/contexts/AppContext";
 import {
@@ -15,6 +15,7 @@ import {
   formatSearchResults,
   canonicalizeQuery,
   getSearchCacheEntry,
+  matchesLanguageScope,
   setSearchCacheEntry,
   DEFAULT_SUGGESTION_LIMIT,
   MAX_SUGGESTION_LIMIT 
@@ -32,6 +33,11 @@ import { GradedCardModal } from "@/components/GradedCardModal";
 import { ManualCardModal } from "@/components/ManualCardEntry";
 import { formatCurrency, convertCurrency } from "@/utils/cardHelpers";
 import { toast } from "@/components/ui/Toaster";
+import {
+  getCanonicalCardId,
+  isStrongSearchMatch,
+  mergeBestData,
+} from "@/utils/searchHelpers";
 
 /**
  * Card Search Page
@@ -87,6 +93,7 @@ export function CardSearch({ mode = "collector" }) {
   const debounced = useDebouncedValue(query, 250);
   const lastFetchedCanonicalRef = useRef("");
   const activeSearchTokenRef = useRef(null);
+  const activeCardSelectionRef = useRef(null);
   
   // v2.1: Add Card Modal state
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -122,6 +129,22 @@ export function CardSearch({ mode = "collector" }) {
   
   // Community image state
   const [communityImage, setCommunityImage] = useState(null);
+  const [languageScope, setLanguageScope] = useState(() =>
+    localStorage.getItem(`cardSearch_languageScope_${mode}`) || 'english'
+  );
+
+  useEffect(() => {
+    localStorage.setItem(`cardSearch_languageScope_${mode}`, languageScope);
+  }, [languageScope, mode]);
+
+  // The detail panel belongs to the exact query and result scope that
+  // produced it. Invalidate older detail requests as soon as either changes.
+  useEffect(() => {
+    activeCardSelectionRef.current = null;
+    setActiveCard(null);
+    setGradedPrice(null);
+    setCommunityImage(null);
+  }, [query, languageScope, isGradedFilter, setActiveCard]);
 
   // Format price with rounding and selected currency
   const formatPrice = useCallback(
@@ -145,7 +168,7 @@ export function CardSearch({ mode = "collector" }) {
 
   const prepareSearchResults = useCallback((results, searchValue) => {
     const prepared = formatSearchResults(
-      results,
+      results.filter(card => matchesLanguageScope(card, languageScope)),
       searchValue,
       MAX_SUGGESTION_LIMIT,
     );
@@ -156,7 +179,7 @@ export function CardSearch({ mode = "collector" }) {
       const image = getImageForCard(card);
       return image ? { ...card, image } : card;
     });
-  }, [communityImages, getImageForCard]);
+  }, [communityImages, getImageForCard, languageScope]);
 
   // Search effect
   useEffect(() => {
@@ -164,7 +187,7 @@ export function CardSearch({ mode = "collector" }) {
     setError("");
     setShowAllSuggestions(false);
 
-    const canonical = canonicalizeQuery(debounced);
+    const canonical = canonicalizeQuery(debounced, languageScope);
     if (!canonical) {
       setSuggestions([]);
       setLoading(false);
@@ -195,7 +218,8 @@ export function CardSearch({ mode = "collector" }) {
       try {
         // Query the public Firestore card cache directly, avoiding a Cloud
         // Function cold start on the common path.
-        if (db) {
+        let shouldEnrichDatabaseResults = false;
+        if (db && languageScope === 'english') {
           try {
             const databaseResults = await searchCardDatabaseCache(db, debounced, {
               maxResults: MAX_SUGGESTION_LIMIT,
@@ -204,16 +228,24 @@ export function CardSearch({ mode = "collector" }) {
             if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
             if (databaseResults.length > 0) {
               const prepared = prepareSearchResults(databaseResults, debounced);
-              setSearchCacheEntry(canonical, prepared);
               setSuggestions(prepared);
               setLoading(false);
               lastFetchedCanonicalRef.current = canonical;
-              activeSearchTokenRef.current = null;
 
               if (prepared.some(card => !card.image) && !communityImages && refreshCommunityImages) {
                 refreshCommunityImages();
               }
-              return;
+              const hasRichExactResult = prepared.some(card => {
+                const hasIdentity = Boolean(card.tcgid || card.tcgplayerId || card.tcgPlayerId || card.cardmarketId || card.cardMarketId);
+                const hasPrice = Number(card.prices?.tcgplayer?.market_price || card.prices?.cardmarket?.lowest_near_mint || card.prices?.cardmarket?.avg30) > 0;
+                return hasIdentity && hasPrice && Boolean(card.image) && isStrongSearchMatch(card, debounced);
+              });
+              if (hasRichExactResult) {
+                setSearchCacheEntry(canonical, prepared);
+                activeSearchTokenRef.current = null;
+                return;
+              }
+              shouldEnrichDatabaseResults = true;
             }
           } catch (cacheError) {
             if (cacheError?.code !== "permission-denied" && cacheError?.name !== "AbortError") {
@@ -226,6 +258,8 @@ export function CardSearch({ mode = "collector" }) {
           useCache: true,
           maxResults: MAX_SUGGESTION_LIMIT,
           signal: abortController.signal,
+          languageScope,
+          skipDatabaseCache: shouldEnrichDatabaseResults,
         });
         if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
         const prepared = prepareSearchResults(results, debounced);
@@ -275,11 +309,14 @@ export function CardSearch({ mode = "collector" }) {
     setLoading,
     setShowAllSuggestions,
     setSuggestions,
+    languageScope,
   ]);
 
   // Pick card handler
   const pickCard = async (item) => {
     if (!item) return;
+    const selectionKey = item.entryId || getCanonicalCardId(item);
+    activeCardSelectionRef.current = selectionKey;
     setActiveCard(item);
     
     // Reset graded pricing and community image when selecting a new card
@@ -319,34 +356,31 @@ export function CardSearch({ mode = "collector" }) {
         image: item.image || communityImage
       };
       
-      if (full) {
-        Object.assign(enrichedCard, full);
-      }
+      const mergedCard = full ? mergeBestData(enrichedCard, full) : enrichedCard;
       
       // Restore preserved identity fields if they were overwritten or empty
-      if (preservedData.name) enrichedCard.name = preservedData.name;
-      if (preservedData.set) enrichedCard.set = preservedData.set;
-      if (preservedData.number) enrichedCard.number = preservedData.number;
-      if (preservedData.rarity) enrichedCard.rarity = preservedData.rarity;
-      if (preservedData.image && !enrichedCard.image) {
-        enrichedCard.image = preservedData.image;
+      if (preservedData.name) mergedCard.name = preservedData.name;
+      if (preservedData.set) mergedCard.set = preservedData.set;
+      if (preservedData.number) mergedCard.number = preservedData.number;
+      if (preservedData.rarity) mergedCard.rarity = preservedData.rarity;
+      if (preservedData.image && !mergedCard.image) {
+        mergedCard.image = preservedData.image;
       }
       
       // Add market prices if available (only if not in graded mode)
       if (!isGradedFilter && marketPrices) {
-        enrichCardWithMarketPrices(enrichedCard, marketPrices);
+        enrichCardWithMarketPrices(mergedCard, marketPrices);
       }
+
+      if (activeCardSelectionRef.current !== selectionKey) return;
       
       setActiveCard((current) => {
-        if (!current) return enrichedCard;
-        const currentKey =
-          current.entryId || current.id || current.slug || current.name;
-        const incomingKey =
-          item.entryId || item.id || item.slug || item.name;
-        if (currentKey && incomingKey && currentKey !== incomingKey) {
+        if (!current) return mergedCard;
+        const currentKey = current.entryId || getCanonicalCardId(current);
+        if (currentKey && selectionKey && currentKey !== selectionKey) {
           return current;
         }
-        return enrichedCard;
+        return mergedCard;
       });
     } catch (err) {
       console.error("Failed to fetch card details", err);
@@ -396,7 +430,7 @@ export function CardSearch({ mode = "collector" }) {
     
     // Regular ungraded card - fetch prices if not already available
     let cardWithPrices = card;
-    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket && !card.prices.pricecharting)) {
+    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket)) {
       try {
         const marketPrices = await apiFetchMarketPrices(card);
         if (marketPrices) {
@@ -446,7 +480,7 @@ export function CardSearch({ mode = "collector" }) {
     
     // Fetch prices if not already available
     let cardWithPrices = card;
-    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket && !card.prices.pricecharting)) {
+    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket)) {
       try {
         const marketPrices = await apiFetchMarketPrices(card);
         if (marketPrices) {
@@ -585,7 +619,11 @@ export function CardSearch({ mode = "collector" }) {
     // If in graded mode with a price, add directly with graded info
     if (isGradedFilter && gradedPrice?.success && gradedPrice?.graded?.price > 0) {
       // Store graded price in USD (will be converted on display)
-      const priceInUSD = gradedPrice.graded.price;
+      const priceInUSD = convertCurrency(
+        gradedPrice.graded.price,
+        'USD',
+        gradedPrice.graded.currency || 'USD',
+      );
       
       const newItem = await addToCollection(activeCard, {
         condition: 'NM',
@@ -639,7 +677,11 @@ export function CardSearch({ mode = "collector" }) {
         return;
       }
       
-      const priceInUSD = gradedPrice.graded.price;
+      const priceInUSD = convertCurrency(
+        gradedPrice.graded.price,
+        'USD',
+        gradedPrice.graded.currency || 'USD',
+      );
       
       setBuyItems(prev => [...prev, {
         entryId: crypto.randomUUID(),
@@ -674,7 +716,11 @@ export function CardSearch({ mode = "collector" }) {
       try {
         const priceData = await apiFetchGradedPrices(card, gradingCompany, grade);
         if (priceData?.success && priceData?.graded?.price > 0) {
-          gradedPriceUSD = priceData.graded.price;
+          gradedPriceUSD = convertCurrency(
+            priceData.graded.price,
+            'USD',
+            priceData.graded.currency || 'USD',
+          );
         }
       } catch (error) {
         console.error('Failed to fetch graded price:', error);
@@ -823,6 +869,19 @@ export function CardSearch({ mode = "collector" }) {
             >
               {isGradedFilter ? "✓ Graded Only" : "Ungraded"}
             </Button>
+            <label className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-3 py-1.5">
+              <span className="text-xs font-bold text-muted-foreground">Cards</span>
+              <select
+                value={languageScope}
+                onChange={(event) => setLanguageScope(event.target.value)}
+                className="bg-transparent text-sm font-semibold outline-none"
+                aria-label="Card language"
+              >
+                <option value="english">English</option>
+                <option value="japanese">Japanese</option>
+                <option value="all">All languages</option>
+              </select>
+            </label>
           </div>
           
           {loading && <div className="text-sm opacity-70">Searching…</div>}
@@ -835,7 +894,7 @@ export function CardSearch({ mode = "collector" }) {
             <div className="divide-y rounded-xl border">
               {visibleSuggestions.map((s, index) => (
                 <SuggestionItem
-                  key={`${s.cardKey || s.id || s.tcgplayerId || s.priceChartingId || `${s.name}-${s.set}-${s.number}`}-${index}`}
+                  key={`${s.canonicalId || getCanonicalCardId(s)}-${index}`}
                   item={s}
                   onPick={pickCard}
                   onQuickAddCollection={handleQuickAddCollection}
@@ -994,27 +1053,26 @@ export function CardSearch({ mode = "collector" }) {
                           <CardContent className="p-0">
                             <div className="mb-2 flex items-center justify-between">
                               <span className="font-semibold text-purple-700">
-                                PriceCharting - {selectedGradingCompany} {selectedGrade} ({currency || 'USD'})
+                                {gradedPrice.graded.source || 'Verified graded market'} — {selectedGradingCompany} {selectedGrade} ({currency || 'USD'})
                               </span>
-                              {gradedPrice.card?.priceChartingId && (
-                                <a
-                                  href={`https://www.pricecharting.com/game/pokemon-cards?q=${encodeURIComponent(activeCard.name)}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 underline"
-                                >
-                                  View <ExternalLink className="h-3 w-3" />
-                                </a>
-                              )}
                             </div>
                             <div className="space-y-2">
                               <div className="flex justify-between items-center">
                                 <span className="text-sm">Graded Price</span>
-                                <span className="font-medium">{formatPrice(convertCurrency(gradedPrice.graded.price, currency || 'USD'))}</span>
+                                <span className="font-medium">{formatPrice(convertCurrency(
+                                  gradedPrice.graded.price,
+                                  currency || 'USD',
+                                  gradedPrice.graded.currency || 'USD',
+                                ))}</span>
                               </div>
                               {gradedPrice.graded.label && (
                                 <p className="text-xs text-purple-600 mt-2 pt-2 border-t border-purple-200">
                                   {gradedPrice.graded.label}
+                                </p>
+                              )}
+                              {gradedPrice.graded.sampleSize && (
+                                <p className="text-xs text-purple-600">
+                                  Based on {gradedPrice.graded.sampleSize} recent sold listings
                                 </p>
                               )}
                             </div>
