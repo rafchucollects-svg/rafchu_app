@@ -13,7 +13,7 @@ admin.initializeApp();
 // ================================================================================
 // SECURE API KEY CONFIGURATION (Firebase Secrets / dotenv)
 // ================================================================================
-// The legacy `functions.config()` API is deprecated (shutdown in March 2026).
+// Firebase Runtime Config is deprecated; production configuration must not use it.
 // Secrets now live in Google Secret Manager and are injected as environment
 // variables at function invocation time. For local development, values come
 // from functions/.env.local (gitignored).
