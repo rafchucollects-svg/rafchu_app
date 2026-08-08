@@ -64,10 +64,12 @@ const GOLD_STAR_BY_POKEMON = {
   'torchic':   '108 torchic rocket',
   'treecko':   '109 treecko rocket',
   'flareon':   '100 keepers',
+  'jolteon':   '101 keepers',
+  'vaporeon':  '102 keepers',
 };
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v4.9-flareon-gold-star';
+const CACHE_VERSION = 'v4.10-power-keepers-gold-stars';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
