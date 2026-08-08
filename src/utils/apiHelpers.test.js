@@ -297,4 +297,44 @@ describe("numbered-card provider fallbacks", () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("q=101%20frontiers")))
       .toBe(true);
   });
+
+  it.each(["flareon gold star", "flareon 100"])(
+    "uses the provider-specific Flareon Gold Star fallback for %s",
+    async (query) => {
+      const irrelevantFlareon = Array.from({ length: 20 }, (_, index) => ({
+        name: "Flareon",
+        number: String(index + 1),
+        set: `Flareon Set ${index + 1}`,
+      }));
+      const expected = {
+        name: "Flareon ★",
+        number: "100",
+        set: "EX Power Keepers",
+        rarity: "Rare Holo Star",
+        tcgid: "ex16-100",
+      };
+
+      const fetchMock = vi.fn(async (url) => {
+        const requestUrl = String(url);
+        if (requestUrl.includes("/searchJapaneseCards?")) return emptyJapaneseResponse;
+        if (requestUrl.includes(`q=${encodeURIComponent(query)}`)) {
+          return cardMarketResponse(irrelevantFlareon);
+        }
+        if (requestUrl.includes("q=100%20keepers")) return cardMarketResponse([expected]);
+        return cardMarketResponse([]);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const results = await apiSearchCardsCached(query, {
+        useCache: false,
+        maxResults: 50,
+        languageScope: "all",
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject(expected);
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("q=100%20keepers")))
+        .toBe(true);
+    },
+  );
 });
