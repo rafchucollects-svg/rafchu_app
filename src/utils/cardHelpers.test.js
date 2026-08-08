@@ -314,11 +314,12 @@ describe("computeMarketValues", () => {
     });
     expect(values.sellerAsk).toBe(12);
     expect(values.preferredMarket).toBe(12);
+    expect(values.preferredSource).toBe("CardMarket");
     expect(values.quickSale).toBe(8);
     expect(values.availableBenchmarkCount).toBe(3);
   });
 
-  it("uses TCGplayer for the preferred market when selected", () => {
+  it("uses TCGplayer for the selected market", () => {
     const values = computeMarketValues(card, {
       condition: "NM",
       targetCurrency: "EUR",

@@ -1,11 +1,5 @@
 import { computeMarketValues, formatCurrency } from "@/utils/cardHelpers";
-import { getMarketValueCards } from "@/utils/marketValueDisplay";
-
-function isGradedCard(card) {
-  const explicitlyGraded = card?.isGraded === true || card?.isGraded === "true";
-  const hasGradeDetails = Boolean(card?.gradingCompany && card?.grade != null && card?.grade !== "");
-  return explicitlyGraded || hasGradeDetails;
-}
+import { getMarketValueCards, isGradedCard } from "@/utils/marketValueDisplay";
 
 export function InventoryMarketValues({
   card,
@@ -42,6 +36,11 @@ export function InventoryMarketValues({
           <div className="mt-0.5 truncate text-xs font-bold tabular-nums sm:text-sm">
             {item.value > 0 ? fmt(item.value) : "—"}
           </div>
+          {item.key === "selectedMarket" && (
+            <div className="mt-0.5 truncate text-[8px] font-medium leading-tight text-muted-foreground sm:text-[9px]">
+              {item.description}
+            </div>
+          )}
         </div>
       ))}
     </div>

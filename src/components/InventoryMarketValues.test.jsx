@@ -25,8 +25,10 @@ describe("InventoryMarketValues", () => {
     );
 
     expect(html).toContain("Seller Ask");
-    expect(html).toContain("Preferred Market");
+    expect(html).toContain("Selected Market");
+    expect(html).toContain("TCGplayer");
     expect(html).toContain("Quick Sale");
+    expect(html).not.toContain("Preferred Market");
     expect(html).not.toContain("Fair Market");
     expect(html).toContain("€141.00");
     expect(html).toContain("€71.00");
@@ -68,5 +70,26 @@ describe("InventoryMarketValues", () => {
     expect(html).toContain("Seller Ask");
     expect(html).toContain("€600.00");
     expect(html.match(/No market data/g)).toHaveLength(2);
+  });
+
+  it("follows the selected CardMarket setting", () => {
+    const html = renderToStaticMarkup(
+      <InventoryMarketValues
+        card={{
+          name: "Charizard ex",
+          prices: {
+            tcgplayer: { market_price: 71, currency: "EUR" },
+            cardmarket: { "30d_average": 141, currency: "EUR" },
+          },
+        }}
+        currency="EUR"
+        formatPrice={formatPrice}
+        marketSource="cardmarket"
+      />,
+    );
+
+    expect(html).toContain("Selected Market");
+    expect(html).toContain("CardMarket");
+    expect(html).toContain("€141.00");
   });
 });

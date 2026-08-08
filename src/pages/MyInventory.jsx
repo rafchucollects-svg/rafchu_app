@@ -13,6 +13,8 @@ import {
 } from "@/utils/consignmentHelpers";
 import { ConditionSelect, CardPrices, ExternalLinks } from "@/components/CardComponents";
 import { InventoryMarketValues } from "@/components/InventoryMarketValues";
+import { ConditionAwarePriceBeta } from "@/components/ConditionAwarePriceBeta";
+import { isGradedCard } from "@/utils/marketValueDisplay";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
@@ -46,6 +48,7 @@ export function MyInventory() {
     setCollectionSortDir,
     roundUpPrices,
     setRoundUpPrices,
+    marketSource,
     currency,
     secondaryCurrency,
     triggerQuickAddFeedback,
@@ -2311,7 +2314,7 @@ export function MyInventory() {
                   condition={item.condition || "NM"}
                   currency={currency}
                   formatPrice={formatPrice}
-                  marketSource="tcg"
+                  marketSource={marketSource}
                 />
 
                 {/* Row 4: exclude + markup buttons + actions */}
@@ -3015,22 +3018,29 @@ export function MyInventory() {
               </div>
 
               {/* Market Prices */}
-              {!cardDetailsModal.isGraded && cardDetailsModal.prices && (
+              {!isGradedCard(cardDetailsModal) && (
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold mb-3">Market Prices</h3>
-                  <CardPrices
+                  {cardDetailsModal.prices && (
+                    <CardPrices
+                      card={cardDetailsModal}
+                      condition={cardDetailsModal.condition || "NM"}
+                      formatPrice={formatPrice}
+                      mode="vendor"
+                      marketSource={marketSource}
+                      currency={currency}
+                    />
+                  )}
+                  <ConditionAwarePriceBeta
                     card={cardDetailsModal}
-                    condition={cardDetailsModal.condition || "NM"}
-                    formatPrice={formatPrice}
-                    mode="vendor"
-                    marketSource="tcg"
                     currency={currency}
+                    formatPrice={formatPrice}
                   />
                 </div>
               )}
 
               {/* Graded Price Info */}
-              {cardDetailsModal.isGraded && cardDetailsModal.gradedPrice && (
+              {isGradedCard(cardDetailsModal) && cardDetailsModal.gradedPrice && (
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold mb-3">Graded Price</h3>
                   <Card className="rounded-2xl p-4 shadow border-purple-200 bg-purple-50">

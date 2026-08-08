@@ -15,12 +15,9 @@ import {
   formatSearchResults,
   canonicalizeQuery,
   getSearchCacheEntry,
-  matchesLanguageScope,
-  setSearchCacheEntry,
   DEFAULT_SUGGESTION_LIMIT,
   MAX_SUGGESTION_LIMIT 
 } from "@/utils/apiHelpers";
-import { searchCardDatabaseCache } from "@/utils/cardSearchCache";
 import { 
   SuggestionItem, 
   ConditionSelect,
@@ -35,9 +32,10 @@ import { formatCurrency, convertCurrency } from "@/utils/cardHelpers";
 import { toast } from "@/components/ui/Toaster";
 import {
   getCanonicalCardId,
-  isStrongSearchMatch,
   mergeBestData,
 } from "@/utils/searchHelpers";
+
+const SEARCH_LANGUAGE_SCOPE = 'all';
 
 /**
  * Card Search Page
@@ -59,7 +57,6 @@ export function CardSearch({ mode = "collector" }) {
   const isVendor = mode === "vendor";
   
   const {
-    db,
     user,
     query,
     setQuery,
@@ -129,22 +126,14 @@ export function CardSearch({ mode = "collector" }) {
   
   // Community image state
   const [communityImage, setCommunityImage] = useState(null);
-  const [languageScope, setLanguageScope] = useState(() =>
-    localStorage.getItem(`cardSearch_languageScope_${mode}`) || 'english'
-  );
 
-  useEffect(() => {
-    localStorage.setItem(`cardSearch_languageScope_${mode}`, languageScope);
-  }, [languageScope, mode]);
-
-  // The detail panel belongs to the exact query and result scope that
-  // produced it. Invalidate older detail requests as soon as either changes.
+  // The detail panel belongs to the exact query that produced it.
   useEffect(() => {
     activeCardSelectionRef.current = null;
     setActiveCard(null);
     setGradedPrice(null);
     setCommunityImage(null);
-  }, [query, languageScope, isGradedFilter, setActiveCard]);
+  }, [query, isGradedFilter, setActiveCard]);
 
   // Format price with rounding and selected currency
   const formatPrice = useCallback(
@@ -168,7 +157,7 @@ export function CardSearch({ mode = "collector" }) {
 
   const prepareSearchResults = useCallback((results, searchValue) => {
     const prepared = formatSearchResults(
-      results.filter(card => matchesLanguageScope(card, languageScope)),
+      results,
       searchValue,
       MAX_SUGGESTION_LIMIT,
     );
@@ -179,7 +168,7 @@ export function CardSearch({ mode = "collector" }) {
       const image = getImageForCard(card);
       return image ? { ...card, image } : card;
     });
-  }, [communityImages, getImageForCard, languageScope]);
+  }, [communityImages, getImageForCard]);
 
   // Search effect
   useEffect(() => {
@@ -187,7 +176,7 @@ export function CardSearch({ mode = "collector" }) {
     setError("");
     setShowAllSuggestions(false);
 
-    const canonical = canonicalizeQuery(debounced, languageScope);
+    const canonical = canonicalizeQuery(debounced, SEARCH_LANGUAGE_SCOPE);
     if (!canonical) {
       setSuggestions([]);
       setLoading(false);
@@ -216,50 +205,11 @@ export function CardSearch({ mode = "collector" }) {
 
     (async () => {
       try {
-        // Query the public Firestore card cache directly, avoiding a Cloud
-        // Function cold start on the common path.
-        let shouldEnrichDatabaseResults = false;
-        if (db && languageScope === 'english') {
-          try {
-            const databaseResults = await searchCardDatabaseCache(db, debounced, {
-              maxResults: MAX_SUGGESTION_LIMIT,
-              signal: abortController.signal,
-            });
-            if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
-            if (databaseResults.length > 0) {
-              const prepared = prepareSearchResults(databaseResults, debounced);
-              setSuggestions(prepared);
-              setLoading(false);
-              lastFetchedCanonicalRef.current = canonical;
-
-              if (prepared.some(card => !card.image) && !communityImages && refreshCommunityImages) {
-                refreshCommunityImages();
-              }
-              const hasRichExactResult = prepared.some(card => {
-                const hasIdentity = Boolean(card.tcgid || card.tcgplayerId || card.tcgPlayerId || card.cardmarketId || card.cardMarketId);
-                const hasPrice = Number(card.prices?.tcgplayer?.market_price || card.prices?.cardmarket?.lowest_near_mint || card.prices?.cardmarket?.avg30) > 0;
-                return hasIdentity && hasPrice && Boolean(card.image) && isStrongSearchMatch(card, debounced);
-              });
-              if (hasRichExactResult) {
-                setSearchCacheEntry(canonical, prepared);
-                activeSearchTokenRef.current = null;
-                return;
-              }
-              shouldEnrichDatabaseResults = true;
-            }
-          } catch (cacheError) {
-            if (cacheError?.code !== "permission-denied" && cacheError?.name !== "AbortError") {
-              console.warn("Card database cache unavailable:", cacheError.message);
-            }
-          }
-        }
-
         const results = await apiSearchCardsCached(debounced, {
           useCache: true,
           maxResults: MAX_SUGGESTION_LIMIT,
           signal: abortController.signal,
-          languageScope,
-          skipDatabaseCache: shouldEnrichDatabaseResults,
+          languageScope: SEARCH_LANGUAGE_SCOPE,
         });
         if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
         const prepared = prepareSearchResults(results, debounced);
@@ -299,7 +249,6 @@ export function CardSearch({ mode = "collector" }) {
 
     return () => abortController.abort();
   }, [
-    db,
     communityImages,
     debounced,
     getImageForCard,
@@ -309,7 +258,6 @@ export function CardSearch({ mode = "collector" }) {
     setLoading,
     setShowAllSuggestions,
     setSuggestions,
-    languageScope,
   ]);
 
   // Pick card handler
@@ -869,19 +817,10 @@ export function CardSearch({ mode = "collector" }) {
             >
               {isGradedFilter ? "✓ Graded Only" : "Ungraded"}
             </Button>
-            <label className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-3 py-1.5">
+            <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-3 py-1.5">
               <span className="text-xs font-bold text-muted-foreground">Cards</span>
-              <select
-                value={languageScope}
-                onChange={(event) => setLanguageScope(event.target.value)}
-                className="bg-transparent text-sm font-semibold outline-none"
-                aria-label="Card language"
-              >
-                <option value="english">English</option>
-                <option value="japanese">Japanese</option>
-                <option value="all">All languages</option>
-              </select>
-            </label>
+              <span className="text-sm font-semibold">English + Japanese</span>
+            </div>
           </div>
           
           {loading && <div className="text-sm opacity-70">Searching…</div>}

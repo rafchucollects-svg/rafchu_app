@@ -7,6 +7,7 @@
  */
 
 import { normalizeApiCard } from './cardHelpers';
+import { getAuth } from 'firebase/auth';
 
 // Import improved search helpers (ranking is done ONCE via improveSearchResults)
 import {
@@ -18,7 +19,13 @@ import {
 } from './searchHelpers';
 
 // Cloud Functions base URL (secure - no API keys exposed)
-const CLOUD_FUNCTIONS_BASE = 'https://us-central1-rafchu-tcg-app.cloudfunctions.net';
+const CLOUD_FUNCTIONS_BASE = (
+  import.meta.env.VITE_CLOUD_FUNCTIONS_BASE ||
+  'https://us-central1-rafchu-tcg-app.cloudfunctions.net'
+).replace(/\/$/, '');
+const CONDITION_PRICING_BETA_BASE = (
+  import.meta.env.VITE_CONDITION_PRICING_BETA_BASE || CLOUD_FUNCTIONS_BASE
+).replace(/\/$/, '');
 
 // Legacy exports for backwards compatibility (no longer contain sensitive data)
 export const RAPIDAPI_KEY = null; // REMOVED - now handled server-side
@@ -32,6 +39,31 @@ export const CACHE_LOW_RESULTS_THRESHOLD = 3; // Results below this count get sh
 export const SEARCH_CACHE_RESULT_LIMIT = 200;
 export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
+
+// CardMarket's broad search can bury older Gold Star printings behind newer
+// cards with the same Pokemon name or collector number. These verified,
+// narrowly targeted queries keep those printings discoverable without making
+// every numbered-card search depend on a large provider response.
+const GOLD_STAR_BY_POKEMON = {
+  'pikachu':   '104 holon',
+  'mewtwo':    '103 holon',
+  'gyarados':  '102 holon',
+  'charizard': '100 frontiers',
+  'mew':       '101 frontiers',
+  'rayquaza':  '107 deoxys',
+  'latias':    '105 latias deoxys',
+  'latios':    '106 latios deoxys',
+  'entei':     '113 unseen',
+  'raikou':    '114 unseen',
+  'suicune':   '115 unseen',
+  'groudon':   '111 groudon legend',
+  'kyogre':    '112 kyogre legend',
+  'alakazam':  '99 alakazam crystal',
+  'celebi':    '100 celebi crystal',
+  'mudkip':    '107 mudkip rocket',
+  'torchic':   '108 torchic rocket',
+  'treecko':   '109 treecko rocket',
+};
 
 // Cache version - increment when search logic changes to invalidate old cache
 const CACHE_VERSION = 'v4.8-strong-provider-match';
@@ -638,6 +670,38 @@ export async function apiFetchMarketPrices(card, { force = false } = {}) {
 }
 
 /**
+ * Testing-only exact condition/printing lookup.
+ * This endpoint is user-triggered and never changes the saved seller price.
+ */
+export async function apiFetchConditionAwarePriceBeta(card, { printing = '' } = {}) {
+  const user = getAuth().currentUser;
+  if (!user) throw new Error('Sign in to test condition-aware pricing.');
+
+  const token = await user.getIdToken();
+  const params = new URLSearchParams({
+    name: card?.name || '',
+    condition: card?.condition || 'NM',
+    language: card?.language || (card?.isJapanese ? 'Japanese' : 'English'),
+    ...(card?.set && { set: card.set }),
+    ...(card?.number && { number: card.number }),
+    ...(card?.rarity && { rarity: card.rarity }),
+    ...((card?.tcgplayerId || card?.tcgPlayerId) && {
+      tcgplayerId: card.tcgplayerId || card.tcgPlayerId,
+    }),
+    ...((printing || card?.variant) && { printing: printing || card.variant }),
+  });
+
+  const response = await fetch(`${CONDITION_PRICING_BETA_BASE}/getConditionAwarePriceBeta?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.success) {
+    throw new Error(payload?.error || `Condition-aware pricing returned HTTP ${response.status}.`);
+  }
+  return payload.result;
+}
+
+/**
  * Provider fallback search used when the shared card database has no match.
  * CardMarket and Japanese results are normalized here; prices are fetched
  * on-demand via apiFetchMarketPrices when the user selects a card.
@@ -730,26 +794,6 @@ export async function apiSearchCardsHybrid(query, options = {}) {
       // GOLD STAR + POKEMON NAME: Add targeted secondary search
       // e.g., "pikachu gold star" → also search "104 holon" to find Pikachu ★
       if (parsed.rarityFilters.includes('gold star')) {
-        const GOLD_STAR_BY_POKEMON = {
-          'pikachu':   '104 holon',
-          'mewtwo':    '103 holon',
-          'gyarados':  '102 holon',
-          'charizard': '100 frontiers',
-          'mew':       '101 frontiers',
-          'rayquaza':  '107 deoxys',
-          'latias':    '105 latias deoxys',
-          'latios':    '106 latios deoxys',
-          'entei':     '113 unseen',
-          'raikou':    '114 unseen',
-          'suicune':   '115 unseen',
-          'groudon':   '111 groudon legend',
-          'kyogre':    '112 kyogre legend',
-          'alakazam':  '99 alakazam crystal',
-          'celebi':    '100 celebi crystal',
-          'mudkip':    '107 mudkip rocket',
-          'torchic':   '108 torchic rocket',
-          'treecko':   '109 treecko rocket',
-        };
         const targetedQuery = GOLD_STAR_BY_POKEMON[parsed.primaryName.toLowerCase()];
         if (targetedQuery) {
           setOnlyQueries.push(targetedQuery);
@@ -815,6 +859,22 @@ export async function apiSearchCardsHybrid(query, options = {}) {
           setOnlyQueries.push(num);
         }
       }
+
+      // A name + collector number is enough to identify the known Gold Star
+      // printing. Users should not also have to type the rarity or set name.
+      // Example: "mew 101" needs "101 frontiers" because the provider's
+      // generic 101 results are dominated by newer cards.
+      const targetedGoldStarQuery = GOLD_STAR_BY_POKEMON[parsed.primaryName.toLowerCase()];
+      if (targetedGoldStarQuery) {
+        const targetedNumber = targetedGoldStarQuery.split(/\s+/)[0].replace(/^0+/, '') || '0';
+        const hasTargetedNumber = parsed.numbers.some(number => {
+          const queryNumber = String(number).split('/')[0].replace(/^0+/, '') || '0';
+          return queryNumber === targetedNumber;
+        });
+        if (hasTargetedNumber && !setOnlyQueries.includes(targetedGoldStarQuery)) {
+          setOnlyQueries.push(targetedGoldStarQuery);
+        }
+      }
       
       // If no explicit set, also try "[name] promo" search for promo variants
       if (parsed.setWords.length === 0) {
@@ -858,11 +918,25 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     return [];
   });
 
-  // Secondary set/number searches used to fire for every query. They now run
-  // only as a fallback when the primary provider did not return enough useful
-  // candidates, dramatically reducing the common-case request fan-out.
+  // Judge the primary response by relevant matches, not its raw size. A query
+  // such as "moltres 229" can return 20 Moltres cards without returning #229;
+  // that must still trigger the targeted number fallback.
+  const primaryRelevantResults = improveSearchResults(
+    cardMarketResults,
+    processedQuery || query,
+    {
+      maxResults: DEFAULT_SUGGESTION_LIMIT,
+      enableDeduplication: true,
+      enableFiltering: true,
+      enableRanking: true,
+    },
+  );
+  const primaryNeedsFallback =
+    cardMarketResults.length < DEFAULT_SUGGESTION_LIMIT ||
+    primaryRelevantResults.length === 0;
+
   let setSearchResults = [];
-  if (cardMarketResults.length < DEFAULT_SUGGESTION_LIMIT && setOnlyQueries.length > 0 && !signal?.aborted) {
+  if (primaryNeedsFallback && setOnlyQueries.length > 0 && !signal?.aborted) {
     const isRaritySearch = (parsed.rarityFilters || []).length > 0;
     const secondaryMaxResults = isRaritySearch ? 5 : 50;
     setSearchResults = await Promise.all(setOnlyQueries.map(setQuery =>

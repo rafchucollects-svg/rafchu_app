@@ -5,6 +5,7 @@ const https = require("https");
 const https2 = require("https");
 const { parseReceipt } = require("./parseReceipt");
 const { parseCardPhoto } = require("./parseCardPhoto");
+const { fetchConditionAwarePrice } = require("./conditionAwarePricing");
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -1074,6 +1075,66 @@ exports.fetchMarketPrices = withSecrets().https.onRequest(async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
+    });
+  }
+});
+
+/**
+ * Testing-only condition/printing-aware price lookup.
+ *
+ * This does not mutate inventory prices. It resolves the exact English
+ * TCGplayer product first, then selects a JustTCG variant by printing and
+ * condition. If a printing cannot be inferred safely, the caller must choose
+ * one before any price is returned.
+ */
+exports.getConditionAwarePriceBeta = withSecrets({ timeoutSeconds: 30 }).https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+
+  const decoded = await verifyIdToken(req);
+  if (!decoded) {
+    res.status(401).json({ success: false, error: 'Authentication required.' });
+    return;
+  }
+
+  const requested = {
+    name: String(req.query.name || '').slice(0, 160),
+    set: String(req.query.set || '').slice(0, 160),
+    number: String(req.query.number || '').slice(0, 40),
+    rarity: String(req.query.rarity || '').slice(0, 100),
+    tcgplayerId: String(req.query.tcgplayerId || '').slice(0, 40),
+    condition: String(req.query.condition || 'NM').slice(0, 40),
+    printing: String(req.query.printing || req.query.variant || '').slice(0, 80),
+    language: String(req.query.language || 'English').slice(0, 40),
+  };
+
+  if (!requested.name) {
+    res.status(400).json({ success: false, error: 'Missing required parameter: name' });
+    return;
+  }
+  if (requested.language.toLowerCase() !== 'english') {
+    res.status(400).json({
+      success: false,
+      error: 'The condition-aware beta currently supports English cards only.',
+    });
+    return;
+  }
+
+  try {
+    const result = await fetchConditionAwarePrice(requested, getJustTcgKey());
+    res.set('Cache-Control', 'private, max-age=300');
+    res.status(200).json({ success: true, beta: true, result });
+  } catch (error) {
+    console.error('Condition-aware pricing beta failed:', error.message);
+    res.status(502).json({
+      success: false,
+      error: 'Condition-aware pricing is temporarily unavailable.',
     });
   }
 });

@@ -25,6 +25,55 @@ describe("language-scoped search caching", () => {
     expect(matchesLanguageScope(japanese, "japanese")).toBe(true);
     expect(matchesLanguageScope(japanese, "all")).toBe(true);
   });
+
+  it("keeps a Japanese exact match when searching all languages", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/searchCardMarket?")) {
+        return {
+          ok: true,
+          json: async () => ({ success: true, results: [] }),
+        };
+      }
+      if (requestUrl.includes("/searchJapaneseCards?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            cards: [{
+              name: "Mega Tokyo's Pikachu - 098/XY-P",
+              set: "XY-P: XY Promos",
+              number: "098/XY-P",
+              language: "Japanese",
+              isJapanese: true,
+              image: "https://example.com/mega-tokyo-pikachu.png",
+              tcgplayerId: "602003",
+              prices: { tcgplayer: { market_price: 699, currency: "USD" } },
+            }],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ success: false }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await apiSearchCardsCached("mega tokyo pikachu", {
+      useCache: false,
+      maxResults: 20,
+      languageScope: "all",
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      name: "Mega Tokyo's Pikachu - 098/XY-P",
+      language: "Japanese",
+      isJapanese: true,
+    });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/searchCardMarket?")))
+      .toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/searchJapaneseCards?")))
+      .toBe(true);
+  });
 });
 
 describe("embedded market data", () => {
@@ -150,6 +199,102 @@ describe("database cache enrichment", () => {
     expect(results[0]).toMatchObject({ name: "Pikachu", number: "25/102" });
     expect(results.some(card => card.name === "Ooyama's Pikachu")).toBe(true);
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/searchCardMarket?")))
+      .toBe(true);
+  });
+});
+
+describe("numbered-card provider fallbacks", () => {
+  const cardMarketResponse = (cards) => ({
+    ok: true,
+    json: async () => ({
+      success: true,
+      results: cards.map(card => ({
+        data: {
+          id: card.id || `${card.name}-${card.number}`,
+          name: card.name,
+          card_number: card.number,
+          rarity: card.rarity || "Rare Holo",
+          image: card.image || "https://example.com/card.png",
+          tcgid: card.tcgid,
+          episode: { name: card.set },
+          prices: { tcg_player: { market_price: card.price || 10, currency: "USD" } },
+        },
+      })),
+    }),
+  });
+
+  const emptyJapaneseResponse = {
+    ok: true,
+    json: async () => ({ success: true, cards: [] }),
+  };
+
+  it("runs the number fallback when a large primary response has no relevant match", async () => {
+    const irrelevantMoltres = Array.from({ length: 20 }, (_, index) => ({
+      name: "Moltres",
+      number: String(index + 1),
+      set: `Set ${index + 1}`,
+    }));
+    const expected = {
+      name: "Team Rocket's Moltres ex",
+      number: "229",
+      set: "Destined Rivals",
+      rarity: "Special Illustration Rare",
+      tcgid: "sv10-229",
+    };
+
+    const fetchMock = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/searchJapaneseCards?")) return emptyJapaneseResponse;
+      if (requestUrl.includes("q=moltres%20229")) return cardMarketResponse(irrelevantMoltres);
+      if (requestUrl.includes("q=229")) return cardMarketResponse([expected]);
+      return cardMarketResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await apiSearchCardsCached("moltres 229", {
+      useCache: false,
+      maxResults: 50,
+      languageScope: "all",
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject(expected);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("q=229")))
+      .toBe(true);
+  });
+
+  it("uses the curated Gold Star query for a matching name and number", async () => {
+    const irrelevantMew = Array.from({ length: 20 }, (_, index) => ({
+      name: "Mew",
+      number: String(index + 1),
+      set: `Mew Set ${index + 1}`,
+    }));
+    const expected = {
+      name: "Mew ★ δ",
+      number: "101",
+      set: "EX Dragon Frontiers",
+      rarity: "Rare Holo Star",
+      tcgid: "ex15-101",
+    };
+
+    const fetchMock = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/searchJapaneseCards?")) return emptyJapaneseResponse;
+      if (requestUrl.includes("q=mew%20101")) return cardMarketResponse(irrelevantMew);
+      if (requestUrl.includes("q=101%20frontiers")) return cardMarketResponse([expected]);
+      return cardMarketResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await apiSearchCardsCached("mew 101", {
+      useCache: false,
+      maxResults: 50,
+      languageScope: "all",
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject(expected);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("q=101%20frontiers")))
       .toBe(true);
   });
 });

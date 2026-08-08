@@ -426,7 +426,7 @@ export function computeSuggestedPrice({
  * Build the ungraded pricing views shown throughout the app.
  *
  * Seller Ask intentionally preserves the existing suggested-price rule.
- * Preferred Market follows the user's chosen data source, while Quick Sale
+ * Selected Market follows the user's chosen data source, while Quick Sale
  * uses the lower immediately actionable market/listing benchmark.
  */
 export function computeMarketValues(
@@ -476,7 +476,7 @@ export function computeMarketValues(
     preferredMarket,
     quickSale,
     benchmarks: { tcg, cmAvg, cmLowest },
-    preferredSource: prefersTcg ? "TCGplayer" : "Cardmarket",
+    preferredSource: prefersTcg ? "TCGplayer" : "CardMarket",
     availableBenchmarkCount: [tcg, cmAvg, cmLowest].filter((value) => value > 0).length,
   };
 }
