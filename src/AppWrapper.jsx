@@ -22,10 +22,7 @@ import { AppRouter } from "./Router";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Toaster, toast } from "./components/ui/Toaster";
 import { ConfirmDialogHost } from "./components/ui/ConfirmDialog";
-import {
-  resolveFirebaseAuthDomain,
-  shouldUseRedirectAuth,
-} from "./utils/authHelpers";
+import { shouldUseRedirectAuth } from "./utils/authHelpers";
 
 /**
  * AppWrapper - Main application wrapper
@@ -37,10 +34,7 @@ import {
 // Note: Firebase API keys are safe to be public - security comes from Firebase Security Rules
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyD9sA1Vz3Cmw28kkvaEs1SaTucJY1SvNTQ",
-  authDomain: resolveFirebaseAuthDomain(
-    typeof window === "undefined" ? "" : window.location.hostname,
-    import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  ),
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "rafchu-tcg-app.firebaseapp.com",
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "rafchu-tcg-app",
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "rafchu-tcg-app.firebasestorage.app",
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1045008710585",

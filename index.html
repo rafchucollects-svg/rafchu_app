@@ -7,6 +7,16 @@
     <title>Rafchu Marketplace</title>
   </head>
   <body>
+    <script>
+      // Firebase's default OAuth client already trusts the firebaseapp.com
+      // callback. Keep production on that canonical Hosting domain so popup
+      // and redirect sign-in both remain first-party across modern browsers.
+      if (window.location.hostname === "rafchu-tcg-app.web.app") {
+        window.location.replace(
+          `https://rafchu-tcg-app.firebaseapp.com${window.location.pathname}${window.location.search}${window.location.hash}`
+        );
+      }
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
