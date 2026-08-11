@@ -32,6 +32,7 @@ import {
   CircleHelp,
   CheckCircle2,
   Repeat,
+  Utensils,
 } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { useExpenses } from "@/contexts/ExpenseContext";
