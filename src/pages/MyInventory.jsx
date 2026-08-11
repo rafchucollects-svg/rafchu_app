@@ -62,6 +62,8 @@ export function MyInventory() {
 
   const [editingPriceId, setEditingPriceId] = useState(null);
   const [editingPriceValue, setEditingPriceValue] = useState("");
+  const [editingPurchasePriceId, setEditingPurchasePriceId] = useState(null);
+  const [editingPurchasePriceValue, setEditingPurchasePriceValue] = useState("");
   const [shareEnabled, setShareEnabled] = useState(false);
   const [shareUsername, setShareUsername] = useState("");
   const [selectedCards, setSelectedCards] = useState(new Set());
@@ -374,6 +376,14 @@ export function MyInventory() {
   // Format price with rounding and selected currency
   const formatPrice = (value) => formatCurrency(roundUpPrices ? Math.ceil(Number(value ?? 0)) : Number(value ?? 0), currency);
 
+  const getPurchasePriceInCurrency = (item) => {
+    if (item?.buyPrice == null || Number.isNaN(Number(item.buyPrice))) return null;
+    const sourceCurrency = item.buyPriceCurrency || currency;
+    return sourceCurrency === currency
+      ? Number(item.buyPrice)
+      : convertCurrency(Number(item.buyPrice), currency, sourceCurrency);
+  };
+
   // Round up to nearest multiple of 5
   const roundUpMarkup = (basePrice, pct) => Math.ceil((basePrice * (1 + pct / 100)) / 5) * 5;
 
@@ -525,6 +535,8 @@ export function MyInventory() {
 
   // Start editing price
   const startEditingPrice = (entryId, currentPrice) => {
+    setEditingPurchasePriceId(null);
+    setEditingPurchasePriceValue("");
     setEditingPriceId(entryId);
     setEditingPriceValue(currentPrice != null ? String(currentPrice) : "");
   };
@@ -557,6 +569,58 @@ export function MyInventory() {
   const cancelEditingPrice = () => {
     setEditingPriceId(null);
     setEditingPriceValue("");
+  };
+
+  const startEditingPurchasePrice = (item) => {
+    setEditingPriceId(null);
+    setEditingPriceValue("");
+    setEditingPurchasePriceId(item.entryId);
+    const currentPrice = getPurchasePriceInCurrency(item);
+    setEditingPurchasePriceValue(currentPrice != null ? currentPrice.toFixed(2) : "");
+  };
+
+  const cancelEditingPurchasePrice = () => {
+    setEditingPurchasePriceId(null);
+    setEditingPurchasePriceValue("");
+  };
+
+  const savePurchasePrice = async (entryId) => {
+    if (!user || !db) return;
+    const rawValue = editingPurchasePriceValue.trim();
+    const nextValue = rawValue === "" ? null : Number(rawValue);
+    if (nextValue != null && (!Number.isFinite(nextValue) || nextValue < 0)) {
+      toast.info("Please enter a valid purchase price");
+      return;
+    }
+
+    try {
+      const updatedItems = collectionItems.map((item) => {
+        if (item.entryId !== entryId) return item;
+        return {
+          ...item,
+          buyPrice: nextValue,
+          buyPriceCurrency: nextValue == null ? null : currency,
+          buyPriceManuallySet: true,
+          taxAcquisition: {
+            ...(item.taxAcquisition || {}),
+            recordedCost: nextValue,
+            currency,
+            manuallyAdjusted: true,
+          },
+        };
+      });
+      await saveInventory(updatedItems);
+      setCardDetailsModal((current) => {
+        if (!current || current.entryId !== entryId) return current;
+        const updated = updatedItems.find((item) => item.entryId === entryId);
+        return updated || current;
+      });
+      cancelEditingPurchasePrice();
+      triggerQuickAddFeedback(nextValue == null ? "Purchase price cleared" : "Purchase price updated");
+    } catch (error) {
+      console.error("Failed to update purchase price", error);
+      toast.error("Failed to update purchase price. Please try again.");
+    }
   };
 
   // Reset price to suggested (clear override)
@@ -1452,9 +1516,10 @@ export function MyInventory() {
         // Consigned goods were never owned, so their cost basis is 0.
         const parseCost = (v) =>
           v != null && !isNaN(parseFloat(v)) ? parseFloat(v) : null;
+        const purchasePriceInSaleCurrency = getPurchasePriceInCurrency(c);
         const resolvedCostBasis = consignmentLine
           ? 0
-          : parseCost(c.buyPrice) ?? parseCost(c.overridePrice) ?? parseCost(c.costBasis);
+          : parseCost(purchasePriceInSaleCurrency) ?? parseCost(c.overridePrice) ?? parseCost(c.costBasis);
 
         // Create object and filter out undefined values (Firestore doesn't accept undefined)
         const cardData = {
@@ -1467,7 +1532,7 @@ export function MyInventory() {
           unitPrice: finalUnitPrice,
           totalPrice: finalCardTotal,
           costBasis: resolvedCostBasis,
-          buyPrice: parseCost(c.buyPrice),
+          buyPrice: parseCost(purchasePriceInSaleCurrency),
           acquisitionTransactionId: c.acquisitionTransactionId || null,
           taxAcquisition: c.taxAcquisition || null,
           image: imageUrl,
@@ -2161,6 +2226,8 @@ export function MyInventory() {
           }
           
           const isEditing = editingPriceId === item.entryId;
+          const isEditingPurchasePrice = editingPurchasePriceId === item.entryId;
+          const purchasePrice = getPurchasePriceInCurrency(item);
           const isSelected = selectedCards.has(item.entryId);
           
           return (
@@ -2298,6 +2365,42 @@ export function MyInventory() {
                       {item.condition || "NM"}
                     </span>
                   ))}
+                  {!isEditing && !isConsignedItem(item) && (
+                    isEditingPurchasePrice ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-muted-foreground">Paid</span>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={editingPurchasePriceValue}
+                          onChange={(e) => setEditingPurchasePriceValue(e.target.value)}
+                          className="w-24 h-7 text-xs font-semibold"
+                          placeholder="0.00"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") savePurchasePrice(item.entryId);
+                            else if (e.key === "Escape") cancelEditingPurchasePrice();
+                          }}
+                        />
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => savePurchasePrice(item.entryId)} title="Save purchase price">
+                          <Check className="h-3.5 w-3.5 text-green-600" />
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={cancelEditingPurchasePrice} title="Cancel">
+                          <X className="h-3.5 w-3.5 text-red-600" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => startEditingPurchasePrice(item)}
+                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary hover:underline"
+                        title="Edit purchase price / cost basis"
+                      >
+                        Paid {purchasePrice == null ? "—" : formatCurrency(purchasePrice, currency)}
+                        <Edit2 className="h-2.5 w-2.5" />
+                      </button>
+                    )
+                  )}
                   {!isEditing && isConsignedItem(item) && (
                     <span
                       className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-300 bg-amber-100 text-amber-800"
@@ -2851,6 +2954,56 @@ export function MyInventory() {
                       <span className="font-medium">{new Date(cardDetailsModal.addedAt).toLocaleDateString()}</span>
                     </div>
                   </div>
+
+                  {!isConsignedItem(cardDetailsModal) && (
+                    <div className="border-t pt-3">
+                      <div className="flex justify-between items-center gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">Purchase price</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            Used as this card&apos;s cost basis
+                            {cardDetailsModal.source === "cardladder" ? " · imported from Card Ladder" : ""}
+                          </p>
+                        </div>
+                        {editingPurchasePriceId === cardDetailsModal.entryId ? (
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={editingPurchasePriceValue}
+                              onChange={(e) => setEditingPurchasePriceValue(e.target.value)}
+                              className="w-28 h-8 text-sm"
+                              placeholder="0.00"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") savePurchasePrice(cardDetailsModal.entryId);
+                                else if (e.key === "Escape") cancelEditingPurchasePrice();
+                              }}
+                            />
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => savePurchasePrice(cardDetailsModal.entryId)} title="Save purchase price">
+                              <Check className="h-4 w-4 text-green-600" />
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={cancelEditingPurchasePrice} title="Cancel">
+                              <X className="h-4 w-4 text-red-600" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => startEditingPurchasePrice(cardDetailsModal)}
+                            className="inline-flex items-center gap-2 font-semibold text-primary hover:underline"
+                            title="Edit purchase price / cost basis"
+                          >
+                            {(() => {
+                              const value = getPurchasePriceInCurrency(cardDetailsModal);
+                              return value == null ? "Not set" : formatCurrency(value, currency);
+                            })()}
+                            <Edit2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Variant Tags */}
                   <div className="border-t pt-3">

@@ -4,6 +4,17 @@ import { Button } from "@/components/ui/button";
 import { Upload, X, AlertCircle, Check, Loader2, ImageIcon } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { doc, setDoc, getDoc } from "firebase/firestore";
+import {
+  applyCardLadderPurchasePrice,
+  cardLadderCompositeKey,
+  cardLadderCustomizationScore,
+  cardLadderMatchScore,
+  findManualDealCardMatch,
+  parseCardLadderMoney,
+  preserveDealAcquisitionData,
+  preserveEditedCardLadderPurchasePrice,
+  toPerUnitCardLadderAmount,
+} from "@/utils/cardLadderImport";
 
 const CLOUD_FUNCTIONS_BASE = "https://us-central1-rafchu-tcg-app.cloudfunctions.net";
 
@@ -65,7 +76,7 @@ function expandAbbreviations(text) {
   if (!text) return "";
   let result = text;
   for (const [abbr, full] of Object.entries(ABBREVIATION_MAP)) {
-    const regex = new RegExp(abbr.replace(/\./g, "\\.").replace(/-/g, "\\-"), "gi");
+    const regex = new RegExp(abbr.replace(/\./g, "\\."), "gi");
     result = result.replace(regex, full);
   }
   return result.trim();
@@ -212,9 +223,9 @@ function rowToCard(row, headerMap) {
   const variation = getField(row, headerMap, "variation");
   const number = getField(row, headerMap, "number");
   const condition = getField(row, headerMap, "condition");
-  const investment = parseFloat(getField(row, headerMap, "investment")) || 0;
-  const currentValue = parseFloat(getField(row, headerMap, "currentValue")) || 0;
-  const potentialProfit = parseFloat(getField(row, headerMap, "potentialProfit")) || 0;
+  const investment = parseCardLadderMoney(getField(row, headerMap, "investment"));
+  const currentValue = parseCardLadderMoney(getField(row, headerMap, "currentValue")) ?? 0;
+  const potentialProfit = parseCardLadderMoney(getField(row, headerMap, "potentialProfit")) ?? 0;
   const ladderId = getField(row, headerMap, "ladderId");
   const slabSerial = getField(row, headerMap, "slabSerial");
   const population = parseInt(getField(row, headerMap, "population")) || null;
@@ -230,9 +241,9 @@ function rowToCard(row, headerMap) {
   const { company, grade } = parseCondition(condition);
 
   // CardLadder reports totals for the line item — divide by quantity for per-unit values
-  const unitValue = quantity > 1 ? currentValue / quantity : currentValue;
-  const unitInvestment = quantity > 1 ? investment / quantity : investment;
-  const unitProfit = quantity > 1 ? potentialProfit / quantity : potentialProfit;
+  const unitValue = toPerUnitCardLadderAmount(currentValue, quantity) ?? 0;
+  const unitInvestment = toPerUnitCardLadderAmount(investment, quantity);
+  const unitProfit = toPerUnitCardLadderAmount(potentialProfit, quantity) ?? 0;
 
   return {
     entryId: `cardladder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -250,6 +261,11 @@ function rowToCard(row, headerMap) {
     grade: grade,
     gradedPrice: unitValue,
     gradedPriceCurrency: "USD",
+    ...(unitInvestment != null
+      ? { buyPrice: unitInvestment, buyPriceCurrency: "USD" }
+      : {}),
+    acquiredVia: "cardladder",
+    purchaseDate: datePurchased || null,
     cardladderData: {
       playerRaw,
       setRaw,
@@ -354,7 +370,7 @@ function namesMatch(cardLadderName, apiName) {
   // Split on whitespace, &, and hyphens, then strip remaining punctuation from each token
   const toWords = (s) =>
     s
-      .split(/[\s&\-]+/)
+      .split(/[\s&-]+/)
       .map((w) => w.replace(/[^a-z0-9]/g, ""))
       .filter(Boolean);
 
@@ -645,43 +661,10 @@ function hasUserChosenImage(item) {
  * to decide which one to keep. Higher = more user-set data we don't want
  * to lose.
  */
-function customizationScore(item) {
-  if (!item) return 0;
-  let score = 0;
-  if (item.imageManuallySet === true) score += 8;
-  if (
-    typeof item.image === "string" &&
-    (item.image.includes("firebasestorage.googleapis.com") ||
-      item.image.includes("storage.googleapis.com") ||
-      item.image.startsWith("data:"))
-  ) {
-    score += 4;
-  }
-  if (item.manualPrice != null && item.manualPrice !== "") score += 2;
-  if (
-    item.overridePrice != null &&
-    !Number.isNaN(Number(item.overridePrice))
-  ) {
-    score += 2;
-  }
-  if (item.excludeFromSale === true) score += 1;
-  return score;
-}
-
-/** Composite identity for a CardLadder card row — name + number + grade. */
-function compositeKey(item) {
-  return [
-    (item?.name || "").toLowerCase().trim(),
-    (item?.number || "").toLowerCase().trim(),
-    (item?.gradingCompany || "").toLowerCase().trim(),
-    (item?.grade || "").toLowerCase().trim(),
-  ].join("|");
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function CardLadderImport({ onClose, collectionName }) {
-  const { user, db, collectionItems, setCollectionItems } = useApp();
+  const { user, db, setCollectionItems, currency } = useApp();
   const [file, setFile] = useState(null);
   const [parsedCards, setParsedCards] = useState([]);
   const [parseError, setParseError] = useState(null);
@@ -819,7 +802,7 @@ export function CardLadderImport({ onClose, collectionName }) {
           slabSurvivors.set(slab, old);
         } else {
           slabDuplicatesRemoved++;
-          if (customizationScore(old) > customizationScore(existing)) {
+          if (cardLadderCustomizationScore(old) > cardLadderCustomizationScore(existing)) {
             slabSurvivors.set(slab, old);
           }
         }
@@ -843,7 +826,8 @@ export function CardLadderImport({ onClose, collectionName }) {
       // CSV rows that share a composite key (e.g. two different cert #s
       // of the same Pikachu PSA 10) can never both inherit the same
       // entryId. Pass 1 binds stable IDs; Pass 2 fills in the rest by
-      // composite key, preferring the most-customized unclaimed old.
+      // composite key, preferring the closest acquisition-price/date match,
+      // then the most-customized unclaimed old.
       const matchedOldFor = new Array(parsedCards.length).fill(null);
       const claimedEntryIds = new Set();
 
@@ -860,18 +844,35 @@ export function CardLadderImport({ onClose, collectionName }) {
         }
       });
 
+      // Pass 3: reconcile a Card Ladder row with a graded manual inventory
+      // card that was created by a confirmed deal. This prevents the CSV from
+      // adding a duplicate and, critically, lets the deal's recorded purchase
+      // price and transaction evidence remain authoritative.
+      const matchedDealFor = new Array(parsedCards.length).fill(null);
+      const claimedDealEntryIds = new Set();
+      parsedCards.forEach((card, idx) => {
+        const match = findManualDealCardMatch(
+          card,
+          nonCardLadder,
+          claimedDealEntryIds,
+        );
+        if (!match) return;
+        matchedDealFor[idx] = match.candidate;
+        claimedDealEntryIds.add(match.candidate.entryId);
+      });
+
       // Pass 2: composite-key fallback. For each still-unmatched parsed
-      // card, scan dedupedOldCardLadder for the most-customized unclaimed
-      // old card with the same composite key.
+      // card, scan dedupedOldCardLadder for the best acquisition-data and
+      // customization match among unclaimed old cards with the same key.
       parsedCards.forEach((card, idx) => {
         if (matchedOldFor[idx]) return;
-        const target = compositeKey(card);
+        const target = cardLadderCompositeKey(card);
         let best = null;
         let bestScore = -1;
         for (const old of oldCardLadder) {
           if (claimedEntryIds.has(old.entryId)) continue;
-          if (compositeKey(old) !== target) continue;
-          const s = customizationScore(old);
+          if (cardLadderCompositeKey(old) !== target) continue;
+          const s = cardLadderMatchScore(card, old);
           if (s > bestScore) {
             best = old;
             bestScore = s;
@@ -892,9 +893,13 @@ export function CardLadderImport({ onClose, collectionName }) {
 
       const matches = parsedCards.map((card, idx) => {
         const oldCard = matchedOldFor[idx] || null;
+        const dealCard = matchedDealFor[idx] || null;
+        const imageCard = [dealCard, oldCard].find((item) => hasUserChosenImage(item)) || null;
         return {
           oldCard,
-          preservesImage: oldCard ? hasUserChosenImage(oldCard) : false,
+          dealCard,
+          imageCard,
+          preservesImage: Boolean(imageCard),
         };
       });
 
@@ -939,63 +944,84 @@ export function CardLadderImport({ onClose, collectionName }) {
 
       // ── Step 4: Build merged cards ──────────────────────────────────
       const mergedCards = parsedCards.map((card, idx) => {
-        const { oldCard, preservesImage } = matches[idx];
+        const { oldCard, dealCard, imageCard, preservesImage } = matches[idx];
         const apiImg = imageResults[idx];
 
+        const cardWithPurchasePrice = applyCardLadderPurchasePrice(card, currency);
+
         // Apply API image only when not preserving a manual one
-        let next = card;
+        let next = cardWithPurchasePrice;
         if (apiImg && !preservesImage) {
           next = {
-            ...card,
-            image: apiImg.image || card.image,
-            id: apiImg.id || card.id || "",
+            ...cardWithPurchasePrice,
+            image: apiImg.image || cardWithPurchasePrice.image,
+            id: apiImg.id || cardWithPurchasePrice.id || "",
             ...(apiImg.prices && Object.keys(apiImg.prices).length > 0
               ? { prices: apiImg.prices }
               : {}),
           };
         }
 
-        if (!oldCard) return next;
+        if (!oldCard && !dealCard) return next;
 
         // Carry forward the existing entryId so other parts of the app
-        // (selection state, transactions, etc.) keep their references.
-        const merged = { ...next, entryId: oldCard.entryId };
+        // (selection state, transactions, etc.) keep their references. A deal
+        // card wins because it owns the original acquisition evidence.
+        const identityCard = dealCard || oldCard;
+        const merged = {
+          ...next,
+          entryId: identityCard.entryId,
+          addedAt: identityCard.addedAt || oldCard?.addedAt || next.addedAt,
+        };
 
         if (preservesImage) {
-          merged.image = oldCard.image;
+          merged.image = imageCard.image;
           merged.imageManuallySet = true;
-        } else if (!next.image && oldCard.image) {
+        } else if (!next.image && (dealCard?.image || oldCard?.image)) {
           // Last-resort fallback: keep whatever image we had before
           // when the API turned up nothing for this card.
-          merged.image = oldCard.image;
+          merged.image = dealCard?.image || oldCard?.image;
         }
 
         // Preserve manual price (legacy field, still supported)
-        if (oldCard.manualPrice != null && oldCard.manualPrice !== "") {
-          merged.manualPrice = oldCard.manualPrice;
-          merged.manualPriceCurrency = oldCard.manualPriceCurrency || null;
+        const manualPriceCard = [dealCard, oldCard].find(
+          (item) => item?.manualPrice != null && item.manualPrice !== ""
+        );
+        if (manualPriceCard) {
+          merged.manualPrice = manualPriceCard.manualPrice;
+          merged.manualPriceCurrency = manualPriceCard.manualPriceCurrency || null;
         }
 
         // Preserve manual override price — what the inline price editor and
         // the +5% / +10% markup buttons actually write to. Without this,
         // every re-import would silently revert your custom prices.
-        if (
-          oldCard.overridePrice != null &&
-          !Number.isNaN(Number(oldCard.overridePrice))
-        ) {
-          merged.overridePrice = oldCard.overridePrice;
-          merged.overridePriceCurrency = oldCard.overridePriceCurrency || null;
+        const overrideCard = [dealCard, oldCard].find(
+          (item) => item?.overridePrice != null && !Number.isNaN(Number(item.overridePrice))
+        );
+        if (overrideCard) {
+          merged.overridePrice = overrideCard.overridePrice;
+          merged.overridePriceCurrency = overrideCard.overridePriceCurrency || null;
         }
 
         // Preserve marketplace-visibility flag
-        if (oldCard.excludeFromSale === true) {
+        if (dealCard?.excludeFromSale === true || oldCard?.excludeFromSale === true) {
           merged.excludeFromSale = true;
         }
 
-        return merged;
+        const notesCard = [dealCard, oldCard].find((item) => item?.notes);
+        if (notesCard) merged.notes = notesCard.notes;
+
+        // A purchase price edited in Inventory is intentional accounting data,
+        // so a later Card Ladder refresh must never replace it. The original
+        // Card Ladder Investment remains refreshed inside cardladderData.
+        const withEditedPrice = preserveEditedCardLadderPurchasePrice(merged, oldCard, currency);
+        return preserveDealAcquisitionData(withEditedPrice, dealCard, currency);
       });
 
-      const updatedItems = [...nonCardLadder, ...mergedCards];
+      const remainingNonCardLadder = nonCardLadder.filter(
+        (item) => !claimedDealEntryIds.has(item.entryId)
+      );
+      const updatedItems = [...remainingNonCardLadder, ...mergedCards];
 
       await setDoc(docRef, { ...currentData, items: updatedItems });
       setCollectionItems(updatedItems);
@@ -1007,6 +1033,12 @@ export function CardLadderImport({ onClose, collectionName }) {
           (c.manualPrice != null && c.manualPrice !== "") ||
           (c.overridePrice != null && !Number.isNaN(Number(c.overridePrice)))
       ).length;
+      const preservedPurchasePrices = mergedCards.filter(
+        (c) => c.buyPriceManuallySet === true
+      ).length;
+      const reconciledDealCards = mergedCards.filter(
+        (c) => c.reconciledFromManualDeal === true
+      ).length;
 
       setImportResult({
         success: true,
@@ -1016,6 +1048,8 @@ export function CardLadderImport({ onClose, collectionName }) {
         imagesFound,
         preservedImages,
         preservedPrices,
+        preservedPurchasePrices,
+        reconciledDealCards,
         duplicatesRemoved,
       });
     } catch (err) {
@@ -1028,7 +1062,7 @@ export function CardLadderImport({ onClose, collectionName }) {
       setImporting(false);
       setImageProgress(null);
     }
-  }, [user, db, collectionName, parsedCards, setCollectionItems]);
+  }, [user, db, collectionName, parsedCards, setCollectionItems, currency]);
 
   // Summary stats from parsed cards (unit prices × quantity for correct totals)
   const totalValue = parsedCards.reduce((s, c) => s + (c.gradedPrice || 0) * (c.quantity || 1), 0);
@@ -1076,8 +1110,14 @@ export function CardLadderImport({ onClose, collectionName }) {
                 </p>
                 <p className="mt-1 text-amber-700">
                   Re-importing? No worries — your custom images, manual prices,
-                  and manually added cards are always preserved. Only CardLadder
-                  data (values, grades) gets refreshed.
+                  edited purchase prices, and manually added cards are always
+                  preserved. Card Ladder&apos;s Investment becomes the card&apos;s
+                  editable cost basis; market values and grades stay refreshed.
+                </p>
+                <p className="mt-1 text-amber-700">
+                  High-confidence matches to graded manual cards from confirmed
+                  deals are reconciled automatically. The deal&apos;s original paid
+                  price and transaction record always win over the CSV Investment.
                 </p>
               </div>
             </div>
@@ -1303,6 +1343,16 @@ export function CardLadderImport({ onClose, collectionName }) {
                   {importResult.preservedPrices > 0 && (
                     <p className="text-xs text-green-600 mt-0.5">
                       {importResult.preservedPrices} manual price{importResult.preservedPrices !== 1 ? "s" : ""} preserved
+                    </p>
+                  )}
+                  {importResult.preservedPurchasePrices > 0 && (
+                    <p className="text-xs text-green-600 mt-0.5">
+                      {importResult.preservedPurchasePrices} edited purchase price{importResult.preservedPurchasePrices !== 1 ? "s" : ""} preserved
+                    </p>
+                  )}
+                  {importResult.reconciledDealCards > 0 && (
+                    <p className="text-xs text-blue-700 mt-0.5">
+                      Reconciled {importResult.reconciledDealCards} manual deal card{importResult.reconciledDealCards !== 1 ? "s" : ""} without changing original purchase cost
                     </p>
                   )}
                   {importResult.duplicatesRemoved > 0 && (

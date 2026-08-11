@@ -626,6 +626,32 @@ describe("cloneForFirestore", () => {
     expect(cloned).toEqual(original);
     expect(cloned).not.toBe(original);
   });
+
+  it("removes undefined values at every nesting level", () => {
+    const original = {
+      keep: true,
+      remove: undefined,
+      nested: { keep: "value", remove: undefined },
+      list: [1, undefined, { keep: 2, remove: undefined }],
+    };
+
+    expect(cloneForFirestore(original)).toEqual({
+      keep: true,
+      nested: { keep: "value" },
+      list: [1, { keep: 2 }],
+    });
+  });
+
+  it("clones dates while preserving Firestore-style class instances", () => {
+    class FirestoreValue {}
+    const date = new Date("2026-08-11T00:00:00.000Z");
+    const firestoreValue = new FirestoreValue();
+    const cloned = cloneForFirestore({ date, firestoreValue });
+
+    expect(cloned.date).toEqual(date);
+    expect(cloned.date).not.toBe(date);
+    expect(cloned.firestoreValue).toBe(firestoreValue);
+  });
 });
 
 describe("normalizeApiCard", () => {

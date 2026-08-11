@@ -571,14 +571,40 @@ export function computeInventoryTotals(items, userCurrency = 'USD') {
 // =============================
 
 export function cloneForFirestore(value) {
-  try {
-    if (typeof structuredClone === "function") {
-      return structuredClone(value);
+  const cloneValue = (current, seen) => {
+    if (current === undefined) return undefined;
+    if (current === null || typeof current !== "object") return current;
+
+    if (current instanceof Date) return new Date(current.getTime());
+
+    // Firestore SDK values (Timestamp, GeoPoint, DocumentReference, etc.) are
+    // class instances. Preserve those rather than flattening their internals.
+    const prototype = Object.getPrototypeOf(current);
+    const isPlainObject = prototype === Object.prototype || prototype === null;
+    if (!Array.isArray(current) && !isPlainObject) return current;
+
+    if (seen.has(current)) return seen.get(current);
+
+    if (Array.isArray(current)) {
+      const clonedArray = [];
+      seen.set(current, clonedArray);
+      current.forEach((item) => {
+        const clonedItem = cloneValue(item, seen);
+        if (clonedItem !== undefined) clonedArray.push(clonedItem);
+      });
+      return clonedArray;
     }
-  } catch (error) {
-    console.warn("structuredClone failed, falling back to JSON clone", error);
-  }
-  return JSON.parse(JSON.stringify(value));
+
+    const clonedObject = {};
+    seen.set(current, clonedObject);
+    Object.entries(current).forEach(([key, item]) => {
+      const clonedItem = cloneValue(item, seen);
+      if (clonedItem !== undefined) clonedObject[key] = clonedItem;
+    });
+    return clonedObject;
+  };
+
+  return cloneValue(value, new WeakMap());
 }
 
 export async function saveCollection(db, uid, items, extra = {}) {
@@ -592,17 +618,23 @@ export async function saveCollection(db, uid, items, extra = {}) {
   await setDoc(ref, payload, { merge: true });
 }
 
-export async function recordTransaction(db, uid, entry) {
+export function prepareTransactionRecord(db, uid, entry, options = {}) {
   if (!db || !uid) return;
   const col = fsCollection(db, "transactions", uid, "entries");
-  const ref = doc(col);
+  const ref = options.id ? doc(col, options.id) : doc(col);
   const payload = buildTaxReadyTransaction(entry, {
     uid,
     now: Date.now(),
     id: ref.id,
   });
-  await setDoc(ref, cloneForFirestore(payload));
-  return { id: ref.id, ref, payload };
+  return { id: ref.id, ref, payload: cloneForFirestore(payload) };
+}
+
+export async function recordTransaction(db, uid, entry, options = {}) {
+  const prepared = prepareTransactionRecord(db, uid, entry, options);
+  if (!prepared) return;
+  await setDoc(prepared.ref, prepared.payload);
+  return prepared;
 }
 
 // =============================

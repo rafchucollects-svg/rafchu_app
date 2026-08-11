@@ -52,15 +52,29 @@ const hasDocumentReference = (entry) => Boolean(
 
 /**
  * Allocate the actual consideration paid across purchase lines, while leaving
- * each line's market estimate intact. The last line absorbs rounding drift so
- * the allocated costs always reconcile to the transaction total.
+ * each line's market estimate intact. Explicit card-level deal costs are the
+ * primary weights; market value is only the fallback. The last line absorbs
+ * rounding drift so allocated costs always reconcile to the transaction total.
  */
 export function allocatePurchaseCosts(items, transactionTotal) {
   const lines = (Array.isArray(items) ? items : []).map((item) => ({ ...item }));
   const total = Math.max(0, asNumber(transactionTotal));
   if (lines.length === 0) return lines;
 
-  const weights = lines.map((item) => {
+  const assignedCosts = lines.map((item) => {
+    const quantity = positiveQuantity(item.quantity);
+    if (item.totalCost != null && item.totalCost !== "" && Number.isFinite(Number(item.totalCost))) {
+      return Math.max(0, Number(item.totalCost));
+    }
+    if (item.unitCost != null && item.unitCost !== "" && Number.isFinite(Number(item.unitCost))) {
+      return Math.max(0, Number(item.unitCost) * quantity);
+    }
+    return null;
+  });
+  const hasCompleteAssignedCosts = assignedCosts.every((value) => value != null);
+  const assignedCostTotal = assignedCosts.reduce((sum, value) => sum + (value || 0), 0);
+
+  const marketWeights = lines.map((item) => {
     const quantity = positiveQuantity(item.quantity);
     return Math.max(
       0,
@@ -70,8 +84,11 @@ export function allocatePurchaseCosts(items, transactionTotal) {
         asNumber(item.unitPrice) * quantity,
     );
   });
+  const useAssignedCosts = hasCompleteAssignedCosts && assignedCostTotal > 0;
+  const weights = useAssignedCosts ? assignedCosts : marketWeights;
   const weightTotal = weights.reduce((sum, value) => sum + value, 0);
   const quantityTotal = lines.reduce((sum, item) => sum + positiveQuantity(item.quantity), 0);
+  const assignedCostsReconcile = useAssignedCosts && Math.abs(assignedCostTotal - total) < 0.000001;
   let allocated = 0;
 
   return lines.map((item, index) => {
@@ -90,7 +107,9 @@ export function allocatePurchaseCosts(items, transactionTotal) {
       marketTotal: roundMoney(marketTotal),
       unitCost: roundMoney(lineCost / quantity),
       totalCost: lineCost,
-      costAllocationMethod: weightTotal > 0 ? "pro_rata_market_value" : "pro_rata_quantity",
+      costAllocationMethod: useAssignedCosts
+        ? assignedCostsReconcile ? "assigned_deal_value" : "pro_rata_assigned_deal_value"
+        : weightTotal > 0 ? "pro_rata_market_value" : "pro_rata_quantity",
     };
   });
 }
@@ -137,7 +156,7 @@ export function assessTaxRecordCompleteness(transaction) {
   if ((type === "sale" || type === "sell") && outgoing.some((item) => asNumber(item.totalPrice) <= 0)) {
     missing.push("itemsOut.totalPrice");
   }
-  if ((type === "sale" || type === "sell") && outgoing.some(
+  if ((type === "sale" || type === "sell" || type === "trade") && outgoing.some(
     (item) => item.consignment?.isConsigned !== true && item.costBasis == null && item.buyPrice == null,
   )) {
     missing.push("itemsOut.costBasis");

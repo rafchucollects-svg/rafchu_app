@@ -530,7 +530,7 @@ function PurchaseDiaryTab() {
             for (const [idx, item] of tx.itemsIn.entries()) {
               const quantity = item.quantity || 1;
               const originalCurrency = item.currency || tx.currency || "EUR";
-              const originalAmount = item.marketUnitPrice ?? item.marketValue ?? item.unitPrice ?? (
+              const originalAmount = item.unitCost ?? item.marketUnitPrice ?? item.marketValue ?? item.unitPrice ?? (
                 item.marketTotal != null ? Number(item.marketTotal) / quantity : 0
               );
               const converted = await convertAmountToEur(originalAmount, originalCurrency, tx.ts);
