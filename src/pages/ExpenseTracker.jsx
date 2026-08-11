@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,6 +67,7 @@ export function ExpenseTracker() {
   } = useExpenses();
 
   const [activeTab, setActiveTab] = useState("expenses");
+  const [openPerDiemForm, setOpenPerDiemForm] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -157,7 +158,7 @@ export function ExpenseTracker() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button variant="outline" size="sm" onClick={refreshData}>
             <RefreshCw className="h-4 w-4 mr-1" />
             Refresh
@@ -168,31 +169,58 @@ export function ExpenseTracker() {
               Add Expense
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-blue-300 text-blue-700 hover:bg-blue-50"
+            onClick={() => {
+              setActiveTab("shows");
+              setOpenPerDiemForm(true);
+            }}
+          >
+            <Utensils className="h-4 w-4 mr-1" />
+            Add Per Diem
+          </Button>
         </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="mb-6">
-          <TabsTrigger value="expenses">
+        <Select
+          value={activeTab}
+          onChange={(event) => setActiveTab(event.target.value)}
+          className="mb-4 w-full sm:hidden"
+          aria-label="Expense section"
+        >
+          <option value="expenses">Expenses</option>
+          <option value="recurring">Recurring expenses</option>
+          <option value="reimbursements">Reimbursements</option>
+          <option value="shows">Show Schedule &amp; Per Diems</option>
+        </Select>
+
+        <TabsList className="mb-6 hidden h-auto w-full flex-wrap justify-start gap-1 p-1 sm:flex">
+          <TabsTrigger value="expenses" className="shrink-0">
             <Receipt className="h-4 w-4 mr-1" />
             Expenses
           </TabsTrigger>
-          <TabsTrigger value="recurring">
+          <TabsTrigger value="recurring" className="shrink-0">
             <Repeat className="h-4 w-4 mr-1" />
             Recurring
           </TabsTrigger>
-          <TabsTrigger value="reimbursements">
+          <TabsTrigger value="reimbursements" className="shrink-0">
             <Wallet className="h-4 w-4 mr-1" />
             Reimbursements
           </TabsTrigger>
-          <TabsTrigger value="shows">
+          <TabsTrigger value="shows" className="shrink-0">
             <CalendarDays className="h-4 w-4 mr-1" />
             Show Schedule
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="shows">
-          <ShowScheduleTab />
+          <ShowScheduleTab
+            openNewShow={openPerDiemForm}
+            onOpenNewShowHandled={() => setOpenPerDiemForm(false)}
+          />
         </TabsContent>
 
         <TabsContent value="recurring">

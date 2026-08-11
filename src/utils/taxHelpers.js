@@ -1380,7 +1380,7 @@ export function calculateDividendOptimization(netAssets, distributableProfit, ma
 // Mileage Allowance
 // =============================
 
-export const FINLAND_MILEAGE_RATE = 0.30; // €/km (2025 Vero rate)
+export const FINLAND_MILEAGE_RATE = 0.55; // €/km (2026 Vero rate)
 
 /**
  * Calculate total mileage allowance for a set of trips.
@@ -1413,9 +1413,9 @@ export function calculateMileageAllowance(trips) {
 // =============================
 
 export const TAX_FREE_BENEFITS = [
-  { id: "per_diem_full", label: "Per Diem (Full Day, >10h)", annualLimit: null, perUse: 51 },
-  { id: "per_diem_partial", label: "Per Diem (Partial Day, >6h)", annualLimit: null, perUse: 24 },
-  { id: "mileage", label: "Mileage Allowance", annualLimit: null, perUse: 0.30, unit: "€/km" },
+  { id: "per_diem_full", label: "Per Diem (Full Day, >10h)", annualLimit: null, perUse: 54 },
+  { id: "per_diem_partial", label: "Per Diem (Partial Day, >6h)", annualLimit: null, perUse: 25 },
+  { id: "mileage", label: "Mileage Allowance", annualLimit: null, perUse: 0.55, unit: "€/km" },
   { id: "sports_culture", label: "Sports & Culture Benefit", annualLimit: 400, perUse: null },
   { id: "phone", label: "Phone Benefit", annualLimit: null, perUse: null, note: "Reasonable business use — Oy pays bill directly" },
   { id: "internet", label: "Home Internet", annualLimit: null, perUse: null, note: "Business portion — Oy pays directly" },

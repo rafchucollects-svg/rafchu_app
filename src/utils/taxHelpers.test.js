@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { convertTransactionForTaxEUR, convertToEUR } from "./taxHelpers";
+import {
+  convertTransactionForTaxEUR,
+  convertToEUR,
+  FINLAND_MILEAGE_RATE,
+  TAX_FREE_BENEFITS,
+} from "./taxHelpers";
 
 describe("convertTransactionForTaxEUR", () => {
   it("converts sales and cost basis into a consistent EUR reporting view", () => {
@@ -36,5 +41,14 @@ describe("convertTransactionForTaxEUR", () => {
 describe("convertToEUR", () => {
   it("keeps EUR values unchanged", () => {
     expect(convertToEUR(42, "EUR", {})).toEqual({ amountEUR: 42, rate: 1, reliable: true });
+  });
+});
+
+describe("2026 tax-free travel rates", () => {
+  it("uses the current Vero mileage and domestic per-diem rates", () => {
+    expect(FINLAND_MILEAGE_RATE).toBe(0.55);
+    expect(TAX_FREE_BENEFITS.find((benefit) => benefit.id === "per_diem_full")?.perUse).toBe(54);
+    expect(TAX_FREE_BENEFITS.find((benefit) => benefit.id === "per_diem_partial")?.perUse).toBe(25);
+    expect(TAX_FREE_BENEFITS.find((benefit) => benefit.id === "mileage")?.perUse).toBe(0.55);
   });
 });

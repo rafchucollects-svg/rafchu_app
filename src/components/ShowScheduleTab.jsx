@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { createElement, useState, useMemo, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,7 +29,7 @@ import { formatExpenseDate } from "@/utils/expenseHelpers";
 
 const COUNTRY_LIST = getCountryList();
 
-export function ShowScheduleTab() {
+export function ShowScheduleTab({ openNewShow = false, onOpenNewShowHandled }) {
   const {
     shows,
     expenses,
@@ -42,6 +42,13 @@ export function ShowScheduleTab() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
+
+  useEffect(() => {
+    if (!openNewShow) return;
+    setEditingId(null);
+    setShowForm(true);
+    onOpenNewShowHandled?.();
+  }, [openNewShow, onOpenNewShowHandled]);
 
   const upcoming = shows.filter((s) => s.endDate >= new Date().toISOString().slice(0, 10));
   const pendingPerDiems = shows.filter((s) => !s.perDiemConfirmed && s.perDiemTotal > 0);
@@ -215,7 +222,7 @@ function ShowRow({ show, expenses, expanded, onToggle, onEdit, onDelete, onCheck
                     }`}
                   >
                     {checked ? <CheckCircle className="h-4 w-4 text-green-600" /> : <div className="h-4 w-4 rounded border border-input" />}
-                    <Icon className="h-4 w-4" />
+                    {createElement(Icon, { className: "h-4 w-4" })}
                     <span>{label}</span>
                   </button>
                 );
