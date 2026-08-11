@@ -44,6 +44,19 @@
   "dataconnect": {
     "source": "dataconnect"
   },
+  "auth": {
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Rafchu",
+        "supportEmail": "rafchucollects@gmail.com",
+        "authorizedRedirectUris": [
+          "https://rafchu-tcg-app.firebaseapp.com/__/auth/handler",
+          "https://rafchu-tcg-app.web.app/__/auth/handler"
+        ]
+      }
+    }
+  },
   "firestore": {
     "database": "(default)",
     "location": "nam5",
