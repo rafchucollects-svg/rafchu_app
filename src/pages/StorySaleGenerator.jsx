@@ -5,11 +5,12 @@ import { Input } from "@/components/ui/input";
 import {
   Camera, Upload, X, Check, AlertTriangle, Loader2,
   Search, RotateCcw, Download, Image, Pencil, Plus, Share2,
-  LayoutGrid, Package,
+  LayoutGrid, Package, ArrowRight, Palette, Smartphone, Sparkles,
 } from "lucide-react";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { useApp } from "@/contexts/AppContext";
 import { computeItemMetrics, convertCurrency, formatCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
+import { autoDetectGrid, computeInventoryGridLayout, sanitizeDetectedPosition } from "@/utils/storySaleHelpers";
 
 function getDisplayPriceForItem(item, currency, roundUp) {
   let price;
@@ -33,13 +34,40 @@ function getDisplayPriceForItem(item, currency, roundUp) {
 
 const DEFAULT_LABEL_COLOR = "#16a34a";
 const DEFAULT_LABEL_POSITION = { x: 0.5, y: 0.9 };
-const SCAN_MAX_DIMENSION = 1600;
-const SCAN_JPEG_QUALITY = 0.82;
+// Slab labels contain the most reliable set/number/grade data and are often a
+// small fraction of the frame, so preserve more detail than a generic upload.
+const SCAN_MAX_DIMENSION = 2048;
+const SCAN_JPEG_QUALITY = 0.88;
 const BATCH_SCAN_CONCURRENCY = 1;
 const STORY_CANVAS_WIDTH = 1080;
 const STORY_CANVAS_HEIGHT = 1920;
 const BASE_LABEL_WIDTH = 430;
 const BASE_LABEL_HEIGHT = 112;
+const MAX_DETECTED_CARDS = 12;
+
+const STORY_BACKGROUNDS = {
+  midnight: {
+    label: "Midnight",
+    top: "#17213d",
+    bottom: "#080b16",
+    glow: "rgba(59, 130, 246, 0.26)",
+    accent: "#facc15",
+  },
+  graphite: {
+    label: "Graphite",
+    top: "#27272a",
+    bottom: "#09090b",
+    glow: "rgba(255, 255, 255, 0.13)",
+    accent: "#a3e635",
+  },
+  berry: {
+    label: "Berry",
+    top: "#451a3f",
+    bottom: "#160b1c",
+    glow: "rgba(244, 114, 182, 0.25)",
+    accent: "#f9a8d4",
+  },
+};
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -161,22 +189,24 @@ function shouldAutoConfirm(detected, bestMatch) {
   return confidence >= 0.85 && bestMatch.score >= 70;
 }
 
-function autoDetectGrid(cardCount) {
-  if (cardCount <= 1) return { cols: 1, rows: 1 };
-  if (cardCount === 2) return { cols: 2, rows: 1 };
-  if (cardCount === 3) return { cols: 3, rows: 1 };
-  return { cols: 2, rows: 2 };
-}
-
 function createFreeformGrid() {
   return { cols: 1, rows: 1, freeform: true };
+}
+
+function getDetectedLabelPosition(detected) {
+  const position = sanitizeDetectedPosition(detected?.position);
+  if (!position) return DEFAULT_LABEL_POSITION;
+  return {
+    x: clamp(position.x + position.width / 2, 0.03, 0.97),
+    y: clamp(position.y + position.height * 0.84, 0.03, 0.97),
+  };
 }
 
 function roundToNearest10(n) {
   return Math.ceil(n / 10) * 10;
 }
 
-const FONT_STACK = '"Inter", "SF Pro Display", "Segoe UI", system-ui, sans-serif';
+const FONT_STACK = '"Manrope", "SF Pro Display", "Segoe UI", system-ui, sans-serif';
 
 function formatWholePrice(amount, curr) {
   const rounded = Math.round(amount);
@@ -287,7 +317,12 @@ function revokeImageUrls(imageEntry) {
 
 async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secondaryCurrency, options) {
   const ctx = canvas.getContext("2d");
-  const { storyMode, labelColor, includeSecondaryCurrency } = options;
+  const {
+    storyMode,
+    labelColor,
+    includeSecondaryCurrency,
+    backgroundPreset = "midnight",
+  } = options;
 
   let canvasW = img.naturalWidth;
   let canvasH = img.naturalHeight;
@@ -297,33 +332,84 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
   if (storyMode) {
     canvasW = STORY_CANVAS_WIDTH;
     canvasH = STORY_CANVAS_HEIGHT;
-    const scale = Math.min(canvasW / img.naturalWidth, canvasH / img.naturalHeight);
+    const contentInset = 36;
+    const scale = Math.min(
+      (canvasW - contentInset * 2) / img.naturalWidth,
+      (canvasH - contentInset * 2) / img.naturalHeight
+    );
     drawW = img.naturalWidth * scale;
     drawH = img.naturalHeight * scale;
+  } else {
+    const maxExportDimension = 2800;
+    const scale = Math.min(1, maxExportDimension / Math.max(canvasW, canvasH));
+    canvasW = Math.round(canvasW * scale);
+    canvasH = Math.round(canvasH * scale);
+    drawW = canvasW;
+    drawH = canvasH;
   }
 
   canvas.width = canvasW;
   canvas.height = canvasH;
 
   if (storyMode) {
-    ctx.fillStyle = "#1a1a2e";
+    const palette = STORY_BACKGROUNDS[backgroundPreset] || STORY_BACKGROUNDS.midnight;
+    const background = ctx.createLinearGradient(0, 0, 0, canvasH);
+    background.addColorStop(0, palette.top);
+    background.addColorStop(1, palette.bottom);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, canvasW, canvasH);
+
+    // Turn otherwise-empty letterboxing into a soft continuation of the photo.
+    const coverScale = Math.max(canvasW / img.naturalWidth, canvasH / img.naturalHeight);
+    const coverW = img.naturalWidth * coverScale;
+    const coverH = img.naturalHeight * coverScale;
+    ctx.save();
+    ctx.globalAlpha = 0.34;
+    ctx.filter = "blur(42px) saturate(1.2)";
+    ctx.drawImage(img, (canvasW - coverW) / 2, (canvasH - coverH) / 2, coverW, coverH);
+    ctx.restore();
+
+    const scrim = ctx.createLinearGradient(0, 0, 0, canvasH);
+    scrim.addColorStop(0, "rgba(3, 7, 18, 0.26)");
+    scrim.addColorStop(0.5, "rgba(3, 7, 18, 0.08)");
+    scrim.addColorStop(1, "rgba(3, 7, 18, 0.42)");
+    ctx.fillStyle = scrim;
     ctx.fillRect(0, 0, canvasW, canvasH);
   }
 
   const imgX = (canvasW - drawW) / 2;
   const imgY = (canvasH - drawH) / 2;
-  ctx.drawImage(img, imgX, imgY, drawW, drawH);
+  if (storyMode) {
+    const frameRadius = 24;
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.48)";
+    ctx.shadowBlur = 32;
+    ctx.shadowOffsetY = 12;
+    drawRoundedRect(ctx, imgX, imgY, drawW, drawH, frameRadius);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    drawRoundedRect(ctx, imgX, imgY, drawW, drawH, frameRadius);
+    ctx.clip();
+    ctx.drawImage(img, imgX, imgY, drawW, drawH);
+    ctx.restore();
+
+    ctx.save();
+    drawRoundedRect(ctx, imgX, imgY, drawW, drawH, frameRadius);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  } else {
+    ctx.drawImage(img, imgX, imgY, drawW, drawH);
+  }
 
   const isFreeform = !!gridConfig?.freeform;
   const { cols, rows } = gridConfig;
   const cellW = drawW / cols;
   const cellH = drawH / rows;
-
-  const baseCellW = isFreeform ? drawW : cellW;
-  const baseCellH = isFreeform ? drawH : cellH;
-  const { boxW, boxH } = getLabelBoxSize(baseCellW, baseCellH, canvasW, canvasH, storyMode);
-  const hPad = boxW * 0.06;
-  const maxTextW = boxW - hPad * 2;
 
   slots.forEach((slot) => {
     const col = slot.index % cols;
@@ -343,6 +429,14 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
       secondaryText = formatWholePrice(roundToNearest10(converted), secondaryCurrency);
     }
 
+    const detectedBounds = isFreeform ? sanitizeDetectedPosition(slot.detected?.position) : null;
+    const fallbackScale = Math.max(1, Math.ceil(Math.sqrt(slots.length)));
+    const baseCellW = detectedBounds ? drawW * detectedBounds.width : (isFreeform ? drawW / fallbackScale : cellW);
+    const baseCellH = detectedBounds ? drawH * detectedBounds.height : (isFreeform ? drawH / fallbackScale : cellH);
+    const { boxW, boxH } = getLabelBoxSize(baseCellW, baseCellH, canvasW, canvasH, storyMode);
+    const hPad = boxW * 0.08;
+    const maxTextW = boxW - hPad * 2;
+
     const labelPosition = slot.labelPosition || DEFAULT_LABEL_POSITION;
     const desiredX = cellX + labelPosition.x * slotCellW - boxW / 2;
     const desiredY = cellY + labelPosition.y * slotCellH - boxH / 2;
@@ -350,10 +444,19 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
     const boxY = clampStart(desiredY, cellY, cellY + slotCellH - boxH);
 
     const radius = boxH * 0.18;
-    ctx.beginPath();
-    ctx.roundRect(boxX, boxY, boxW, boxH, radius);
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.38)";
+    ctx.shadowBlur = Math.max(8, boxH * 0.14);
+    ctx.shadowOffsetY = Math.max(3, boxH * 0.04);
+    drawRoundedRect(ctx, boxX, boxY, boxW, boxH, radius);
     ctx.fillStyle = labelColor || DEFAULT_LABEL_COLOR;
     ctx.fill();
+    ctx.restore();
+
+    drawRoundedRect(ctx, boxX, boxY, boxW, boxH, radius);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+    ctx.lineWidth = Math.max(1, boxH * 0.015);
+    ctx.stroke();
 
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";
@@ -388,8 +491,7 @@ async function drawPriceOverlays(canvas, img, slots, gridConfig, currency, secon
 // story image from scratch using each card's stored picture rather than
 // overlaying labels on a user-uploaded photo.
 
-const STORY_FOOTER_NOTE = "Certs and images for reference, DM for pics";
-const STORY_BG_COLOR = "#1a1a2e";
+const STORY_FOOTER_NOTE = "DM to claim · More photos available";
 const GRADED_PER_IMAGE = 4;   // 2x2 max
 const UNGRADED_PER_IMAGE = 9; // 3x3 max
 
@@ -423,20 +525,39 @@ function chunkBy(items, perChunk) {
   return out;
 }
 
-// Tight-fit grid math: smallest grid that holds `count` cards while
-// respecting the per-mode maximum. Bias toward portrait-friendly shapes
-// for the 1080x1920 story canvas (extra columns over extra rows).
-function computeInventoryGridLayout(count, isGraded) {
-  if (count <= 1) return { cols: 1, rows: 1 };
-  if (count === 2) return { cols: 2, rows: 1 };
-  if (count === 3) return { cols: 3, rows: 1 };
-  if (count === 4) return { cols: 2, rows: 2 };
-  // From here only ungraded (graded chunks cap at 4).
-  if (!isGraded) {
-    if (count <= 6) return { cols: 3, rows: 2 };
-    return { cols: 3, rows: 3 };
+// Choose the grid that makes each card as large as possible inside a portrait
+// story. This intentionally gives two cards two rows, and five/six cards a
+// 2x3 grid; the old landscape-biased layouts left most of the story empty.
+function drawStoryBackground(ctx, width, height, preset) {
+  const palette = STORY_BACKGROUNDS[preset] || STORY_BACKGROUNDS.midnight;
+  const base = ctx.createLinearGradient(0, 0, 0, height);
+  base.addColorStop(0, palette.top);
+  base.addColorStop(1, palette.bottom);
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, width, height);
+
+  const glow = ctx.createRadialGradient(width * 0.84, height * 0.08, 0, width * 0.84, height * 0.08, width * 0.8);
+  glow.addColorStop(0, palette.glow);
+  glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, width, height);
+
+  const lowerGlow = ctx.createRadialGradient(width * 0.1, height * 0.92, 0, width * 0.1, height * 0.92, width * 0.65);
+  lowerGlow.addColorStop(0, "rgba(34, 197, 94, 0.1)");
+  lowerGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = lowerGlow;
+  ctx.fillRect(0, 0, width, height);
+
+  // Very subtle texture keeps large flat areas from looking like a template.
+  ctx.save();
+  ctx.globalAlpha = 0.055;
+  ctx.fillStyle = "#ffffff";
+  for (let y = 14; y < height; y += 34) {
+    for (let x = (y / 34) % 2 ? 12 : 28; x < width; x += 34) {
+      ctx.fillRect(x, y, 2, 2);
+    }
   }
-  return { cols: 2, rows: 2 };
+  ctx.restore();
 }
 
 // Cache-bust appended to bypass any stale non-CORS response the browser
@@ -580,6 +701,11 @@ async function composeInventoryGridImage({
   includeSecondaryCurrency,
   labelColor,
   showCondition,
+  saleTitle = "Fresh cards for sale",
+  footerNote = STORY_FOOTER_NOTE,
+  backgroundPreset = "midnight",
+  pageNumber = 1,
+  pageCount = 1,
 }) {
   const W = STORY_CANVAS_WIDTH;
   const H = STORY_CANVAS_HEIGHT;
@@ -589,14 +715,39 @@ async function composeInventoryGridImage({
   canvas.height = H;
   const ctx = canvas.getContext("2d");
 
-  // Background
-  ctx.fillStyle = STORY_BG_COLOR;
-  ctx.fillRect(0, 0, W, H);
+  const palette = STORY_BACKGROUNDS[backgroundPreset] || STORY_BACKGROUNDS.midnight;
+  drawStoryBackground(ctx, W, H, backgroundPreset);
+
+  // Header — compact enough for social safe zones, but clearly branded as a sale.
+  const headerX = 48;
+  const badgeY = 54;
+  const badgeW = 184;
+  const badgeH = 52;
+  drawRoundedRect(ctx, headerX, badgeY, badgeW, badgeH, 18);
+  ctx.fillStyle = palette.accent;
+  ctx.fill();
+  ctx.fillStyle = "#111827";
+  ctx.font = `900 24px ${FONT_STACK}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("FOR SALE", headerX + badgeW / 2, badgeY + badgeH / 2 + 1);
+
+  const cleanTitle = String(saleTitle || "Fresh cards for sale").trim().slice(0, 48);
+  const titleSize = fitText(ctx, cleanTitle, 800, W - headerX * 2, 58);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `800 ${titleSize}px ${FONT_STACK}`;
+  ctx.textAlign = "left";
+  ctx.fillText(cleanTitle, headerX, 158);
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.62)";
+  ctx.font = `600 25px ${FONT_STACK}`;
+  const itemLabel = `${items.length} card${items.length === 1 ? "" : "s"} · DM to claim`;
+  ctx.fillText(itemLabel, headerX, 205);
 
   // Layout regions
   const sidePad = 48;
-  const topPad = 60;
-  const bottomPad = 150;
+  const topPad = 250;
+  const bottomPad = 160;
   const gridW = W - sidePad * 2;
   const gridH = H - topPad - bottomPad;
 
@@ -682,12 +833,25 @@ async function composeInventoryGridImage({
     }
   }
 
-  // Footer note centered at the bottom of the canvas.
-  ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
-  ctx.font = `600 28px ${FONT_STACK}`;
-  ctx.textAlign = "center";
+  // Footer note and page marker stay inside Instagram's bottom safe area.
+  const cleanFooter = String(footerNote || STORY_FOOTER_NOTE).trim().slice(0, 72);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.76)";
+  ctx.font = `600 ${fitText(ctx, cleanFooter, 600, W - sidePad * 2 - 100, 27)}px ${FONT_STACK}`;
+  ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText(STORY_FOOTER_NOTE, W / 2, H - bottomPad / 2);
+  ctx.fillText(cleanFooter, sidePad, H - bottomPad / 2);
+
+  if (pageCount > 1) {
+    const pageText = `${pageNumber}/${pageCount}`;
+    ctx.font = `800 25px ${FONT_STACK}`;
+    const pageWidth = ctx.measureText(pageText).width + 34;
+    drawRoundedRect(ctx, W - sidePad - pageWidth, H - bottomPad / 2 - 22, pageWidth, 44, 15);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.13)";
+    ctx.fill();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.78)";
+    ctx.textAlign = "center";
+    ctx.fillText(pageText, W - sidePad - pageWidth / 2, H - bottomPad / 2 + 1);
+  }
 
   const blob = await canvasToBlob(canvas, "image/png");
   return { blob, failedItems };
@@ -820,7 +984,7 @@ function drawCardPriceLabel(ctx, opts) {
   }
 }
 
-function createInventoryImageEntry({ blob, items, gridConfig, currency, isGraded }) {
+function createInventoryImageEntry({ blob, items, gridConfig, currency, isGraded, saleSettings }) {
   const url = URL.createObjectURL(blob);
   return {
     id: `inv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -849,6 +1013,12 @@ function createInventoryImageEntry({ blob, items, gridConfig, currency, isGraded
     statusText: "",
     sourceMode: "inventory",
     isGradedSet: isGraded,
+    showCondition: saleSettings.showCondition,
+    saleTitle: saleSettings.saleTitle,
+    footerNote: saleSettings.footerNote,
+    backgroundPreset: saleSettings.backgroundPreset,
+    pageNumber: saleSettings.pageNumber,
+    pageCount: saleSettings.pageCount,
   };
 }
 
@@ -863,11 +1033,13 @@ function createImageEntry(file) {
     gridConfig: null,
     generatedImage: null,
     generatedBlob: null,
-    storyMode: false,
+    storyMode: true,
     labelColor: DEFAULT_LABEL_COLOR,
+    backgroundPreset: "midnight",
     includeSecondaryCurrency: true,
     error: null,
     statusText: "",
+    sourceMode: "photo",
   };
 }
 
@@ -888,6 +1060,12 @@ export function StorySaleGenerator() {
   const [pickerSelected, setPickerSelected] = useState(() => new Set());
   const [pickerGenerating, setPickerGenerating] = useState(false);
   const [pickerError, setPickerError] = useState(null);
+  const [pickerSaleTitle, setPickerSaleTitle] = useState("Fresh cards for sale");
+  const [pickerFooterNote, setPickerFooterNote] = useState(STORY_FOOTER_NOTE);
+  const [pickerBackground, setPickerBackground] = useState("midnight");
+  const [pickerLabelColor, setPickerLabelColor] = useState(DEFAULT_LABEL_COLOR);
+  const [pickerIncludeSecondary, setPickerIncludeSecondary] = useState(true);
+  const [pickerShowCondition, setPickerShowCondition] = useState(true);
 
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -957,7 +1135,8 @@ export function StorySaleGenerator() {
         if (
           Object.prototype.hasOwnProperty.call(updates, "generatedImage") &&
           img.generatedImage &&
-          img.generatedImage !== updates.generatedImage
+          img.generatedImage !== updates.generatedImage &&
+          img.generatedImage !== img.preview
         ) {
           URL.revokeObjectURL(img.generatedImage);
         }
@@ -999,9 +1178,14 @@ export function StorySaleGenerator() {
         return;
       }
 
-      const gridConfig = autoDetectGrid(cards.length);
+      const detectedCards = cards.slice(0, MAX_DETECTED_CARDS);
+      const hasMeasuredPositions = detectedCards.length > 0
+        && detectedCards.every((card) => sanitizeDetectedPosition(card.position));
+      const gridConfig = hasMeasuredPositions
+        ? createFreeformGrid()
+        : autoDetectGrid(detectedCards.length);
 
-      const slots = cards.slice(0, gridConfig.cols * gridConfig.rows).map((detected, i) => {
+      const slots = detectedCards.map((detected, i) => {
         const matches = matchDetectedToInventory(detected, inventoryIndex);
         const best = matches[0] || null;
         const bestMatch = best?.item || null;
@@ -1014,13 +1198,23 @@ export function StorySaleGenerator() {
           price: bestPrice,
           manualPrice: "",
           confirmed: shouldAutoConfirm(detected, best),
-          labelPosition: DEFAULT_LABEL_POSITION,
+          labelPosition: hasMeasuredPositions
+            ? getDetectedLabelPosition(detected)
+            : DEFAULT_LABEL_POSITION,
           showSearch: false,
           searchQuery: "",
         };
       });
 
-      updateImage(id, { phase: "confirm", cardSlots: slots, gridConfig });
+      updateImage(id, {
+        phase: "confirm",
+        cardSlots: slots,
+        gridConfig,
+        sourceMode: "photo",
+        error: cards.length > MAX_DETECTED_CARDS
+          ? `The first ${MAX_DETECTED_CARDS} cards were added. Split larger groups across two photos for reliable labels.`
+          : null,
+      });
     } catch (err) {
       console.error("Scan failed:", err);
       updateImage(id, {
@@ -1067,6 +1261,7 @@ export function StorySaleGenerator() {
       cardSlots: [],
       error: null,
       statusText: "Manual sticker mode",
+      sourceMode: "manual",
     });
     setManualStickerQuery("");
   }, [updateImage]);
@@ -1179,6 +1374,7 @@ export function StorySaleGenerator() {
 
   const generateFromInventory = useCallback(async () => {
     setPickerError(null);
+    setGlobalError(null);
     const isGraded = pickerMode === "graded";
     const perImage = isGraded ? GRADED_PER_IMAGE : UNGRADED_PER_IMAGE;
 
@@ -1201,16 +1397,30 @@ export function StorySaleGenerator() {
     try {
       const newEntries = [];
       const allFailed = [];
-      for (const chunk of chunks) {
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        const chunk = chunks[chunkIndex];
         const gridConfig = computeInventoryGridLayout(chunk.length, isGraded);
+        const saleSettings = {
+          saleTitle: pickerSaleTitle,
+          footerNote: pickerFooterNote,
+          backgroundPreset: pickerBackground,
+          showCondition: !isGraded && pickerShowCondition,
+          pageNumber: chunkIndex + 1,
+          pageCount: chunks.length,
+        };
         const { blob, failedItems } = await composeInventoryGridImage({
           items: chunk,
           isGraded,
           currency,
           secondaryCurrency,
-          includeSecondaryCurrency: true,
-          labelColor: DEFAULT_LABEL_COLOR,
-          showCondition: !isGraded,
+          includeSecondaryCurrency: pickerIncludeSecondary,
+          labelColor: pickerLabelColor,
+          showCondition: saleSettings.showCondition,
+          saleTitle: saleSettings.saleTitle,
+          footerNote: saleSettings.footerNote,
+          backgroundPreset: saleSettings.backgroundPreset,
+          pageNumber: saleSettings.pageNumber,
+          pageCount: saleSettings.pageCount,
         });
         newEntries.push(createInventoryImageEntry({
           blob,
@@ -1218,7 +1428,10 @@ export function StorySaleGenerator() {
           gridConfig,
           currency,
           isGraded,
+          saleSettings,
         }));
+        newEntries[newEntries.length - 1].labelColor = pickerLabelColor;
+        newEntries[newEntries.length - 1].includeSecondaryCurrency = pickerIncludeSecondary;
         allFailed.push(...failedItems);
       }
 
@@ -1243,7 +1456,20 @@ export function StorySaleGenerator() {
     } finally {
       setPickerGenerating(false);
     }
-  }, [pickerMode, pickerSelected, inventoryByMode, currency, secondaryCurrency, roundUp]);
+  }, [
+    pickerMode,
+    pickerSelected,
+    inventoryByMode,
+    currency,
+    secondaryCurrency,
+    roundUp,
+    pickerSaleTitle,
+    pickerFooterNote,
+    pickerBackground,
+    pickerLabelColor,
+    pickerIncludeSecondary,
+    pickerShowCondition,
+  ]);
 
   // ── Generate image for active entry ───────────────────────────
 
@@ -1253,6 +1479,42 @@ export function StorySaleGenerator() {
     updateImage(id, { phase: "generating", statusText: "Generating sale image..." });
 
     try {
+      if (imageEntry.sourceMode === "inventory") {
+        const items = imageEntry.cardSlots.map((slot) => {
+          const baseItem = slot.matchedItem || { name: slot.detected?.name || "Card" };
+          const price = slot.manualPrice ? Number(slot.manualPrice) : Number(slot.price);
+          return {
+            ...baseItem,
+            overridePrice: Number.isFinite(price) ? price : baseItem.overridePrice,
+            overridePriceCurrency: currency,
+          };
+        });
+        const { blob, failedItems } = await composeInventoryGridImage({
+          items,
+          isGraded: imageEntry.isGradedSet,
+          currency,
+          secondaryCurrency,
+          includeSecondaryCurrency: imageEntry.includeSecondaryCurrency,
+          labelColor: imageEntry.labelColor,
+          showCondition: imageEntry.showCondition,
+          saleTitle: imageEntry.saleTitle,
+          footerNote: imageEntry.footerNote,
+          backgroundPreset: imageEntry.backgroundPreset,
+          pageNumber: imageEntry.pageNumber,
+          pageCount: imageEntry.pageCount,
+        });
+        const objectUrl = URL.createObjectURL(blob);
+        updateImage(id, {
+          phase: "done",
+          generatedImage: objectUrl,
+          generatedBlob: blob,
+          error: failedItems.length > 0
+            ? `${failedItems.length} card image${failedItems.length === 1 ? "" : "s"} could not be loaded; a placeholder was used.`
+            : null,
+        });
+        return;
+      }
+
       const img = new window.Image();
       img.crossOrigin = "anonymous";
       await new Promise((resolve, reject) => {
@@ -1268,6 +1530,7 @@ export function StorySaleGenerator() {
           storyMode: imageEntry.storyMode,
           labelColor: imageEntry.labelColor,
           includeSecondaryCurrency: imageEntry.includeSecondaryCurrency,
+          backgroundPreset: imageEntry.backgroundPreset,
         }
       );
       const objectUrl = URL.createObjectURL(blob);
@@ -1305,15 +1568,6 @@ export function StorySaleGenerator() {
     link.href = imageEntry.generatedImage;
     link.click();
   }, []);
-
-  const handleSaveToPhotos = useCallback(async (imageEntry) => {
-    if (!imageEntry) return;
-    if (canNativeShare && imageEntry.generatedBlob) {
-      await handleShare(imageEntry);
-      return;
-    }
-    handleDownload(imageEntry);
-  }, [canNativeShare, handleDownload, handleShare]);
 
   const handleDownloadAll = useCallback(() => {
     const doneImages = images.filter((img) => img.phase === "done" && img.generatedImage);
@@ -1368,7 +1622,8 @@ export function StorySaleGenerator() {
 
   const allSlots = activeImage?.cardSlots || [];
   const allConfirmed = allSlots.length > 0 && allSlots.every((s) => s.confirmed);
-  const isManualMode = !!activeImage?.gridConfig?.freeform;
+  const isInventorySource = activeImage?.sourceMode === "inventory";
+  const isManualMode = activeImage?.sourceMode === "manual";
   const manualStickerResults = isManualMode ? filteredSearchResults(manualStickerQuery) : [];
   const previewImages = images.filter((img) =>
     ["confirm", "generating", "done"].includes(img.phase) && (img.generatedImage || img.preview)
@@ -1383,19 +1638,39 @@ export function StorySaleGenerator() {
   // ── Render ────────────────────────────────────────────────────
 
   return (
-    <div className="max-w-2xl mx-auto pb-8">
+    <div className="max-w-5xl mx-auto pb-8">
       <canvas ref={canvasRef} className="hidden" />
 
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">Story Sale Generator</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Upload a photo of cards or build a story directly from inventory
-          </p>
+      <div className="relative mb-6 overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 px-5 py-6 text-white shadow-xl sm:px-8 sm:py-8">
+        <div className="absolute -right-16 -top-20 h-64 w-64 rounded-full bg-amber-300/15 blur-3xl" />
+        <div className="absolute -bottom-24 left-1/3 h-52 w-52 rounded-full bg-emerald-400/10 blur-3xl" />
+        <div className="relative flex items-start justify-between gap-5">
+          <div className="max-w-2xl">
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-200">
+              <Sparkles className="h-3.5 w-3.5" /> Sale studio
+            </div>
+            <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Turn card photos into stories that sell.</h1>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-slate-300 sm:text-base">
+              Identify cards, match your inventory prices, place each sticker, and export a polished 1080×1920 story.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-xs font-bold text-slate-300">
+              <span className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-400" /> Up to 12 cards</span>
+              <span className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-400" /> AI sticker placement</span>
+              <span className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-400" /> Story-ready PNG</span>
+            </div>
+          </div>
+          <div className="hidden h-32 w-20 shrink-0 rotate-3 items-center justify-center rounded-[1.35rem] border-4 border-slate-700 bg-gradient-to-b from-emerald-400 to-emerald-700 shadow-2xl sm:flex">
+            <Smartphone className="h-9 w-9 text-white/90" />
+          </div>
         </div>
         {hasImages && (
-          <Button variant="outline" size="sm" onClick={resetAll}>
-            <RotateCcw className="h-4 w-4 mr-1" /> Start Over
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={resetAll}
+            className="relative mt-5 border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+          >
+            <RotateCcw className="h-4 w-4 mr-1" /> Start over
           </Button>
         )}
       </div>
@@ -1411,14 +1686,14 @@ export function StorySaleGenerator() {
       )}
 
       {/* ── Upload area (always visible) ──────────────────────── */}
-      <Card className="mb-5">
+      <Card className="mb-5 overflow-hidden border-border/80 shadow-sm">
         <CardContent className="pt-6">
-          <div className="flex items-center justify-between mb-3">
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="font-semibold">
-              {hasImages ? `Photos (${images.length})` : "Upload Photos"}
+              {hasImages ? `Sale assets (${images.length})` : "Choose a starting point"}
             </h3>
             {hasImages && (
-              <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:flex">
                 <Button
                   variant="outline"
                   size="sm"
@@ -1439,71 +1714,99 @@ export function StorySaleGenerator() {
 
           {!hasImages ? (
             <div
-              className={`relative flex flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed p-10 transition-colors ${
+              className={`relative rounded-2xl border-2 border-dashed p-4 transition-colors sm:p-6 ${
                 isDragging
                   ? "border-green-500 bg-green-50"
-                  : "border-muted-foreground/25 hover:border-green-400"
+                  : "border-muted-foreground/20 bg-muted/15"
               }`}
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDrop}
             >
-              <Image className="h-12 w-12 text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground text-center">
-                Drag &amp; drop a photo of cards, scan with your camera, or build a
-                story directly from your inventory.
-              </p>
-              <div className="flex flex-wrap gap-2 justify-center">
-                <Button variant="outline" onClick={() => cameraInputRef.current?.click()}>
-                  <Camera className="h-4 w-4 mr-2" /> Take Photo
-                </Button>
-                <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
-                  <Upload className="h-4 w-4 mr-2" /> Upload
-                </Button>
-                <Button className="bg-green-600 hover:bg-green-700" onClick={openPicker}>
-                  <LayoutGrid className="h-4 w-4 mr-2" /> From Inventory
-                </Button>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="group rounded-2xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+                >
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                    <Camera className="h-5 w-5" />
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-extrabold">Price a card photo</p>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">Best for tabletop photos like the examples: AI finds each slab and matches inventory pricing.</p>
+                    </div>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition group-hover:translate-x-1" />
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={openPicker}
+                  className="group rounded-2xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md"
+                >
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-100 text-amber-800">
+                    <LayoutGrid className="h-5 w-5" />
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-extrabold">Build from inventory</p>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">Pick cards and create branded, portrait-optimized story pages automatically.</p>
+                    </div>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition group-hover:translate-x-1" />
+                  </div>
+                </button>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-xs text-muted-foreground">
+                <span>Drop photos anywhere in this box</span>
+                <span aria-hidden="true">·</span>
+                <button type="button" onClick={() => cameraInputRef.current?.click()} className="font-bold text-emerald-700 hover:underline">Use camera</button>
+                <span aria-hidden="true">·</span>
+                <button type="button" onClick={() => fileInputRef.current?.click()} className="font-bold text-emerald-700 hover:underline">Browse files</button>
               </div>
             </div>
           ) : (
             <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
               {images.map((img) => (
-                <button
+                <div
                   key={img.id}
-                  onClick={() => setActiveId(img.id)}
                   className={`relative rounded-lg overflow-hidden border-2 transition-all aspect-square ${
                     img.id === activeId
                       ? "border-green-500 ring-2 ring-green-300"
                       : "border-transparent hover:border-green-300"
                   }`}
                 >
-                  <img
-                    src={img.generatedImage || img.preview}
-                    alt={img.phase === "done" ? "Generated sale preview" : "Card photo"}
-                    className="w-full h-full object-cover"
-                  />
-                  {img.phase === "done" && (
-                    <div className="absolute inset-0 bg-green-500/20 flex items-center justify-center">
-                      <Check className="h-5 w-5 text-white drop-shadow-md" />
-                    </div>
-                  )}
-                  {img.phase === "scanning" && (
-                    <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
-                      <Loader2 className="h-5 w-5 text-white animate-spin" />
-                    </div>
-                  )}
-                  {img.error && (
-                    <div className="absolute top-1 right-1">
-                      <AlertTriangle className="h-4 w-4 text-amber-500 drop-shadow" />
-                    </div>
-                  )}
+                  <button type="button" onClick={() => setActiveId(img.id)} className="absolute inset-0 h-full w-full">
+                    <img
+                      src={img.generatedImage || img.preview}
+                      alt={img.phase === "done" ? "Generated sale preview" : "Card photo"}
+                      className="w-full h-full object-cover"
+                    />
+                    {img.phase === "done" && (
+                      <div className="absolute inset-0 bg-green-500/20 flex items-center justify-center">
+                        <Check className="h-5 w-5 text-white drop-shadow-md" />
+                      </div>
+                    )}
+                    {img.phase === "scanning" && (
+                      <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                        <Loader2 className="h-5 w-5 text-white animate-spin" />
+                      </div>
+                    )}
+                    {img.error && (
+                      <div className="absolute top-1 right-1">
+                        <AlertTriangle className="h-4 w-4 text-amber-500 drop-shadow" />
+                      </div>
+                    )}
+                  </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
-                    className="absolute top-1 left-1 bg-black/50 text-white rounded-full p-0.5 hover:bg-black/70"
+                    type="button"
+                    aria-label="Remove sale asset"
+                    onClick={() => removeImage(img.id)}
+                    className="absolute left-1 top-1 z-10 rounded-full bg-black/60 p-1 text-white hover:bg-black/80"
                   >
                     <X className="h-3 w-3" />
                   </button>
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -1568,9 +1871,8 @@ export function StorySaleGenerator() {
                   Build from Inventory
                 </h3>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Pick cards and we'll lay them out automatically.
-                  Graded uses 2x2 grids; ungraded uses 3x3. Selections over the
-                  grid max split into multiple images.
+                  Pick cards and we&apos;ll size the grid for the largest possible cards.
+                  Larger selections automatically split into numbered story pages.
                 </p>
               </div>
               <Button variant="ghost" size="sm" onClick={closePicker}>
@@ -1612,6 +1914,87 @@ export function StorySaleGenerator() {
               </button>
             </div>
 
+            <div className="mb-4 rounded-xl border bg-muted/20 p-3">
+              <div className="mb-3 flex items-center gap-2">
+                <Palette className="h-4 w-4 text-emerald-700" />
+                <div>
+                  <p className="text-sm font-bold">Story style</p>
+                  <p className="text-[11px] text-muted-foreground">Applied to every page in this batch.</p>
+                </div>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="text-[11px] font-bold text-muted-foreground">
+                  Headline
+                  <Input
+                    value={pickerSaleTitle}
+                    maxLength={48}
+                    onChange={(event) => setPickerSaleTitle(event.target.value)}
+                    className="mt-1 h-9 bg-background text-sm text-foreground"
+                    placeholder="Fresh cards for sale"
+                  />
+                </label>
+                <label className="text-[11px] font-bold text-muted-foreground">
+                  Footer note
+                  <Input
+                    value={pickerFooterNote}
+                    maxLength={72}
+                    onChange={(event) => setPickerFooterNote(event.target.value)}
+                    className="mt-1 h-9 bg-background text-sm text-foreground"
+                    placeholder="DM to claim"
+                  />
+                </label>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="mr-1 text-[11px] font-bold text-muted-foreground">Background</span>
+                {Object.entries(STORY_BACKGROUNDS).map(([key, preset]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setPickerBackground(key)}
+                    className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-bold transition ${
+                      pickerBackground === key ? "border-emerald-500 bg-emerald-50 text-emerald-900" : "bg-background hover:border-emerald-300"
+                    }`}
+                  >
+                    <span className="h-3 w-3 rounded-full border border-white/40" style={{ background: preset.top }} />
+                    {preset.label}
+                  </button>
+                ))}
+                <label className="ml-auto flex items-center gap-2 text-[11px] font-bold text-muted-foreground">
+                  Sticker
+                  <input
+                    type="color"
+                    value={pickerLabelColor}
+                    onChange={(event) => setPickerLabelColor(event.target.value)}
+                    className="h-8 w-10 cursor-pointer rounded-lg border bg-background p-1"
+                  />
+                </label>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-4 border-t pt-3 text-xs font-medium">
+                {secondaryCurrency && (
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={pickerIncludeSecondary}
+                      onChange={(event) => setPickerIncludeSecondary(event.target.checked)}
+                      className="rounded"
+                    />
+                    Include {secondaryCurrency}
+                  </label>
+                )}
+                {pickerMode === "ungraded" && (
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={pickerShowCondition}
+                      onChange={(event) => setPickerShowCondition(event.target.checked)}
+                      className="rounded"
+                    />
+                    Show condition badges
+                  </label>
+                )}
+              </div>
+            </div>
+
             {/* Search */}
             <Input
               placeholder={`Search ${pickerMode} inventory...`}
@@ -1634,7 +2017,7 @@ export function StorySaleGenerator() {
                     })()}
                   </>
                 ) : (
-                  `Pick at least 1 card (max ${pickerMode === "graded" ? "4 per image, 2x2" : "9 per image, 3x3"})`
+                  `Pick at least 1 card (up to ${pickerMode === "graded" ? "4" : "9"} per story page)`
                 )}
               </span>
               <div className="flex items-center gap-3">
@@ -1891,7 +2274,7 @@ export function StorySaleGenerator() {
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="font-semibold">
-                      Confirm Prices ({allSlots.filter((s) => s.confirmed).length}/{allSlots.length})
+                      {isInventorySource ? "Customize Story" : "Confirm Prices"} ({allSlots.filter((s) => s.confirmed).length}/{allSlots.length})
                     </h3>
                     <p className="text-xs text-muted-foreground">
                       {currency}{secondaryCurrency ? ` + ${secondaryCurrency}` : ""}
@@ -1908,9 +2291,11 @@ export function StorySaleGenerator() {
                   <div className="rounded-lg border bg-muted/20 p-3 mb-4 space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold">Export controls</p>
+                        <p className="text-sm font-semibold">{isInventorySource ? "Story style" : "Export controls"}</p>
                         <p className="text-xs text-muted-foreground">
-                          Drag price labels on the photo, then generate.
+                          {isInventorySource
+                            ? "Update the look or prices, then regenerate a clean story."
+                            : "Drag price labels onto the right cards, then generate."}
                         </p>
                       </div>
                       <label className="flex items-center gap-2 text-xs font-medium">
@@ -1924,16 +2309,59 @@ export function StorySaleGenerator() {
                       </label>
                     </div>
 
+                    {isInventorySource && (
+                      <>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <label className="text-[11px] font-bold text-muted-foreground">
+                            Headline
+                            <Input
+                              value={activeImage.saleTitle || ""}
+                              maxLength={48}
+                              onChange={(event) => updateImage(activeImage.id, { saleTitle: event.target.value })}
+                              className="mt-1 h-9 bg-background text-sm text-foreground"
+                            />
+                          </label>
+                          <label className="text-[11px] font-bold text-muted-foreground">
+                            Footer note
+                            <Input
+                              value={activeImage.footerNote || ""}
+                              maxLength={72}
+                              onChange={(event) => updateImage(activeImage.id, { footerNote: event.target.value })}
+                              className="mt-1 h-9 bg-background text-sm text-foreground"
+                            />
+                          </label>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+                          <span className="mr-1 text-[11px] font-bold text-muted-foreground">Background</span>
+                          {Object.entries(STORY_BACKGROUNDS).map(([key, preset]) => (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => updateImage(activeImage.id, { backgroundPreset: key })}
+                              className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-bold transition ${
+                                activeImage.backgroundPreset === key ? "border-emerald-500 bg-emerald-50 text-emerald-900" : "bg-background"
+                              }`}
+                            >
+                              <span className="h-3 w-3 rounded-full border border-white/40" style={{ background: preset.top }} />
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
                     <div className="flex flex-wrap gap-3">
-                      <label className="flex items-center gap-2 text-sm cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={activeImage.storyMode}
-                          onChange={(e) => updateImage(activeImage.id, { storyMode: e.target.checked })}
-                          className="rounded"
-                        />
-                        1080x1920 story export
-                      </label>
+                      {!isInventorySource && (
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={activeImage.storyMode}
+                            onChange={(e) => updateImage(activeImage.id, { storyMode: e.target.checked })}
+                            className="rounded"
+                          />
+                          1080x1920 story export
+                        </label>
+                      )}
                       {secondaryCurrency && (
                         <label className="flex items-center gap-2 text-sm cursor-pointer">
                           <input
@@ -1945,20 +2373,33 @@ export function StorySaleGenerator() {
                           Include {secondaryCurrency}
                         </label>
                       )}
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => {
-                          allSlots.forEach((slot) => updateSlot(slot.index, { labelPosition: DEFAULT_LABEL_POSITION }));
-                        }}
-                      >
-                        Reset Labels
-                      </Button>
+                      {isInventorySource && !activeImage.isGradedSet && (
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={activeImage.showCondition}
+                            onChange={(e) => updateImage(activeImage.id, { showCondition: e.target.checked })}
+                            className="rounded"
+                          />
+                          Show condition badges
+                        </label>
+                      )}
+                      {!isInventorySource && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            allSlots.forEach((slot) => updateSlot(slot.index, { labelPosition: DEFAULT_LABEL_POSITION }));
+                          }}
+                        >
+                          Reset labels
+                        </Button>
+                      )}
                     </div>
 
-                    {activeImage.gridConfig && allSlots.length > 0 && (
+                    {!isInventorySource && activeImage.gridConfig && allSlots.length > 0 && (
                       <div
                         ref={labelPreviewRef}
                         className="relative overflow-hidden rounded-lg border bg-black/5 touch-none select-none"
@@ -2228,7 +2669,7 @@ export function StorySaleGenerator() {
                 onClick={() => generateImage(activeImage)}
               >
                 <Image className="h-4 w-4 mr-2" />
-                Generate Sale Image
+                {isInventorySource ? "Regenerate Story" : "Generate Sale Image"}
               </Button>
             </div>
           )}
@@ -2276,27 +2717,23 @@ export function StorySaleGenerator() {
                     size="lg"
                     onClick={() => handleShare(activeImage)}
                   >
-                    <Share2 className="h-4 w-4 mr-2" /> Share
+                    <Share2 className="h-4 w-4 mr-2" /> Share or save
                   </Button>
                 ) : null}
                 <Button
-                  className="flex-1 bg-green-600 hover:bg-green-700"
+                  className={`flex-1 ${canNativeShare ? "" : "bg-green-600 hover:bg-green-700"}`}
+                  variant={canNativeShare ? "outline" : "default"}
                   size="lg"
-                  onClick={() => handleSaveToPhotos(activeImage)}
+                  onClick={() => handleDownload(activeImage)}
                 >
-                  {canNativeShare ? (
-                    <Share2 className="h-4 w-4 mr-2" />
-                  ) : (
-                    <Download className="h-4 w-4 mr-2" />
-                  )}
-                  {canNativeShare ? "Save to Photos" : "Download Image"}
+                  <Download className="h-4 w-4 mr-2" /> Download PNG
                 </Button>
                 <Button
                   variant="outline"
                   size="lg"
                   onClick={() => updateImage(activeImage.id, { phase: "confirm", generatedImage: null, generatedBlob: null })}
                 >
-                  <Pencil className="h-4 w-4 mr-2" /> Edit Prices
+                  <Pencil className="h-4 w-4 mr-2" /> {isInventorySource ? "Customize" : "Edit prices"}
                 </Button>
               </div>
             </div>
