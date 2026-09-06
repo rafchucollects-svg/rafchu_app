@@ -1,3 +1,5 @@
+import { hasVendorAccess } from "@/utils/vendorAccess";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { createElement, useState, useEffect, useMemo, useDeferredValue } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
@@ -6,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { ShoppingBag, Search, MessageCircle, MapPin, Star, Package, X, TrendingUp, Mail, Store, User, Heart, ThumbsUp, Award, Sparkles, LogIn } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, computeItemMetrics } from "@/utils/cardHelpers";
-import { collection, getDocs, doc as firestoreDoc, getDoc, query, where, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, getDocs, query, where, addDoc, serverTimestamp, orderBy, limit } from "firebase/firestore";
 import {
   buildMarketplaceSearchIndex,
   DEFAULT_MARKETPLACE_RESULT_LIMIT,
@@ -15,7 +17,7 @@ import {
 } from "@/utils/marketplaceSearch";
 
 const MARKETPLACE_CACHE_TTL_MS = 5 * 60 * 1000;
-const marketplaceMemoryCache = new Map();
+
 
 /**
  * Marketplace Page (Collector Toolkit)
@@ -28,6 +30,8 @@ export function Marketplace() {
   const [vendorRecords, setVendorRecords] = useState([]);
   const [popularityMap, setPopularityMap] = useState(() => new Map());
   const [loading, setLoading] = useState(true);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [loadError, setLoadError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState("all"); // "all", "cards", "vendors"
   const [resultLimit, setResultLimit] = useState(DEFAULT_MARKETPLACE_RESULT_LIMIT);
@@ -43,128 +47,38 @@ export function Marketplace() {
     localStorage.setItem('vendorCtaDismissed', 'true');
   };
 
-  // Load marketplace data in parallel. Keep a short-lived in-memory snapshot so
-  // returning to this route is instant while fresh data loads in the background.
+  const fetchVendorPage = async cursor => {
+    const response = await httpsCallable(getFunctions(), "listMarketplace")({ cursor });
+    return response.data;
+  };
   useEffect(() => {
-    if (!db || !user) {
-      setLoading(false);
-      return;
-    }
-
+    if (!db || !user) { setVendorRecords([]); setLoading(false); return; }
     let cancelled = false;
-    const cacheKey = user.uid;
-    const cached = marketplaceMemoryCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < MARKETPLACE_CACHE_TTL_MS) {
-      setVendorRecords(cached.vendorRecords);
-      setPopularityMap(cached.popularityMap);
-      setLoading(false);
-    }
-
-    const loadVendors = async () => {
-      try {
-        if (!cached) setLoading(true);
-
-        const usersRef = collection(db, "users");
-        const wishlistsRef = collection(db, "collector_wishlists");
-        const ratingsRef = collection(db, "ratings");
-        const [activeVendorsSnapshot, legacyVendorsSnapshot, wishlistsSnapshot, ratingsSnapshot] = await Promise.all([
-          getDocs(query(usersRef, where("vendorAccess.enabled", "==", true))),
-          getDocs(query(usersRef, where("isVendor", "==", true))),
-          getDocs(wishlistsRef),
-          getDocs(ratingsRef),
-        ]);
-
-        const allWishlistItems = [];
-        wishlistsSnapshot.forEach(doc => {
-          const data = doc.data();
-          if (Array.isArray(data.items)) {
-            allWishlistItems.push(...data.items);
-          }
-        });
-        
-        // Create a popularity map: cardId/name+set+number -> count
-        const nextPopularityMap = new Map();
-        allWishlistItems.forEach(item => {
-          const key = getMarketplaceCardKey(item);
-          nextPopularityMap.set(key, (nextPopularityMap.get(key) || 0) + 1);
-        });
-
-        const ratingsByVendor = new Map();
-        ratingsSnapshot.forEach(ratingDoc => {
-          const rating = ratingDoc.data();
-          if (!rating.toUserId) return;
-          const vendorRatings = ratingsByVendor.get(rating.toUserId) || [];
-          vendorRatings.push(rating);
-          ratingsByVendor.set(rating.toUserId, vendorRatings);
-        });
-
-        const vendorDocsById = new Map();
-        activeVendorsSnapshot.docs.forEach(userDoc => vendorDocsById.set(userDoc.id, userDoc));
-        legacyVendorsSnapshot.docs.forEach(userDoc => vendorDocsById.set(userDoc.id, userDoc));
-
-        const vendorProfiles = Array.from(vendorDocsById.values()).flatMap(userDoc => {
-          const profile = userDoc.data();
-          if (profile.vendorAccess?.enabled === false) return [];
-          const hasActiveVendorAccess = profile.vendorAccess?.enabled === true && profile.vendorAccess?.status === "active";
-          const isLegacyVendor = profile.isVendor === true && profile.vendorAccess?.enabled !== false;
-          return hasActiveVendorAccess || isLegacyVendor ? [{ userDoc, profile }] : [];
-        });
-
-        const vendorResults = await Promise.allSettled(vendorProfiles.map(async ({ userDoc, profile }) => {
-          const inventoryRef = firestoreDoc(db, "collections", userDoc.id);
-          try {
-            const inventorySnap = await getDoc(inventoryRef);
-            if (!inventorySnap.exists()) return null;
-
-            const inventoryData = inventorySnap.data();
-            const allItems = Array.isArray(inventoryData.items) ? inventoryData.items : [];
-            const items = allItems.filter(item => !item.excludeFromSale);
-            if (items.length === 0) return null;
-
-            const ratingsData = ratingsByVendor.get(userDoc.id) || [];
-            const thumbsUpCount = ratingsData.filter(rating => rating.thumbsUp === true).length;
-
-            return {
-              userId: userDoc.id,
-              profile,
-              inventory: items,
-              totalCards: items.length,
-              roundUpPrices: inventoryData.roundUp || false,
-              ratingPercentage: ratingsData.length > 0
-                ? Math.round((thumbsUpCount / ratingsData.length) * 100)
-                : null,
-              totalRatings: ratingsData.length,
-            };
-          } catch (err) {
-            console.warn(`Skipping vendor ${userDoc.id}: inventory not readable`, err?.code || err);
-            return null;
-          }
-        }));
-
-        const nextVendorRecords = vendorResults.flatMap(result =>
-          result.status === "fulfilled" && result.value ? [result.value] : []
-        );
-        if (cancelled) return;
-
-        marketplaceMemoryCache.set(cacheKey, {
-          timestamp: Date.now(),
-          vendorRecords: nextVendorRecords,
-          popularityMap: nextPopularityMap,
-        });
-        setVendorRecords(nextVendorRecords);
-        setPopularityMap(nextPopularityMap);
-      } catch (error) {
-        console.error("Failed to load marketplace:", error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    loadVendors();
-    return () => {
-      cancelled = true;
-    };
+    setLoading(true);
+    setLoadError("");
+    Promise.all([
+      fetchVendorPage(null),
+      getDocs(query(collection(db, "public_wishlist_counts"), orderBy("wishlistCount", "desc"), limit(200))),
+    ]).then(([page, popularity]) => {
+      if (cancelled) return;
+      setVendorRecords(page.vendors);
+      setNextCursor(page.nextCursor);
+      setPopularityMap(new Map(popularity.docs.map(doc => [doc.data().key, doc.data().wishlistCount])));
+    }).catch(() => { if (!cancelled) setLoadError("Could not load marketplace. Please refresh to retry."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [db, user]);
+  const loadMoreVendors = async () => {
+    if (!nextCursor || loading) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      const page = await fetchVendorPage(nextCursor);
+      setVendorRecords(previous => [...new Map([...previous, ...page.vendors].map(vendor => [vendor.userId, vendor])).values()]);
+      setNextCursor(page.nextCursor);
+    } catch { setLoadError("Could not load more vendors. Please retry."); }
+    finally { setLoading(false); }
+  };
 
   const vendors = useMemo(() => {
     const wishlistKeys = new Set(wishlistItems.map(getMarketplaceCardKey));
@@ -539,7 +453,7 @@ export function Marketplace() {
       </div>
 
       {/* Vendor Toolkit Promotion - Only show if user doesn't have vendor access */}
-      {!userProfile?.vendorAccess?.enabled && !userProfile?.isVendor && !vendorCtaDismissed && (
+      {!hasVendorAccess(userProfile) && !vendorCtaDismissed && (
         <Card className="rounded-2xl shadow mb-4 border-2 border-green-200 bg-gradient-to-r from-green-50 to-emerald-50 relative">
           <button
             onClick={dismissVendorCta}
@@ -573,46 +487,6 @@ export function Marketplace() {
           </CardContent>
         </Card>
       )}
-
-      {/* Quick Access Buttons */}
-      <Card className="rounded-2xl p-4 shadow mb-4">
-        <CardContent className="p-0">
-          <div className="flex flex-wrap gap-3">
-            <Link to="/collector/collection">
-              <Button variant="outline" className="flex items-center gap-2">
-                <Package className="h-4 w-4" />
-                My Collection
-              </Button>
-            </Link>
-            <Link to="/collector/wishlist">
-              <Button variant="outline" className="flex items-center gap-2">
-                <Heart className="h-4 w-4" />
-                Wishlist
-              </Button>
-            </Link>
-            <Link to="/collector/search">
-              <Button variant="outline" className="flex items-center gap-2">
-                <Search className="h-4 w-4" />
-                Card Search
-              </Button>
-            </Link>
-            <Link to="/user/profile">
-              <Button variant="outline" className="flex items-center gap-2">
-                <User className="h-4 w-4" />
-                Profile & Settings
-              </Button>
-            </Link>
-            {userProfile?.isVendor && (
-              <Link to="/vendor/inventory">
-                <Button variant="outline" className="flex items-center gap-2">
-                  <Store className="h-4 w-4" />
-                  Vendor Toolkit
-                </Button>
-              </Link>
-            )}
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Search Bar */}
       <Card className="rounded-2xl p-4 shadow mb-4">
@@ -677,6 +551,11 @@ export function Marketplace() {
         </CardContent>
       </Card>
 
+      <div className="my-4 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+        <span>Searching {vendorRecords.length} loaded vendors.</span>
+        {nextCursor && <Button variant="outline" disabled={loading} onClick={loadMoreVendors}>{loading ? "Loading…" : "Load more vendors"}</Button>}
+        {loadError && <p role="alert" className="text-red-700">{loadError}</p>}
+      </div>
       {/* Loading */}
       {loading && (
         <Card>

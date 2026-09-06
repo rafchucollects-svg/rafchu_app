@@ -1,3 +1,4 @@
+import { hasVendorAccess as canUseVendorTools } from "@/utils/vendorAccess";
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,14 +61,7 @@ export function VendorAccessGuard({ children }) {
   // firestore.rules); the legacy `isVendor` self-serve flag no longer unlocks
   // the toolkit on its own. The owner/admin always passes.
   const subscriptionStatus = userProfile?.vendorAccess?.status || "none";
-  const hasActiveSubscription =
-    userProfile?.vendorAccess?.enabled === true && subscriptionStatus === "active";
-  const isOwnerAdmin =
-    userProfile?.isAdmin === true || ADMIN_EMAILS.includes(user.email);
-
-  if (hasActiveSubscription || isOwnerAdmin) {
-    return children;
-  }
+  if (canUseVendorTools(userProfile)) return children;
 
   // Show upgrade prompt
   return (

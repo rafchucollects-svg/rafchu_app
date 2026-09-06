@@ -3,7 +3,7 @@
  * Supports both "Balance Statement" and "Transaction History" export formats.
  */
 
-import { formatCurrency } from "./cardHelpers";
+
 
 function parseCsvLine(line) {
   const fields = [];

@@ -1,8 +1,9 @@
+const { saveBackgroundChanges } = require('./inventoryUpdates');
 const functions = require("firebase-functions/v1");
 const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
-const https = require("https");
-const https2 = require("https");
+
+
 const { parseReceipt } = require("./parseReceipt");
 const { parseCardPhoto } = require("./parseCardPhoto");
 const { fetchConditionAwarePrice } = require("./conditionAwarePricing");
@@ -87,7 +88,7 @@ async function verifyIdToken(req) {
   if (!match) return null;
   try {
     return await admin.auth().verifyIdToken(match[1]);
-  } catch (err) {
+  } catch (_err) {
     return null;
   }
 }
@@ -95,11 +96,11 @@ async function verifyIdToken(req) {
 async function isAdminUser(decoded) {
   if (!decoded) return false;
   if (decoded.admin === true) return true;
-  if (decoded.email && ADMIN_EMAILS.includes(decoded.email)) return true;
+  if (decoded.email_verified === true && decoded.email && ADMIN_EMAILS.includes(decoded.email)) return true;
   try {
     const doc = await admin.firestore().collection('admins').doc(decoded.uid).get();
     return doc.exists;
-  } catch (err) {
+  } catch (_err) {
     return false;
   }
 }
@@ -1187,38 +1188,7 @@ function generateSearchTerms(card) {
 }
 
 // Helper: Fetch market prices using existing fetchMarketPrices function
-async function fetchMarketPricesInternal(card, options = {}) {
-  try {
-    const params = new URLSearchParams({
-      name: card.name || '',
-      set: card.set || '',
-      number: card.number || '',
-    });
-    if (card.setCode) params.append('setCode', card.setCode);
-    if (card.setSeries) params.append('series', card.setSeries);
-    if (card.tcgid) params.append('tcgid', card.tcgid);
-    if (card.tcgplayerId || card.tcgPlayerId) params.append('tcgplayerId', card.tcgplayerId || card.tcgPlayerId);
-    if (card.cardmarketId || card.cardMarketId) params.append('cardmarketId', card.cardmarketId || card.cardMarketId);
-    if (options.skipPokePrice) {
-      params.append('skipPokePrice', 'true');
-    }
-    
-    // Call the existing fetchMarketPrices endpoint internally
-    const url = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchMarketPrices?${params}`;
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.warn(`Failed to fetch prices for ${card.name}:`, response.status);
-      return null;
-    }
-    
-    const data = await response.json();
-    return data.success ? data.prices : null;
-  } catch (error) {
-    console.error(`Error fetching market prices for ${card.name}:`, error);
-    return null;
-  }
-}
+
 
 // Helper: Calculate suggested price from market prices (same logic as frontend)
 function calculateSuggestedPrice(prices) {
@@ -1315,53 +1285,7 @@ async function discoverAllUniqueCards(db) {
 }
 
 // Helper: Transform API price format to frontend-expected format
-function transformPriceStructure(apiPrices) {
-  if (!apiPrices || (!apiPrices.us && !apiPrices.eu)) {
-    return null;
-  }
-  
-  const transformed = {};
-  
-  // Transform US prices (TCGPlayer) to frontend format
-  if (apiPrices.us && apiPrices.us.found && apiPrices.us.market > 0) {
-    transformed.tcgplayer = {
-      market_price: apiPrices.us.market,
-      mid_price: apiPrices.us.mid || apiPrices.us.market,
-      low_price: apiPrices.us.low || apiPrices.us.market,
-      high_price: apiPrices.us.high || apiPrices.us.market,
-      currency: apiPrices.us.currency || 'USD',
-      tcgPlayerId: apiPrices.us.tcgPlayerId || null,
-      source: apiPrices.us.source || 'TCGPlayer',
-      lastUpdated: apiPrices.us.lastUpdated || apiPrices.timestamp || new Date().toISOString(),
-    };
-  }
-  
-  // Transform EU prices (CardMarket) to frontend format
-  if (apiPrices.eu && apiPrices.eu.found && apiPrices.eu.avg > 0) {
-    transformed.cardmarket = {
-      average: apiPrices.eu.avg,
-      avg30: apiPrices.eu.avg, // Alias for 30-day average
-      lowest: apiPrices.eu.low,
-      lowest_near_mint: apiPrices.eu.low,
-      trend: apiPrices.eu.trend || apiPrices.eu.avg,
-      currency: apiPrices.eu.currency || 'EUR',
-      availableItems: apiPrices.eu.availableItems || null,
-      countryLows: apiPrices.eu.countryLows || {},
-      graded: apiPrices.eu.graded || {},
-      lastUpdated: apiPrices.eu.lastUpdated || apiPrices.timestamp || new Date().toISOString(),
-    };
-  }
 
-  if (apiPrices.eu?.ebayGraded && Object.keys(apiPrices.eu.ebayGraded).length > 0) {
-    transformed.ebay = {
-      currency: apiPrices.eu.ebayCurrency || 'USD',
-      graded: apiPrices.eu.ebayGraded,
-    };
-  }
-  
-  // Return null if no valid prices found
-  return Object.keys(transformed).length > 0 ? transformed : null;
-}
 
 function mergePriceStructures(existingPrices, freshPrices) {
   if (!existingPrices && !freshPrices) return null;
@@ -1506,32 +1430,7 @@ async function fetchJustTCGCards(query, limit = 20) {
  * @param {number} limit - Max results
  * @returns {Promise<Array>} - Array of card objects
  */
-async function fetchJustTCGCardsBySet(setId, limit = 20) {
-  try {
-    const params = new URLSearchParams({
-      game: 'pokemon-japan',
-      set: setId,
-      limit: Math.min(limit, 20).toString()
-    });
-    
-    const response = await fetch(`${JUSTTCG_API_URL}/cards?${params}`, {
-      headers: {
-        'x-api-key': getJustTcgKey()
-      }
-    });
-    
-    if (!response.ok) {
-      console.warn(`JustTCG API error: ${response.status}`);
-      return [];
-    }
-    
-    const data = await response.json();
-    return data.data || [];
-  } catch (error) {
-    console.error('JustTCG API fetch error:', error);
-    return [];
-  }
-}
+
 
 /**
  * Transform JustTCG card to our internal format
@@ -1542,14 +1441,12 @@ function transformJustTCGCard(jtcgCard) {
   // Get price from first variant (Near Mint preferred)
   let price = 0;
   let lowPrice = 0;
-  let priceHistory = [];
   let variant = null;
   
   if (jtcgCard.variants && jtcgCard.variants.length > 0) {
     // Prefer Near Mint variant for market price
     variant = jtcgCard.variants.find(v => v.condition === 'Near Mint') || jtcgCard.variants[0];
     price = variant.price || 0;
-    priceHistory = variant.priceHistory || [];
     
     // Get lowest price from all variants
     const prices = jtcgCard.variants.map(v => v.price || 0).filter(p => p > 0);
@@ -2058,10 +1955,7 @@ async function updateVendorInventory(db, userId, inventoryData, cardCacheMap) {
 
   const sanitizedItems = sanitizeForFirestore(updatedItems);
 
-  await db.collection('collections').doc(userId).set(
-    { items: sanitizedItems },
-    { merge: true }
-  );
+  await saveBackgroundChanges(db.collection('collections').doc(userId), inventoryData.items, sanitizedItems);
 }
 
 async function updateCollectorCollection(db, userId, collectionData, cardCacheMap) {
@@ -2107,10 +2001,7 @@ async function updateCollectorCollection(db, userId, collectionData, cardCacheMa
 
   const sanitizedItems = sanitizeForFirestore(updatedItems);
 
-  await db.collection('collector_collections').doc(userId).set(
-    { items: sanitizedItems },
-    { merge: true }
-  );
+  await saveBackgroundChanges(db.collection('collector_collections').doc(userId), collectionData.items, sanitizedItems);
 }
 
 async function updateAllUserCollections(db) {
@@ -2179,7 +2070,7 @@ exports.scheduledCardDatabaseUpdate = withSecrets({
 }).pubsub
   .schedule('0 2 * * *') // 2 AM UTC daily
   .timeZone('UTC')
-  .onRun(async (context) => {
+  .onRun(async () => {
     console.log('🚀 ========================================');
     console.log('🚀 Starting daily card database update...');
     console.log('🚀 ========================================');
@@ -2633,7 +2524,7 @@ exports.searchCards = withSecrets({
               const communityImage = communityImageQuery.docs[0].data();
               finalImage = communityImage.imageUrl || finalImage;
             }
-          } catch (err) {
+          } catch (_err) {
             // Silent fail for community image lookup
           }
           
@@ -3244,6 +3135,7 @@ exports.migrateTcgPocketCards = withSecrets({
     
     const data = doc.data();
     const items = data.items || [];
+    const originalItems = JSON.parse(JSON.stringify(items));
     
     // Find TCG Pocket cards
     const pocketCards = items.filter(item => {
@@ -3271,7 +3163,7 @@ exports.migrateTcgPocketCards = withSecrets({
         // Remove number suffix like "- 132/106"
         searchName = searchName.replace(/\s*-\s*\d+\/\d+$/, '').trim();
         // Remove "ex" suffix for search (will add back if needed)
-        const hasEx = searchName.toLowerCase().includes(' ex');
+
         
         console.log(`Searching for: ${searchName}`);
         
@@ -3413,10 +3305,7 @@ exports.migrateTcgPocketCards = withSecrets({
     
     // Save updated inventory
     if (!dryRun && results.migrated > 0) {
-      await db.collection('collections').doc(userId).set(
-        { items: items },
-        { merge: true }
-      );
+      await saveBackgroundChanges(db.collection('collections').doc(userId), originalItems, items);
       console.log(`Saved ${results.migrated} migrated cards`);
     }
     
@@ -3778,7 +3667,7 @@ exports.syncJapaneseCards = withSecrets({
 }).pubsub
   .schedule('0 3 * * 0') // 3 AM UTC every Sunday
   .timeZone('UTC')
-  .onRun(async (context) => {
+  .onRun(async () => {
     console.log('🇯🇵 ========================================');
     console.log('🇯🇵 Starting weekly Japanese card sync...');
     console.log('🇯🇵 ========================================');
@@ -3918,7 +3807,7 @@ exports.triggerJapaneseSync = withSecrets({
             }, { merge: true });
             
             stats.synced++;
-          } catch (err) {
+          } catch (_err) {
             stats.failed++;
           }
         }
@@ -4121,7 +4010,7 @@ exports.syncSetCatalog = withSecrets({
 }).pubsub
   .schedule('0 3 * * 0')
   .timeZone('UTC')
-  .onRun(async (context) => {
+  .onRun(async () => {
     return await syncSetCatalogCore();
   });
 
@@ -4308,4 +4197,20 @@ exports.proxyImage = functions.runWith({
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
   res.set('X-Proxied-From', parsed.hostname);
   res.status(200).send(buffer);
+});
+
+// Sanitized public read models. Clients cannot write these documents.
+const { syncPublicUser, syncWishlist, syncRating } = require('./publicData');
+for (const [name, source] of Object.entries({ syncPublicProfile: 'users', syncPublicInventory: 'collections', syncPublicCollection: 'collector_collections', syncPublicAdmin: 'admins', syncPublicVendorStats: 'public_vendor_stats' })) {
+  exports[name] = functions.runWith({ failurePolicy: true }).firestore.document(`${source}/{uid}`).onWrite((_change, context) => syncPublicUser(admin.firestore(), context.params.uid));
+}
+exports.syncPublicWishlist = functions.runWith({ failurePolicy: true }).firestore.document('collector_wishlists/{uid}').onWrite((_change, context) => syncWishlist(admin.firestore(), context.params.uid));
+exports.syncPublicRating = functions.runWith({ failurePolicy: true }).firestore.document('ratings/{ratingId}').onCreate((_snapshot, context) => syncRating(admin.firestore(), context.params.ratingId));
+
+exports.listMarketplace = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in to browse vendors.');
+  const cursor = typeof data?.cursor === 'string' ? data.cursor : null;
+  if (cursor && (cursor.includes('/') || cursor.length > 128)) throw new functions.https.HttpsError('invalid-argument', 'Invalid page cursor.');
+  const { listMarketplacePage } = require('./marketplace');
+  return listMarketplacePage(admin.firestore(), cursor);
 });

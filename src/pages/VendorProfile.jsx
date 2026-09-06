@@ -43,7 +43,7 @@ export function VendorProfile() {
         setLoading(true);
         
         // Load vendor profile
-        const userRef = doc(db, "users", vendorId);
+        const userRef = doc(db, "public_profiles", vendorId);
         const userSnap = await getDoc(userRef);
         
         if (!userSnap.exists()) {
@@ -62,7 +62,7 @@ export function VendorProfile() {
         setVendor({ id: vendorId, ...profile });
         
         // Load inventory
-        const inventoryRef = doc(db, "collections", vendorId);
+        const inventoryRef = doc(db, "public_inventories", vendorId);
         const inventorySnap = await getDoc(inventoryRef);
         
         if (inventorySnap.exists()) {

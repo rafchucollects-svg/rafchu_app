@@ -1,3 +1,5 @@
+import { saveItemChanges } from "@/utils/inventoryStore";
+import { InventoryTrash } from "@/components/InventoryTrash";
 import { useMemo, useState, useEffect, useCallback, useDeferredValue } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -106,13 +108,13 @@ export function MyInventory() {
   const [editCardNumber, setEditCardNumber] = useState("");
   
   // Filter states
-  const [filterRarity, setFilterRarity] = useState("all");
-  const [filterCondition, setFilterCondition] = useState("all");
-  const [filterSet, setFilterSet] = useState("all");
+  const [filterRarity] = useState("all");
+  const [filterCondition] = useState("all");
+  const [filterSet] = useState("all");
   const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded", "manualPrice"
   const [filterVisibility, setFilterVisibility] = useState("all"); // "all", "visible", "hidden"
   const [filterOwnership, setFilterOwnership] = useState("all"); // "all", "owned", "consigned"
-  const [showFilters, setShowFilters] = useState(false);
+
   
   // Image upload modal state
   const [imageUploadModalOpen, setImageUploadModalOpen] = useState(false);
@@ -134,7 +136,7 @@ export function MyInventory() {
       const updatedItems = (data.items || []).map(it =>
         it.entryId === entryId ? { ...it, image: newImageUrl, imageManuallySet: true } : it
       );
-      await setDoc(docRef, { ...data, items: updatedItems }, { merge: true });
+      await saveItemChanges(docRef, data.items || [], updatedItems);
       updateCollectionItem(entryId, { image: newImageUrl, imageManuallySet: true });
       console.log("[ImageUpdate] Persisted image for", entryId);
     } catch (err) {
@@ -209,15 +211,9 @@ export function MyInventory() {
   }, [collectionItems, communityImages, getImageForCard, refreshCommunityImages]);
 
   // Get unique sets and rarities for filters
-  const uniqueSets = useMemo(() => {
-    const sets = new Set(collectionItems.map(item => item.set).filter(Boolean));
-    return Array.from(sets).sort();
-  }, [collectionItems]);
 
-  const uniqueRarities = useMemo(() => {
-    const rarities = new Set(collectionItems.map(item => item.rarity).filter(Boolean));
-    return Array.from(rarities).sort();
-  }, [collectionItems]);
+
+
 
   // Defer the search term so typing in the box stays responsive even when
   // the inventory has thousands of cards. React will keep rendering the
@@ -403,7 +399,7 @@ export function MyInventory() {
   const saveInventory = async (items, metadata = {}) => {
     if (!user || !db) return;
     const ref = doc(db, "collections", user.uid);
-    await setDoc(ref, { items, ...metadata }, { merge: true });
+    await saveItemChanges(ref, collectionItems, items, metadata);
   };
 
   // Handler for roundUpPrices toggle
@@ -423,7 +419,7 @@ export function MyInventory() {
   // Delete item
   const deleteItem = async (entryId) => {
     if (!user || !db) return;
-    // Delete directly without confirmation (trash icon is confirmation enough)
+    // Deleted cards remain recoverable in Recently deleted. (trash icon is confirmation enough)
 
     try {
       const updatedItems = collectionItems.filter(item => item.entryId !== entryId);
@@ -436,17 +432,7 @@ export function MyInventory() {
   };
 
   // Update condition
-  const updateCondition = async (entryId, newCondition) => {
-    if (!user || !db) return;
-    try {
-      const updatedItems = collectionItems.map(item =>
-        item.entryId === entryId ? { ...item, condition: newCondition } : item
-      );
-      await saveInventory(updatedItems);
-    } catch (error) {
-      console.error("Failed to update condition", error);
-    }
-  };
+
 
   // Start editing condition/grade
   const startEditingCondition = (card) => {
@@ -647,7 +633,7 @@ export function MyInventory() {
   // Clear all
   const clearInventory = async () => {
     if (!user || !db) return;
-    const confirmed = await confirm("Clear entire inventory? This cannot be undone.", {
+    const confirmed = await confirm("Move your entire inventory to Recently deleted? You can restore cards there.", {
       title: "Clear inventory",
       confirmText: "Clear",
       variant: "destructive",
@@ -1171,7 +1157,7 @@ export function MyInventory() {
           : item
       );
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       triggerQuickAddFeedback(
         !currentValue ? "Card hidden from marketplace" : "Card visible in marketplace"
       );
@@ -1234,11 +1220,11 @@ export function MyInventory() {
   // Bulk delete
   const handleBulkDelete = async () => {
     if (selectedCards.size === 0) return;
-    // Delete directly without confirmation
+    // Deleted cards remain recoverable in Recently deleted.
     try {
       const updatedItems = collectionItems.filter(item => !selectedCards.has(item.entryId));
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       setSelectedCards(new Set());
       setSelectAll(false);
       triggerQuickAddFeedback(`${selectedCards.size} card(s) deleted`);
@@ -1262,7 +1248,7 @@ export function MyInventory() {
       
       const updatedItems = [...collectionItems, ...duplicatedItems];
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       setSelectedCards(new Set());
       setSelectAll(false);
       triggerQuickAddFeedback(`${duplicatedItems.length} card(s) duplicated`);
@@ -1282,7 +1268,7 @@ export function MyInventory() {
           : item
       );
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       setSelectedCards(new Set());
       setSelectAll(false);
       triggerQuickAddFeedback(
@@ -1450,7 +1436,7 @@ export function MyInventory() {
     }
     
     try {
-      const { cards, defaultTotal } = salesModal;
+      const { cards } = salesModal;
       let finalPrice = parseFloat(finalTotal);
       
       if (isNaN(finalPrice) || finalPrice <= 0) {
@@ -1651,7 +1637,7 @@ export function MyInventory() {
       const updatedItems = collectionItems.filter(item => !soldIds.has(item.entryId));
       
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       console.log("Inventory updated");
       
       setSalesModal(null);
@@ -1685,6 +1671,7 @@ export function MyInventory() {
 
   return (
     <div className="max-w-6xl mx-auto">
+      <InventoryTrash collectionName="collections" />
       <div className="mb-4 sm:mb-6 flex items-center gap-3">
         <Store className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
         <div>
@@ -2736,7 +2723,7 @@ export function MyInventory() {
                               const updatedItems = collectionItems.map(it =>
                                 it.entryId === cardDetailsModal.entryId ? { ...it, ...updates } : it
                               );
-                              await setDoc(ref, { items: updatedItems }, { merge: true });
+                              await saveItemChanges(ref, collectionItems, updatedItems);
                               triggerQuickAddFeedback("Card details updated");
                             } catch (err) {
                               console.error("Failed to save card details:", err);
@@ -3032,7 +3019,7 @@ export function MyInventory() {
                                 const updatedItems = collectionItems.map(it =>
                                   it.entryId === cardDetailsModal.entryId ? { ...it, [key]: newVal } : it
                                 );
-                                await setDoc(ref, { items: updatedItems }, { merge: true });
+                                await saveItemChanges(ref, collectionItems, updatedItems);
                               } catch (err) {
                                 console.error("Failed to save variant:", err);
                               }

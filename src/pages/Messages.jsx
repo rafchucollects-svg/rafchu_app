@@ -45,7 +45,7 @@ export function Messages() {
   const [zoomedImage, setZoomedImage] = useState(null); // For image zoom modal
   const [userRating, setUserRating] = useState(null); // Current user's rating stats
   const [otherUserRating, setOtherUserRating] = useState(null); // Other user's rating stats
-  const [hasRated, setHasRated] = useState(false); // Whether current user has rated this transaction
+  const [, setHasRated] = useState(false); // Whether current user has rated this transaction
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
@@ -71,7 +71,7 @@ export function Messages() {
         const otherUserId = data.participants.find(id => id !== user.uid);
         
         // Get other user's info
-        const otherUserRef = doc(db, "users", otherUserId);
+        const otherUserRef = doc(db, "public_profiles", otherUserId);
         const otherUserSnap = await getDoc(otherUserRef);
         const otherUser = otherUserSnap.exists() ? otherUserSnap.data() : {};
         
@@ -192,6 +192,7 @@ export function Messages() {
               const messagesRef = collection(db, "conversations", selectedConversation.id, "messages");
               await addDoc(messagesRef, {
                 type: "rating_prompt",
+                senderId: user.uid,
                 transactionId: transaction.id,
                 targetUserId: selectedConversation.otherUser.id,
                 targetUsername: selectedConversation.otherUser.username || selectedConversation.otherUser.displayName,
@@ -441,7 +442,7 @@ export function Messages() {
       const toUserId = selectedConversation.otherUser.id;
       
       // Create rating
-      await addDoc(collection(db, "ratings"), {
+      await setDoc(doc(db, "ratings", `${transactionId}_${user.uid}`), {
         transactionId,
         fromUserId: user.uid,
         toUserId,
@@ -453,6 +454,7 @@ export function Messages() {
       const messagesRef = collection(db, "conversations", selectedConversation.id, "messages");
       await addDoc(messagesRef, {
         type: "rating_thanks",
+        senderId: user.uid,
         transactionId,
         thumbsUp,
         createdAt: serverTimestamp()

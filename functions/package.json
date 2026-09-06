@@ -3,8 +3,8 @@
   "description": "Cloud Functions for Rafchu TCG",
   "version": "1.0.0",
   "scripts": {
-    "lint": "echo 'Linting skipped'",
-    "build": "echo 'Build completed'",
+    "lint": "node --check index.js && node --check publicData.js",
+    "build": "npm test",
     "test": "node --test *.test.js",
     "serve": "firebase emulators:start --only functions",
     "shell": "firebase functions:shell",

@@ -1,3 +1,4 @@
+import { CLOUD_FUNCTIONS_BASE } from "@/utils/functionEndpoint";
 import { useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,8 +7,7 @@ import { X, Search, Upload, Loader2, Check, ImageIcon, Link2 } from "lucide-reac
 import { useApp } from "@/contexts/AppContext";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
-const CLOUD_FUNCTIONS_BASE =
-  "https://us-central1-rafchu-tcg-app.cloudfunctions.net";
+
 
 // ─── Helper: fetch an image URL as a blob for re-upload ───────────────────────
 
@@ -263,7 +263,7 @@ export function CardImageReplacer({ item, onImageUpdate, onClose }) {
         await onImageUpdate(item.entryId, imageUrl.trim());
         setSaved(true);
         setTimeout(() => onClose(), 1200);
-      } catch (err) {
+      } catch (_err) {
         setUrlError("Failed to save image. Please try again.");
       }
     } finally {

@@ -1,16 +1,18 @@
+import { hasVendorAccess } from "@/utils/vendorAccess";
+import { saveItemChanges, mergeItemChanges } from "@/utils/inventoryStore";
 import { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
+import {  onAuthStateChanged } from "firebase/auth";
 import {
-  getFirestore,
+
   doc,
   onSnapshot,
   getDoc,
-  setDoc,
   collection as fsCollection,
   addDoc,
   updateDoc,
   deleteDoc,
   serverTimestamp,
+  runTransaction,
 } from "firebase/firestore";
 import { useCommunityImages } from "@/hooks/useCommunityImages";
 import { initSetCatalog } from "@/utils/searchHelpers";
@@ -168,39 +170,38 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   // Community images (shared across app)
   const communityImagesHook = useCommunityImages(db);
 
-  // Auth listener
+  // Auth and capability subscriptions reset immediately on account changes.
   useEffect(() => {
     if (!auth) return;
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    return onAuthStateChanged(auth, currentUser => {
       setUser(currentUser);
       setViewingUid(currentUser?.uid || null);
-      
-      // Check if user has completed onboarding
-      if (currentUser && db) {
-        try {
-          const userRef = doc(db, "users", currentUser.uid);
-          const userSnap = await getDoc(userRef);
-          
-          if (userSnap.exists()) {
-            const profile = userSnap.data();
-            setUserProfile(profile);
-            setNeedsOnboarding(!profile.onboardingCompleted);
-          } else {
-            setUserProfile(null);
-            setNeedsOnboarding(true);
-          }
-        } catch (error) {
-          console.error("Failed to load user profile:", error);
-          setNeedsOnboarding(true);
-        }
-      } else {
-        setUserProfile(null);
-        setNeedsOnboarding(false);
-      }
-      setAuthLoading(false);
+      setUserProfile(undefined);
+      setAuthLoading(Boolean(currentUser));
+      if (!currentUser) { setUserProfile(null); setNeedsOnboarding(false); }
     });
-    return () => unsubscribe();
-  }, [auth, db]);
+  }, [auth]);
+  useEffect(() => {
+    if (!user || !db) return;
+    let profile, adminLoaded = false, profileLoaded = false, isAdmin = false;
+    const publish = () => {
+      if (!adminLoaded || !profileLoaded) return;
+      setUserProfile(profile ? { ...profile, isAdmin } : null);
+      setNeedsOnboarding(!profile?.onboardingCompleted);
+      setAuthLoading(false);
+    };
+    const failed = () => { setAuthLoading(false); toast.error("Could not load account permissions. Refresh to retry."); };
+    const stopProfile = onSnapshot(doc(db, "users", user.uid), snapshot => { profile = snapshot.data(); profileLoaded = true; publish(); }, failed);
+    const stopAdmin = onSnapshot(doc(db, "admins", user.uid), snapshot => { isAdmin = snapshot.exists(); adminLoaded = true; publish(); }, failed);
+    return () => { stopProfile(); stopAdmin(); };
+  }, [db, user]);
+
+  useEffect(() => {
+    if (!db || !user) { setWishlistItems([]); return; }
+    return onSnapshot(doc(db, "collector_wishlists", user.uid), snapshot => {
+      setWishlistItems(snapshot.data()?.items || []);
+    }, () => toast.error("Could not load wishlist. Please retry."));
+  }, [db, user]);
 
   // Load dynamic set catalog from Firestore (non-blocking)
   useEffect(() => {
@@ -226,7 +227,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     }
     
     // Determine collection based on current path
-    const isCollectorPath = currentPath.includes('/collector/');
+    const isCollectorPath = !currentPath.includes('/vendor/');
     
     // Vendor/default uses "collections" (existing data)
     // Collector uses "collector_collections" (new/separate)
@@ -253,7 +254,10 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
           // reloads (deletes/edits key off entryId). Owner-only, guarded by
           // missingEntryIds so it runs at most once per doc and never loops.
           if (missingEntryIds && user && viewingUid === user.uid) {
-            setDoc(ref, { items }, { merge: true }).catch((err) =>
+            runTransaction(db, async transaction => {
+              const fresh = await transaction.get(ref);
+              transaction.set(ref, { items: (fresh.data()?.items || []).map(item => ({ ...item, entryId: item.entryId || crypto.randomUUID() })) }, { merge: true });
+            }).catch((err) =>
               console.error("Failed to persist entryIds", err),
             );
           }
@@ -308,7 +312,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
 
   // Load consignors registry (vendor-owned, at consignors/{uid}/entries)
   useEffect(() => {
-    if (!db || !user?.uid) {
+    if (!db || !user?.uid || !hasVendorAccess(userProfile)) {
       setConsignors([]);
       return undefined;
     }
@@ -329,7 +333,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       },
     );
     return () => unsub();
-  }, [db, user?.uid]);
+  }, [db, user?.uid, userProfile]);
 
   const addConsignor = useCallback(async ({ name, contact = "", defaultConsignorPct = 80, notes = "" } = {}) => {
     if (!user || !db) {
@@ -483,7 +487,8 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       
       // Read latest data to avoid race condition
       const ref = doc(db, collectionName, user.uid);
-      const snap = await getDoc(ref);
+      return await runTransaction(db, async transaction => {
+      const snap = await transaction.get(ref);
       const latestData = snap.exists() ? snap.data() : {};
       const latestItems = Array.isArray(latestData.items) ? latestData.items : [];
       
@@ -505,9 +510,10 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
         : [...latestItems, newItem];
       const savedItem = existingIndex >= 0 ? updatedItems[existingIndex] : newItem;
       
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      transaction.set(ref, { items: updatedItems }, { merge: true });
       // setCollectionItems will be updated by Firestore listener
       return savedItem;
+      });
     } catch (error) {
       console.error("Failed to add to collection", error);
       toast.error("Failed to add card. Please try again.");
@@ -522,14 +528,14 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   const removeFromCollection = useCallback(async (entryId) => {
     if (!user || !db) return;
     try {
-      const isCollectorPath = currentPath.includes('/collector/');
+      const isCollectorPath = !currentPath.includes('/vendor/');
       const collectionName = isCollectorPath ? "collector_collections" : "collections";
       const ref = doc(db, collectionName, user.uid);
       const snap = await getDoc(ref);
       const latestData = snap.exists() ? snap.data() : {};
       const latestItems = Array.isArray(latestData.items) ? latestData.items : [];
       const updatedItems = latestItems.filter(item => item.entryId !== entryId);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, latestItems, updatedItems);
     } catch (error) {
       console.error("Failed to remove from collection", error);
       toast.error("Failed to remove card. Please try again.");
@@ -539,7 +545,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
   const updateCollectionItem = useCallback(async (entryId, updates) => {
     if (!user || !db) return;
     try {
-      const isCollectorPath = currentPath.includes('/collector/');
+      const isCollectorPath = !currentPath.includes('/vendor/');
       const collectionName = isCollectorPath ? "collector_collections" : "collections";
       const ref = doc(db, collectionName, user.uid);
       const snap = await getDoc(ref);
@@ -548,10 +554,11 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       const updatedItems = latestItems.map(item =>
         item.entryId === entryId ? { ...item, ...updates } : item
       );
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, latestItems, updatedItems);
     } catch (error) {
       console.error("Failed to update collection item", error);
-      toast.error("Failed to update card. Please try again.");
+      toast.error(error.message || "Failed to update card. Please try again.");
+      throw error;
     }
   }, [user, db, currentPath]);
 
@@ -562,15 +569,23 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       return;
     }
     
-    setCashData(newCashData);
-    
     try {
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { cashData: newCashData }, { merge: true });
+      await runTransaction(db, async transaction => {
+        const latest = (await transaction.get(ref)).data()?.cashData || {};
+        const updated = {};
+        for (const kind of ["physical", "digital", "pending"]) {
+          const keyed = rows => (rows || []).map(row => ({ ...row, entryId: row.id }));
+          updated[kind] = mergeItemChanges(keyed(cashData[kind]), keyed(newCashData[kind]), keyed(latest[kind]))
+            .map(({ entryId: _entryId, ...row }) => row);
+        }
+        transaction.set(ref, { cashData: updated }, { merge: true });
+      });
+      toast.success("Cash balances saved");
     } catch (error) {
-      console.error("Failed to save cash data:", error);
+      toast.error(error.message || "Cash balances could not be saved. Please retry.");
     }
-  }, [user, db]);
+  }, [user, db, cashData]);
 
   const addToWishlist = useCallback(async (card) => {
     if (!user || !db) {
@@ -593,8 +608,7 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     
     try {
       // Collector uses "collector_wishlists"
-      const isCollectorPath = currentPath.includes('/collector/');
-      const collectionName = isCollectorPath ? "collector_wishlists" : "wishlists";
+      const collectionName = "collector_wishlists";
       
       console.log('[addToWishlist] Saving to:', collectionName, 'for path:', currentPath);
       
@@ -602,12 +616,14 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
       // lagging listener) don't overwrite each other by spreading a stale
       // in-memory array.
       const ref = doc(db, collectionName, user.uid);
-      const snap = await getDoc(ref);
+      return await runTransaction(db, async transaction => {
+      const snap = await transaction.get(ref);
       const existing = snap.exists() && Array.isArray(snap.data().items) ? snap.data().items : [];
       const updatedItems = [...existing, newItem];
       
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      transaction.set(ref, { items: updatedItems }, { merge: true });
       return newItem;
+      });
     } catch (error) {
       console.error("Failed to add to wishlist", error);
       toast.error("Failed to add card. Please try again.");
@@ -619,16 +635,17 @@ export const AppProvider = ({ children, auth, db, authHandlers }) => {
     if (!user || !db) return;
     
     try {
-      const isCollectorPath = currentPath.includes('/collector/');
-      const collectionName = isCollectorPath ? "collector_wishlists" : "wishlists";
+      const collectionName = "collector_wishlists";
       
       // Read fresh so we filter against the authoritative stored list.
       const ref = doc(db, collectionName, user.uid);
-      const snap = await getDoc(ref);
+      return await runTransaction(db, async transaction => {
+      const snap = await transaction.get(ref);
       const existing = snap.exists() && Array.isArray(snap.data().items) ? snap.data().items : [];
       const updatedItems = existing.filter(item => item.entryId !== entryId);
       
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      transaction.set(ref, { items: updatedItems }, { merge: true });
+      });
     } catch (error) {
       console.error("Failed to remove from wishlist", error);
       toast.error("Failed to remove card. Please try again.");

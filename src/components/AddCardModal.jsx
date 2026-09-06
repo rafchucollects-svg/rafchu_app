@@ -73,8 +73,8 @@ export function AddCardModal({
   const [fetchingMarketPrices, setFetchingMarketPrices] = useState(false);
   
   // Variant fields (v2.1)
-  const [variant, setVariant] = useState('');
-  const [variantOther, setVariantOther] = useState('');
+  const [variant] = useState('');
+  const [variantOther] = useState('');
   
   // Graded fields (v2.1)
   const [isGraded, setIsGraded] = useState(false);
@@ -93,7 +93,7 @@ export function AddCardModal({
     if (!card) return 'English';
     
     const setName = (card.set || '').toLowerCase();
-    const cardName = (card.name || '').toLowerCase();
+
     
     // Japanese set indicators
     const japaneseSetKeywords = [
@@ -208,47 +208,11 @@ export function AddCardModal({
     }
     
     // Show only available grades
-    return GRADES.filter(g => availableGrades.hasOwnProperty(g));
+    return GRADES.filter(g => Object.prototype.hasOwnProperty.call(availableGrades, g));
   }, [availableGrades]);
 
   // Smart variant filtering based on card set
-  const relevantVariants = useMemo(() => {
-    if (!card) return VARIANT_OPTIONS;
-    
-    const setName = (card.set || '').toLowerCase();
-    const filtered = [{ value: '', label: 'Not Specified' }];
-    
-    // Classic sets (1st Edition, Shadowless, Unlimited)
-    const classicSets = ['base set', 'jungle', 'fossil', 'base set 2', 'team rocket', 'gym heroes', 'gym challenge'];
-    const isClassic = classicSets.some(s => setName.includes(s));
-    
-    if (isClassic) {
-      if (setName.includes('base set') && !setName.includes('base set 2')) {
-        filtered.push({ value: '1st-edition', label: '1st Edition' });
-        filtered.push({ value: 'shadowless', label: 'Shadowless' });
-        filtered.push({ value: 'unlimited', label: 'Unlimited' });
-      } else {
-        filtered.push({ value: '1st-edition', label: '1st Edition' });
-        filtered.push({ value: 'unlimited', label: 'Unlimited' });
-      }
-    }
-    
-    // Reverse holo (available for most modern sets)
-    const hasReverseHolo = !classicSets.some(s => setName.includes(s));
-    if (hasReverseHolo) {
-      filtered.push({ value: 'regular-holo', label: 'Regular Holo' });
-      filtered.push({ value: 'reverse-holo', label: 'Reverse Holo' });
-    }
-    
-    // Special variants (available for all)
-    filtered.push({ value: 'promo', label: 'Promo' });
-    filtered.push({ value: 'full-art', label: 'Full Art' });
-    filtered.push({ value: 'secret-rare', label: 'Secret Rare' });
-    filtered.push({ value: 'alt-art', label: 'Alternate Art' });
-    filtered.push({ value: 'other', label: 'Other' });
-    
-    return filtered;
-  }, [card]);
+
 
   // Resolve graded price from verified provider data when grade is selected.
   useEffect(() => {
@@ -551,44 +515,7 @@ export function AddCardModal({
               </div>
             )}
 
-            {/* Variant (v2.1) - TEMPORARILY HIDDEN
-                Issue: Variants should only show if the API has actual variant data for this specific card.
-                Currently showing variants that don't exist (e.g., Reverse Holo for promos).
-                TODO: Implement proper variant detection from API or remove entirely.
-                Users should search for the exact card variant they want in search results.
-            */}
-            {false && (
-              <div>
-                <label className="block text-sm font-semibold mb-2">
-                  <Star className="inline h-4 w-4 mr-1" />
-                  Variant (Optional) <span className="text-blue-600 text-xs">NEW in v2.1</span>
-                </label>
-                <select
-                  value={variant}
-                  onChange={(e) => setVariant(e.target.value)}
-                  className="w-full p-2 border rounded-md"
-                >
-                  {relevantVariants.map(opt => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                {variant === 'other' && (
-                  <Input
-                    placeholder="Specify variant"
-                    value={variantOther}
-                    onChange={(e) => setVariantOther(e.target.value)}
-                    className="mt-2"
-                  />
-                )}
-                {variant && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    ℹ️ Variants can have different values (e.g., 1st Edition vs Unlimited)
-                  </p>
-                )}
-              </div>
-            )}
+
 
             {/* Graded Card Support (v2.1) - PSA, BGS, CGC, SGC */}
             <div className="border-t pt-4">

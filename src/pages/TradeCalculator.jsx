@@ -1069,7 +1069,7 @@ export function TradeCalculator() {
       await navigator.clipboard.writeText(text);
       setSplitCopied(prev => ({ ...prev, [pct]: 'text' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
-    } catch (err) {
+    } catch (_err) {
       toast.error("Failed to copy to clipboard");
     }
   };
@@ -1099,7 +1099,7 @@ export function TradeCalculator() {
       const docRef = await addDoc(collection(db, "tradeOffers"), tradeOffer);
       const link = `${window.location.origin}/trade-offer?id=${docRef.id}`;
       setSplitShareLinks(prev => ({ ...prev, [pct]: link }));
-    } catch (err) {
+    } catch (_err) {
       toast.error("Failed to generate share link.");
     } finally {
       setSplitShareLoading(prev => ({ ...prev, [pct]: false }));
@@ -1111,7 +1111,7 @@ export function TradeCalculator() {
       await navigator.clipboard.writeText(splitShareLinks[pct]);
       setSplitCopied(prev => ({ ...prev, [pct]: 'link' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
-    } catch (err) {
+    } catch (_err) {
       toast.error("Failed to copy to clipboard");
     }
   };

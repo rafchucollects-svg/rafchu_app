@@ -1,3 +1,4 @@
+import { CLOUD_FUNCTIONS_BASE } from "@/utils/functionEndpoint";
 import { useState, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ import {
   toPerUnitCardLadderAmount,
 } from "@/utils/cardLadderImport";
 
-const CLOUD_FUNCTIONS_BASE = "https://us-central1-rafchu-tcg-app.cloudfunctions.net";
+
 
 // ─── CSV Parsing ──────────────────────────────────────────────────────────────
 

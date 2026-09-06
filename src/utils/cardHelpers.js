@@ -658,7 +658,7 @@ export function normalizeApiCard(raw) {
   const ebayPrices = d?.prices?.ebay || {};
   const cardMarketId = d?.cardmarket_id ?? d?.cardMarketId;
   const tcgplayerId = d?.tcgplayer_id ?? d?.tcgplayerId ?? d?.tcgPlayerId;
-  const fetchedAt = d?.pricesLastUpdated ?? d?.lastUpdated ?? new Date().toISOString();
+  const fetchedAt = d?.pricesLastUpdated ?? d?.lastUpdated ?? null;
 
   return {
     id: d?.id ?? d?.card_id,

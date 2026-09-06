@@ -1,3 +1,4 @@
+import { CLOUD_FUNCTIONS_BASE } from "@/utils/functionEndpoint";
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -575,7 +576,7 @@ function addCacheBuster(src) {
 // (CORS-locked host, 404, etc). The proxy fetches the image server-side
 // — where CORS rules don't apply — and re-serves it with our own
 // permissive CORS headers so canvas export works.
-const IMAGE_PROXY_BASE = "https://us-central1-rafchu-tcg-app.cloudfunctions.net/proxyImage";
+const IMAGE_PROXY_BASE = `${CLOUD_FUNCTIONS_BASE}/proxyImage`;
 
 function buildProxyUrl(src) {
   return `${IMAGE_PROXY_BASE}?url=${encodeURIComponent(src)}`;

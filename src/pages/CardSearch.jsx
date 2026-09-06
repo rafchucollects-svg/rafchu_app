@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
@@ -600,13 +601,14 @@ export function CardSearch({ mode = "collector" }) {
     }
   }, [activeCard, isGradedFilter, gradedPrice, user, selectedGradingCompany, selectedGrade, defaultCondition, addToCollection, triggerQuickAddFeedback, isVendor, mode]);
 
-  const handleAddToWishlist = useCallback(() => {
+  const handleAddToWishlist = useCallback(async () => {
     if (!activeCard) return;
     if (!user) {
       toast.error("Please sign in to add cards to your wishlist");
       return;
     }
-    addToWishlist(activeCard);
+    const saved = await addToWishlist(activeCard);
+    if (!saved) return;
     triggerQuickAddFeedback(`${activeCard.name} added to wishlist`);
   }, [activeCard, user, addToWishlist, triggerQuickAddFeedback]);
 
@@ -823,7 +825,7 @@ export function CardSearch({ mode = "collector" }) {
             </div>
           </div>
           
-          {loading && <div className="text-sm opacity-70">Searching…</div>}
+          {(loading || query.trim() !== debounced.trim()) && <div role="status" className="text-sm opacity-70">Searching…</div>}
           {error && (
             <div className="text-sm text-red-500">{error}</div>
           )}
@@ -859,7 +861,7 @@ export function CardSearch({ mode = "collector" }) {
           )}
           
           {/* Can't find card? Add manually option */}
-          {query.trim().length >= 3 && !loading && (
+          {query.trim().length >= 3 && query.trim() === debounced.trim() && !loading && (
             <Motion.div
               initial={{ opacity: 0, y: 5 }}
               animate={{ opacity: 1, y: 0 }}

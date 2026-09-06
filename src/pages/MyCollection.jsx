@@ -1,3 +1,5 @@
+import { saveItemChanges } from "@/utils/inventoryStore";
+import { InventoryTrash } from "@/components/InventoryTrash";
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
@@ -6,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Package, Trash2, ArrowRight, X, Download, Share2, Filter, Edit2, Check, Upload, Award, LogIn, Search, TrendingUp } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
-import { formatCurrency, saveCollection, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, exportToCSV, getConditionColorClass, convertCurrency } from "@/utils/cardHelpers";
+import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, exportToCSV, getConditionColorClass, convertCurrency } from "@/utils/cardHelpers";
 import { ConditionSelect, PriceRow } from "@/components/CardComponents";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
@@ -36,7 +38,6 @@ export function MyCollection() {
     setCollectionSortDir,
     marketSource,
     currency,
-    setTradeItems,
     triggerQuickAddFeedback,
     communityImages,
     getImageForCard,
@@ -80,7 +81,7 @@ export function MyCollection() {
   const handleImageUpdate = useCallback(async (entryId, newImageUrl) => {
     try {
       // Persist to Firestore FIRST — if this fails, nothing changes
-      const { setDoc, doc, getDoc } = await import("firebase/firestore");
+      const {  doc, getDoc } = await import("firebase/firestore");
       const ref = doc(db, "collector_collections", user.uid);
       const snap = await getDoc(ref);
       const data = snap.exists() ? snap.data() : {};
@@ -91,7 +92,7 @@ export function MyCollection() {
           ? { ...it, image: newImageUrl, imageManuallySet: true }
           : it
       );
-      await setDoc(ref, { ...data, items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, data.items || [], updatedItems);
       // Write succeeded — update local state for immediate feedback
       // (onSnapshot listener will also pick this up)
       updateCollectionItem(entryId, { image: newImageUrl, imageManuallySet: true });
@@ -304,9 +305,9 @@ export function MyCollection() {
   // Helper to save to Firestore (collector uses different collection)
   const saveCollectorCollection = async (items) => {
     if (!user || !db) return;
-    const { setDoc, doc } = await import("firebase/firestore");
+    const {  doc } = await import("firebase/firestore");
     const ref = doc(db, "collector_collections", user.uid);
-    await setDoc(ref, { items }, { merge: true });
+    await saveItemChanges(ref, collectionItems, items);
   };
 
   // Delete item
@@ -369,7 +370,7 @@ export function MyCollection() {
   // Clear all
   const clearCollection = async () => {
     if (!user || !db) return;
-    const confirmed = await confirm("Clear entire collection? This cannot be undone.", {
+    const confirmed = await confirm("Move your entire collection to Recently deleted? You can restore cards there.", {
       title: "Clear collection",
       confirmText: "Clear",
       variant: "destructive",
@@ -444,7 +445,7 @@ export function MyCollection() {
         return item;
       });
 
-      await saveCollection(db, user.uid, updatedItems);
+      await saveCollectorCollection(updatedItems);
       
       // Update modal with new values
       if (selectedCardDetails.isGraded) {
@@ -482,28 +483,14 @@ export function MyCollection() {
   }, []);
 
   // Move selected cards to trade binder
-  const moveToTradeBinder = useCallback(() => {
-    if (selectedForTrade.size === 0) {
-      toast.info("Please select cards to move to trade binder");
-      return;
-    }
-
-    const selectedItems = collectionItems.filter(item => selectedForTrade.has(item.entryId));
-    
-    // Add to trade items
-    const newTradeItems = selectedItems.map(item => ({
-      entryId: crypto.randomUUID(),
-      cardId: item.cardId,
-      card: item,
-      addedAt: Date.now(),
-      condition: item.condition || "NM",
-      quantity: item.quantity || 1,
-    }));
-
-    setTradeItems(prev => [...prev, ...newTradeItems]);
-    setSelectedForTrade(new Set());
-    triggerQuickAddFeedback(`${selectedItems.length} card(s) added to trade binder`);
-  }, [selectedForTrade, collectionItems, setTradeItems, triggerQuickAddFeedback]);
+  const moveToTradeBinder = async () => {
+    if (!selectedForTrade.size) return;
+    try {
+      await saveCollectorCollection(collectionItems.map(item => selectedForTrade.has(item.entryId) ? { ...item, forTrade: true } : item));
+      setSelectedForTrade(new Set());
+      triggerQuickAddFeedback("Cards added to trade binder");
+    } catch (error) { toast.error(error.message); }
+  };
 
   // Export collection to CSV
   const exportCollectionToCSV = useCallback(() => {
@@ -591,6 +578,7 @@ export function MyCollection() {
 
   return (
     <div className="mx-auto max-w-7xl">
+      <InventoryTrash collectionName="collector_collections" />
       <div className="mb-6">
         <p className="mb-2 text-[10px] font-extrabold uppercase tracking-[0.16em] text-amber-700">Your cards</p>
         <h1 className="text-3xl font-extrabold tracking-[-0.05em] sm:text-4xl">My collection</h1>
@@ -740,7 +728,7 @@ export function MyCollection() {
                 onClick={moveToTradeBinder}
               >
                 <ArrowRight className="mr-1 h-4 w-4" />
-                Move to Trade Binder
+                Add to Trade Binder
               </Button>
             </div>
           )}
@@ -941,7 +929,7 @@ export function MyCollection() {
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1">
                       <div className="text-sm font-bold text-primary">
-                        {formatPrice(totalValue)}
+                        {cardValue > 0 || item.manualPrice === 0 ? formatPrice(totalValue) : "Unavailable"}
                       </div>
                       {item.manualPrice != null && (
                         <button

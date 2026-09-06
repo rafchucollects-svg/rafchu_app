@@ -1,5 +1,6 @@
+import { hasVendorAccess as canUseVendorTools } from "@/utils/vendorAccess";
 import { createElement, useEffect, useState } from "react";
-import { Link, Outlet, useLocation } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   ChevronRight,
   FileText,
@@ -33,6 +34,7 @@ const collectorNavigation = [
   { label: "My collection", to: "/collector/collection", icon: Package },
   { label: "Wishlist", to: "/collector/wishlist", icon: Heart },
   { label: "Marketplace", to: "/collector/marketplace", icon: ShoppingBag },
+  { label: "Trade binder", to: "/collector/trade-binder", icon: Package },
   { label: "Insights", to: "/collector/insights", icon: TrendingUp },
 ];
 
@@ -73,9 +75,20 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
     currency,
   } = useApp();
   const location = useLocation();
+  const navigate = useNavigate();
+  const [saveState, setSaveState] = useState("");
+  useEffect(() => {
+    const update = event => setSaveState(event.detail);
+    const shortcut = event => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); navigate("/search"); }
+    };
+    window.addEventListener("rafchu:save-state", update);
+    window.addEventListener("keydown", shortcut);
+    return () => { window.removeEventListener("rafchu:save-state", update); window.removeEventListener("keydown", shortcut); };
+  }, [navigate]);
 
   const isSharedView = location.search.includes("inventory=") || location.search.includes("collection=");
-  const hasVendorAccess = Boolean(userProfile?.vendorAccess?.enabled || userProfile?.isVendor);
+  const hasVendorAccess = canUseVendorTools(userProfile);
 
   useEffect(() => {
     if (setCurrentPath) setCurrentPath(location.pathname);
@@ -141,10 +154,15 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
       {renderNavGroup("Collect", collectorNavigation)}
       {renderNavGroup("Connect", connectionNavigation)}
 
-      {hasVendorAccess && renderNavGroup("Vendor tools", vendorNavigation)}
+      {hasVendorAccess && <>
+        {renderNavGroup("Inventory", vendorNavigation.slice(0,3))}
+        {renderNavGroup("Deals", vendorNavigation.slice(3,6))}
+        {renderNavGroup("Accounting", vendorNavigation.slice(6,8))}
+        {renderNavGroup("Share", vendorNavigation.slice(8))}
+      </>}
 
       {!hasVendorAccess && !vendorCtaDismissed && (
-        <div className="relative mx-1 mt-5 overflow-hidden rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
+        <div className="relative mx-1 mt-5 shrink-0 overflow-hidden rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
           <button
             onClick={dismissVendorCta}
             className="absolute right-2 top-2 rounded-lg p-1 text-emerald-800 hover:bg-emerald-100"
@@ -180,9 +198,9 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
           </button>
           <div className="flex items-center gap-2 text-xs font-extrabold">
             <Sparkles className="h-4 w-4 text-amber-700" />
-            More cards are coming
+            Find your exact printing
           </div>
-          <p className="mt-2 pr-2 text-[11px] leading-4 text-amber-800">Japanese, graded, and sealed products are next.</p>
+          <p className="mt-2 pr-2 text-[11px] leading-4 text-amber-800">Search English and Japanese cards. Check the set, number, condition, and grade before adding.</p>
         </div>
       )}
     </>
@@ -236,6 +254,7 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
           ) : <div />}
 
           <div className="flex items-center justify-end gap-2">
+            <span role="status" aria-live="polite" className="text-xs text-muted-foreground">{saveState}</span>
             {!isSharedView && (
               <div className="hidden rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground xl:block">
                 {(marketSource === "tcg" ? "TCGPlayer" : "CardMarket")} · {currency || "USD"}
@@ -292,12 +311,17 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
 
       {!isSharedView && (
         <nav className="fixed inset-x-3 bottom-3 z-20 grid h-16 grid-cols-4 rounded-2xl border border-border bg-card/95 p-1.5 shadow-2xl backdrop-blur-xl lg:hidden" aria-label="Primary navigation">
-          {[
+          {(hasVendorAccess ? [
+            { label: "Inventory", to: "/vendor/inventory", icon: Store },
+            { label: "Deals", to: "/vendor/deal-calculator", icon: Sparkles },
+            { label: "Search", to: "/search", icon: Search },
+            { label: "Expenses", to: "/vendor/expenses", icon: Receipt },
+          ] : [
             { label: "Search", to: "/search", icon: Search },
             { label: "Collection", to: "/collector/collection", icon: Package },
             { label: "Market", to: "/collector/marketplace", icon: ShoppingBag },
             { label: "Messages", to: "/collector/messages", icon: MessageCircle },
-          ].map(({ label, to, icon }) => (
+          ]).map(({ label, to, icon }) => (
             <Link
               key={to}
               to={to}

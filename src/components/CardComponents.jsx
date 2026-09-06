@@ -48,7 +48,11 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
     tcgCurrency,
   );
   const diff = tcgPrice - (cmAvg || cmLowest || 0);
-  const fmt = formatPrice || ((value) => formatCurrency(value ?? 0, currency));
+  const fmt = value => Number.isFinite(Number(value)) && Number(value) > 0
+    ? (formatPrice ? formatPrice(value) : formatCurrency(value, currency)) : "Unavailable";
+  const rawUpdatedAt = card?.pricesLastUpdated;
+  const updatedAt = rawUpdatedAt?.toDate ? rawUpdatedAt.toDate() : rawUpdatedAt ? new Date(rawUpdatedAt) : null;
+  const updateLabel = updatedAt && Number.isFinite(updatedAt.getTime()) ? updatedAt.toLocaleDateString() : "Unknown";
   const conditionBadgeEl = (
     <span
       className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${conditionClasses(condition, "badge")}`}
@@ -80,7 +84,7 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
             <div>
               <div className="font-semibold">Market values</div>
               <div className="text-xs text-muted-foreground">
-                Ungraded · {condition} · normalized to {currency}
+                Ungraded · {condition} · {currency} · Updated: {updateLabel}
               </div>
             </div>
             {marketValues.availableBenchmarkCount < 2 && (
@@ -89,6 +93,7 @@ export function CardPrices({ card, condition = "NM", formatPrice, mode = "vendor
               </span>
             )}
           </div>
+          <p className="mb-3 text-xs text-muted-foreground">Asking prices are listings, not completed sales. Condition-adjusted values are estimates; confirm the set, number, and printing before making a deal.</p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {marketValueCards.map((item) => (
               <div key={item.key} className={`rounded-xl border p-3 ${item.className}`}>
@@ -244,6 +249,7 @@ export function SuggestionItem({
             size="sm"
             variant="ghost"
             className="h-7 px-1.5"
+            aria-label={`Add ${item.name} to wishlist`}
             onClick={() => onQuickAddWishlist(item)}
           >
             <Heart className="h-3.5 w-3.5 text-pink-600" />

@@ -1,3 +1,5 @@
+import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
+import { getStorage, connectStorageEmulator } from "firebase/storage";
 import { useMemo, useEffect } from "react";
 import { initializeApp } from "firebase/app";
 import {
@@ -57,6 +59,8 @@ try {
     try {
       connectAuthEmulator(auth, "http://localhost:9099", { disableWarnings: true });
       connectFirestoreEmulator(db, "localhost", 8080);
+      connectFunctionsEmulator(getFunctions(app), "localhost", 5001);
+      connectStorageEmulator(getStorage(app), "localhost", 9199);
       useEmulators = true;
       console.log("🔧 Connected to Firebase Emulators");
       console.log("   Auth: http://localhost:9099");

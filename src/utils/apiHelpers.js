@@ -19,10 +19,7 @@ import {
 } from './searchHelpers';
 
 // Cloud Functions base URL (secure - no API keys exposed)
-const CLOUD_FUNCTIONS_BASE = (
-  import.meta.env.VITE_CLOUD_FUNCTIONS_BASE ||
-  'https://us-central1-rafchu-tcg-app.cloudfunctions.net'
-).replace(/\/$/, '');
+import { CLOUD_FUNCTIONS_BASE } from "./functionEndpoint";
 const CONDITION_PRICING_BETA_BASE = (
   import.meta.env.VITE_CONDITION_PRICING_BETA_BASE || CLOUD_FUNCTIONS_BASE
 ).replace(/\/$/, '');
@@ -1072,7 +1069,7 @@ export async function apiSearchCardsCached(query, options = {}) {
   }
   
   try {
-    const searchUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/searchCards?q=${encodeURIComponent(query)}`;
+    const searchUrl = `${CLOUD_FUNCTIONS_BASE}/searchCards?q=${encodeURIComponent(query)}`;
     const response = await fetch(searchUrl, { signal });
     
     if (!response.ok) {

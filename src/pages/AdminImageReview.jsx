@@ -12,7 +12,6 @@ import {
   doc, 
   updateDoc,
   setDoc,
-  deleteDoc,
   serverTimestamp 
 } from 'firebase/firestore';
 import { getStorage, ref, deleteObject, getDownloadURL, uploadBytes } from 'firebase/storage';

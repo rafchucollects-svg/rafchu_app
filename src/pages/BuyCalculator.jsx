@@ -1,3 +1,4 @@
+import { saveItemChanges } from "@/utils/inventoryStore";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,7 @@ import { ConditionSelect } from "@/components/CardComponents";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, cloneForFirestore, prepareTransactionRecord, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { mergePendingDeals, readPendingDealsFromStorage } from "@/utils/pendingDealHelpers";
-import { collection, addDoc, doc, setDoc, onSnapshot, writeBatch } from "firebase/firestore";
+import { collection, addDoc, doc, setDoc, onSnapshot } from "firebase/firestore";
 import { toast } from "@/components/ui/Toaster";
 
 /**
@@ -587,21 +588,18 @@ export function BuyCalculator() {
 
       const updatedInventory = [...collectionItems, ...inventoryItems];
       const inventoryRef = doc(db, "collections", user.uid);
-      const batch = writeBatch(db);
-      batch.set(savedTransaction.ref, savedTransaction.payload);
-      batch.set(inventoryRef, { items: cloneForFirestore(updatedInventory) }, { merge: true });
+
 
       let remainingPendingDeals = pendingDeals;
       if (loadedFromPendingDealId != null) {
         remainingPendingDeals = pendingDeals.filter((deal) => deal.id !== loadedFromPendingDealId);
-        batch.set(doc(db, "pendingDeals", user.uid), {
-          buyDeals: cloneForFirestore(remainingPendingDeals),
-          pendingDealsUpdatedAt: Date.now(),
-        }, { merge: true });
+
       }
 
-      await batch.commit();
-      setCollectionItems(updatedInventory);
+      const savedInventory = await saveItemChanges(inventoryRef, collectionItems, cloneForFirestore(updatedInventory), {}, {
+        ...savedTransaction, pendingId: loadedFromPendingDealId,
+      });
+      setCollectionItems(savedInventory);
       if (loadedFromPendingDealId != null) {
         setPendingDeals(remainingPendingDeals);
         setLoadedFromPendingDealId(null);
@@ -844,21 +842,18 @@ export function BuyCalculator() {
       ];
 
       const inventoryRef = doc(db, "collections", user.uid);
-      const batch = writeBatch(db);
-      batch.set(savedTransaction.ref, savedTransaction.payload);
-      batch.set(inventoryRef, { items: cloneForFirestore(updatedInventory) }, { merge: true });
+
 
       let remainingPendingDeals = pendingDeals;
       if (loadedFromPendingDealId != null) {
         remainingPendingDeals = pendingDeals.filter((deal) => deal.id !== loadedFromPendingDealId);
-        batch.set(doc(db, "pendingDeals", user.uid), {
-          buyDeals: cloneForFirestore(remainingPendingDeals),
-          pendingDealsUpdatedAt: Date.now(),
-        }, { merge: true });
+
       }
 
-      await batch.commit();
-      setCollectionItems(updatedInventory);
+      const savedInventory = await saveItemChanges(inventoryRef, collectionItems, cloneForFirestore(updatedInventory), {}, {
+        ...savedTransaction, pendingId: loadedFromPendingDealId,
+      });
+      setCollectionItems(savedInventory);
       if (loadedFromPendingDealId != null) {
         setPendingDeals(remainingPendingDeals);
         setLoadedFromPendingDealId(null);

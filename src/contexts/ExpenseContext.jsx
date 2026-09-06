@@ -1,3 +1,4 @@
+import { hasVendorAccess } from "@/utils/vendorAccess";
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import {
   doc,
@@ -14,7 +15,7 @@ import {
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { useApp } from "./AppContext";
-import { fetchECBRates, convertToEUR } from "@/utils/taxHelpers";
+import { fetchECBRates, convertToEUR } from "@/utils/taxCore";
 
 const ExpenseContext = createContext(null);
 
@@ -25,7 +26,8 @@ export const useExpenses = () => {
 };
 
 export function ExpenseProvider({ children }) {
-  const { user, db } = useApp();
+  const { user, db, userProfile } = useApp();
+  const vendorEnabled = hasVendorAccess(userProfile);
 
   const [expenses, setExpenses] = useState([]);
   const [shows, setShows] = useState([]);
@@ -36,7 +38,7 @@ export function ExpenseProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user || !db) {
+    if (!user || !db || !vendorEnabled) {
       setExpenses([]);
       setShows([]);
       setPayouts([]);
@@ -50,7 +52,7 @@ export function ExpenseProvider({ children }) {
     loadPayouts();
     loadRecurring();
     loadCorrections();
-  }, [user, db]);
+  }, [user, db, vendorEnabled]);
 
   useEffect(() => {
     fetchECBRates().then(setEcbRates);

@@ -1,3 +1,4 @@
+import { hasVendorAccess as canUseVendorTools } from "@/utils/vendorAccess";
 import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ export function UnifiedCardSearch() {
   const [mode, setMode] = useState("collector");
   
   // Check if user has vendor access
-  const hasVendorAccess = userProfile?.vendorAccess?.enabled || userProfile?.isVendor;
+  const hasVendorAccess = canUseVendorTools(userProfile);
   
   // If user doesn't have vendor access, always use collector mode
   useEffect(() => {

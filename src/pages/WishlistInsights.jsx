@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Heart, TrendingUp, Users } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { formatCurrency } from "@/utils/cardHelpers";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, query, orderBy, limit } from "firebase/firestore";
 
 /**
  * Wishlist Insights Page (Vendor Toolkit)
@@ -25,42 +25,8 @@ export function WishlistInsights() {
     const loadWishlistInsights = async () => {
       try {
         setLoading(true);
-        const wishlistsRef = collection(db, "collector_wishlists");
-        const snapshot = await getDocs(wishlistsRef);
-        
-        // Aggregate wishlisted cards
-        const cardCounts = {};
-        
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          const items = Array.isArray(data.items) ? data.items : [];
-          
-          items.forEach((item) => {
-            const key = `${item.cardId || item.name}-${item.set}-${item.number}`;
-            
-            if (!cardCounts[key]) {
-              cardCounts[key] = {
-                ...item,
-                wishlistCount: 0,
-                users: new Set(),
-              };
-            }
-            
-            cardCounts[key].wishlistCount++;
-            cardCounts[key].users.add(doc.id);
-          });
-        });
-        
-        // Convert to array and sort by wishlist count
-        const sortedData = Object.values(cardCounts)
-          .map(item => ({
-            ...item,
-            userCount: item.users.size,
-            users: undefined, // Remove Set object before setting state
-          }))
-          .sort((a, b) => b.wishlistCount - a.wishlistCount)
-          .slice(0, 50); // Top 50 most wishlisted cards
-        
+        const snapshot = await getDocs(query(collection(db, "public_wishlist_counts"), orderBy("wishlistCount", "desc"), limit(50)));
+        const sortedData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setWishlistData(sortedData);
       } catch (error) {
         console.error("Failed to load wishlist insights:", error);
@@ -103,7 +69,7 @@ export function WishlistInsights() {
         <CardContent className="p-0">
           <div className="flex flex-wrap gap-6">
             <div>
-              <div className="text-sm text-muted-foreground">Total Wishlisted Cards</div>
+              <div className="text-sm text-muted-foreground">Top Wishlisted Cards</div>
               <div className="text-2xl font-bold">{wishlistData.length}</div>
             </div>
             <div>

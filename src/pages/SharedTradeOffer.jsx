@@ -74,16 +74,7 @@ export function SharedTradeOffer() {
   };
 
   // Format price with both offer currency + secondary currency in parentheses
-  const formatDual = (value, originalCurrency) => {
-    const primary = formatPrice(value, originalCurrency);
-    const offerSecondary = offer?.secondaryCurrency;
-    if (!offerSecondary) return primary;
 
-    // Convert value from originalCurrency to the secondary currency
-    const src = originalCurrency || currency;
-    const converted = convertCurrency(value, offerSecondary, src);
-    return `${primary} (${formatCurrency(converted, offerSecondary)})`;
-  };
 
   // Calculate total in viewer's currency
   const getTotalInViewerCurrency = () => {
