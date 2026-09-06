@@ -1,13 +1,14 @@
+
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Store, Plus, LayoutGrid, Upload, ExternalLink, PlusCircle, Search } from "lucide-react";
+import { Store, Plus, LayoutGrid, Upload, PlusCircle, Search } from "lucide-react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "@/contexts/AppContext";
 import {
-  apiSearchCardsHybrid,
+  apiSearchCardsCached,
   apiFetchCardDetails,
   apiFetchMarketPrices,
   apiFetchGradedPrices,
@@ -30,6 +31,12 @@ import { GradedCardModal } from "@/components/GradedCardModal";
 import { ManualCardModal } from "@/components/ManualCardEntry";
 import { formatCurrency, convertCurrency } from "@/utils/cardHelpers";
 import { toast } from "@/components/ui/Toaster";
+import {
+  getCanonicalCardId,
+  mergeBestData,
+} from "@/utils/searchHelpers";
+
+const SEARCH_LANGUAGE_SCOPE = 'all';
 
 /**
  * Card Search Page
@@ -81,9 +88,10 @@ export function CardSearch({ mode = "collector" }) {
     refreshCommunityImages,
   } = useApp();
 
-  const debounced = useDebouncedValue(query, 500);
+  const debounced = useDebouncedValue(query, 250);
   const lastFetchedCanonicalRef = useRef("");
   const activeSearchTokenRef = useRef(null);
+  const activeCardSelectionRef = useRef(null);
   
   // v2.1: Add Card Modal state
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -120,6 +128,14 @@ export function CardSearch({ mode = "collector" }) {
   // Community image state
   const [communityImage, setCommunityImage] = useState(null);
 
+  // The detail panel belongs to the exact query that produced it.
+  useEffect(() => {
+    activeCardSelectionRef.current = null;
+    setActiveCard(null);
+    setGradedPrice(null);
+    setCommunityImage(null);
+  }, [query, isGradedFilter, setActiveCard]);
+
   // Format price with rounding and selected currency
   const formatPrice = useCallback(
     (value) => formatCurrency(roundUpPrices ? Math.ceil(Number(value ?? 0)) : Number(value ?? 0), currency),
@@ -140,13 +156,28 @@ export function CardSearch({ mode = "collector" }) {
     [suggestions],
   );
 
+  const prepareSearchResults = useCallback((results, searchValue) => {
+    const prepared = formatSearchResults(
+      results,
+      searchValue,
+      MAX_SUGGESTION_LIMIT,
+    );
+
+    if (!communityImages) return prepared;
+    return prepared.map(card => {
+      if (card.image) return card;
+      const image = getImageForCard(card);
+      return image ? { ...card, image } : card;
+    });
+  }, [communityImages, getImageForCard]);
+
   // Search effect
   useEffect(() => {
     const abortController = new AbortController();
     setError("");
     setShowAllSuggestions(false);
 
-    const canonical = canonicalizeQuery(debounced);
+    const canonical = canonicalizeQuery(debounced, SEARCH_LANGUAGE_SCOPE);
     if (!canonical) {
       setSuggestions([]);
       setLoading(false);
@@ -157,11 +188,7 @@ export function CardSearch({ mode = "collector" }) {
 
     const cached = getSearchCacheEntry(canonical);
     if (cached?.results?.length) {
-      const prepared = formatSearchResults(
-        cached.results,
-        debounced,
-        MAX_SUGGESTION_LIMIT,
-      );
+      const prepared = prepareSearchResults(cached.results, debounced);
       setSuggestions(prepared);
       lastFetchedCanonicalRef.current = canonical;
       if (!cached.expired) {
@@ -179,17 +206,14 @@ export function CardSearch({ mode = "collector" }) {
 
     (async () => {
       try {
-        const results = await apiSearchCardsHybrid(debounced, {
-          useCache: false,
+        const results = await apiSearchCardsCached(debounced, {
+          useCache: true,
           maxResults: MAX_SUGGESTION_LIMIT,
           signal: abortController.signal,
+          languageScope: SEARCH_LANGUAGE_SCOPE,
         });
         if (abortController.signal.aborted || activeSearchTokenRef.current !== token) return;
-        const prepared = formatSearchResults(
-          results,
-          debounced,
-          MAX_SUGGESTION_LIMIT,
-        );
+        const prepared = prepareSearchResults(results, debounced);
         
         // Apply community images - lazy load only if needed
         let enrichedResults = prepared;
@@ -205,14 +229,6 @@ export function CardSearch({ mode = "collector" }) {
                 }
                 return card;
               }));
-            });
-          } else if (communityImages) {
-            enrichedResults = prepared.map(card => {
-              if (!card.image) {
-                const image = getImageForCard(card);
-                if (image) return { ...card, image };
-              }
-              return card;
             });
           }
         }
@@ -233,11 +249,23 @@ export function CardSearch({ mode = "collector" }) {
     })();
 
     return () => abortController.abort();
-  }, [debounced, setError, setShowAllSuggestions, setSuggestions, setLoading]);
+  }, [
+    communityImages,
+    debounced,
+    getImageForCard,
+    prepareSearchResults,
+    refreshCommunityImages,
+    setError,
+    setLoading,
+    setShowAllSuggestions,
+    setSuggestions,
+  ]);
 
   // Pick card handler
   const pickCard = async (item) => {
     if (!item) return;
+    const selectionKey = item.entryId || getCanonicalCardId(item);
+    activeCardSelectionRef.current = selectionKey;
     setActiveCard(item);
     
     // Reset graded pricing and community image when selecting a new card
@@ -277,34 +305,31 @@ export function CardSearch({ mode = "collector" }) {
         image: item.image || communityImage
       };
       
-      if (full) {
-        Object.assign(enrichedCard, full);
-      }
+      const mergedCard = full ? mergeBestData(enrichedCard, full) : enrichedCard;
       
       // Restore preserved identity fields if they were overwritten or empty
-      if (preservedData.name) enrichedCard.name = preservedData.name;
-      if (preservedData.set) enrichedCard.set = preservedData.set;
-      if (preservedData.number) enrichedCard.number = preservedData.number;
-      if (preservedData.rarity) enrichedCard.rarity = preservedData.rarity;
-      if (preservedData.image && !enrichedCard.image) {
-        enrichedCard.image = preservedData.image;
+      if (preservedData.name) mergedCard.name = preservedData.name;
+      if (preservedData.set) mergedCard.set = preservedData.set;
+      if (preservedData.number) mergedCard.number = preservedData.number;
+      if (preservedData.rarity) mergedCard.rarity = preservedData.rarity;
+      if (preservedData.image && !mergedCard.image) {
+        mergedCard.image = preservedData.image;
       }
       
       // Add market prices if available (only if not in graded mode)
       if (!isGradedFilter && marketPrices) {
-        enrichCardWithMarketPrices(enrichedCard, marketPrices);
+        enrichCardWithMarketPrices(mergedCard, marketPrices);
       }
+
+      if (activeCardSelectionRef.current !== selectionKey) return;
       
       setActiveCard((current) => {
-        if (!current) return enrichedCard;
-        const currentKey =
-          current.entryId || current.id || current.slug || current.name;
-        const incomingKey =
-          item.entryId || item.id || item.slug || item.name;
-        if (currentKey && incomingKey && currentKey !== incomingKey) {
+        if (!current) return mergedCard;
+        const currentKey = current.entryId || getCanonicalCardId(current);
+        if (currentKey && selectionKey && currentKey !== selectionKey) {
           return current;
         }
-        return enrichedCard;
+        return mergedCard;
       });
     } catch (err) {
       console.error("Failed to fetch card details", err);
@@ -354,7 +379,7 @@ export function CardSearch({ mode = "collector" }) {
     
     // Regular ungraded card - fetch prices if not already available
     let cardWithPrices = card;
-    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket && !card.prices.pricecharting)) {
+    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket)) {
       try {
         const marketPrices = await apiFetchMarketPrices(card);
         if (marketPrices) {
@@ -404,7 +429,7 @@ export function CardSearch({ mode = "collector" }) {
     
     // Fetch prices if not already available
     let cardWithPrices = card;
-    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket && !card.prices.pricecharting)) {
+    if (!card.prices || (!card.prices.tcgplayer && !card.prices.cardmarket)) {
       try {
         const marketPrices = await apiFetchMarketPrices(card);
         if (marketPrices) {
@@ -543,7 +568,11 @@ export function CardSearch({ mode = "collector" }) {
     // If in graded mode with a price, add directly with graded info
     if (isGradedFilter && gradedPrice?.success && gradedPrice?.graded?.price > 0) {
       // Store graded price in USD (will be converted on display)
-      const priceInUSD = gradedPrice.graded.price;
+      const priceInUSD = convertCurrency(
+        gradedPrice.graded.price,
+        'USD',
+        gradedPrice.graded.currency || 'USD',
+      );
       
       const newItem = await addToCollection(activeCard, {
         condition: 'NM',
@@ -572,13 +601,14 @@ export function CardSearch({ mode = "collector" }) {
     }
   }, [activeCard, isGradedFilter, gradedPrice, user, selectedGradingCompany, selectedGrade, defaultCondition, addToCollection, triggerQuickAddFeedback, isVendor, mode]);
 
-  const handleAddToWishlist = useCallback(() => {
+  const handleAddToWishlist = useCallback(async () => {
     if (!activeCard) return;
     if (!user) {
       toast.error("Please sign in to add cards to your wishlist");
       return;
     }
-    addToWishlist(activeCard);
+    const saved = await addToWishlist(activeCard);
+    if (!saved) return;
     triggerQuickAddFeedback(`${activeCard.name} added to wishlist`);
   }, [activeCard, user, addToWishlist, triggerQuickAddFeedback]);
 
@@ -597,7 +627,11 @@ export function CardSearch({ mode = "collector" }) {
         return;
       }
       
-      const priceInUSD = gradedPrice.graded.price;
+      const priceInUSD = convertCurrency(
+        gradedPrice.graded.price,
+        'USD',
+        gradedPrice.graded.currency || 'USD',
+      );
       
       setBuyItems(prev => [...prev, {
         entryId: crypto.randomUUID(),
@@ -622,7 +656,7 @@ export function CardSearch({ mode = "collector" }) {
     } else {
       handleQuickAddBuy(activeCard);
     }
-  }, [activeCard, isGradedFilter, gradedPrice, selectedGradingCompany, selectedGrade, currency, buyItems, setBuyItems, triggerQuickAddFeedback, handleQuickAddBuy]);
+  }, [activeCard, isGradedFilter, gradedPrice, selectedGradingCompany, selectedGrade, buyItems, setBuyItems, triggerQuickAddFeedback, handleQuickAddBuy]);
   
   // Handler for graded modal submission
   const handleGradedModalSubmit = useCallback(async ({ card, gradingCompany, grade, isGraded }) => {
@@ -632,7 +666,11 @@ export function CardSearch({ mode = "collector" }) {
       try {
         const priceData = await apiFetchGradedPrices(card, gradingCompany, grade);
         if (priceData?.success && priceData?.graded?.price > 0) {
-          gradedPriceUSD = priceData.graded.price;
+          gradedPriceUSD = convertCurrency(
+            priceData.graded.price,
+            'USD',
+            priceData.graded.currency || 'USD',
+          );
         }
       } catch (error) {
         console.error('Failed to fetch graded price:', error);
@@ -781,9 +819,13 @@ export function CardSearch({ mode = "collector" }) {
             >
               {isGradedFilter ? "✓ Graded Only" : "Ungraded"}
             </Button>
+            <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-3 py-1.5">
+              <span className="text-xs font-bold text-muted-foreground">Cards</span>
+              <span className="text-sm font-semibold">English + Japanese</span>
+            </div>
           </div>
           
-          {loading && <div className="text-sm opacity-70">Searching…</div>}
+          {(loading || query.trim() !== debounced.trim()) && <div role="status" className="text-sm opacity-70">Searching…</div>}
           {error && (
             <div className="text-sm text-red-500">{error}</div>
           )}
@@ -791,9 +833,9 @@ export function CardSearch({ mode = "collector" }) {
           {/* Suggestions */}
           {visibleSuggestions.length > 0 && (
             <div className="divide-y rounded-xl border">
-              {visibleSuggestions.map((s) => (
+              {visibleSuggestions.map((s, index) => (
                 <SuggestionItem
-                  key={`${s.id}-${s.slug}`}
+                  key={`${s.canonicalId || getCanonicalCardId(s)}-${index}`}
                   item={s}
                   onPick={pickCard}
                   onQuickAddCollection={handleQuickAddCollection}
@@ -819,7 +861,7 @@ export function CardSearch({ mode = "collector" }) {
           )}
           
           {/* Can't find card? Add manually option */}
-          {query.trim().length >= 3 && !loading && (
+          {query.trim().length >= 3 && query.trim() === debounced.trim() && !loading && (
             <Motion.div
               initial={{ opacity: 0, y: 5 }}
               animate={{ opacity: 1, y: 0 }}
@@ -952,27 +994,26 @@ export function CardSearch({ mode = "collector" }) {
                           <CardContent className="p-0">
                             <div className="mb-2 flex items-center justify-between">
                               <span className="font-semibold text-purple-700">
-                                PriceCharting - {selectedGradingCompany} {selectedGrade} ({currency || 'USD'})
+                                {gradedPrice.graded.source || 'Verified graded market'} — {selectedGradingCompany} {selectedGrade} ({currency || 'USD'})
                               </span>
-                              {gradedPrice.card?.priceChartingId && (
-                                <a
-                                  href={`https://www.pricecharting.com/game/pokemon-cards?q=${encodeURIComponent(activeCard.name)}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 underline"
-                                >
-                                  View <ExternalLink className="h-3 w-3" />
-                                </a>
-                              )}
                             </div>
                             <div className="space-y-2">
                               <div className="flex justify-between items-center">
                                 <span className="text-sm">Graded Price</span>
-                                <span className="font-medium">{formatPrice(convertCurrency(gradedPrice.graded.price, currency || 'USD'))}</span>
+                                <span className="font-medium">{formatPrice(convertCurrency(
+                                  gradedPrice.graded.price,
+                                  currency || 'USD',
+                                  gradedPrice.graded.currency || 'USD',
+                                ))}</span>
                               </div>
                               {gradedPrice.graded.label && (
                                 <p className="text-xs text-purple-600 mt-2 pt-2 border-t border-purple-200">
                                   {gradedPrice.graded.label}
+                                </p>
+                              )}
+                              {gradedPrice.graded.sampleSize && (
+                                <p className="text-xs text-purple-600">
+                                  Based on {gradedPrice.graded.sampleSize} recent sold listings
                                 </p>
                               )}
                             </div>

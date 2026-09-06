@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Calculator, ShoppingCart, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { CardPhotoScanner } from "@/components/CardPhotoScanner";
+import { TransactionDetailsFields } from "@/components/TransactionDetailsFields";
+import { createEmptyTransactionDetails } from "@/utils/transactionHelpers";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
@@ -50,6 +52,7 @@ export function TradeCalculator() {
   const [tradeCurrency, setTradeCurrency] = useState(currency); // Currency for trade input
   const [cashAmount, setCashAmount] = useState(""); // Cash amount in trade
   const [cashDirection, setCashDirection] = useState("in"); // "in" = receiving cash, "out" = paying cash
+  const [transactionDetails, setTransactionDetails] = useState(() => createEmptyTransactionDetails("trade"));
   
   // Share trade offer state
   const [showShareModal, setShowShareModal] = useState(false);
@@ -206,9 +209,9 @@ export function TradeCalculator() {
         const src = item.manualPriceCurrency || 'USD';
         marketPrice = convertCurrency(parseFloat(item.manualPrice), currency, src);
       } else {
-        const tcg = computeTcgPrice(item, item.condition);
-        const cmAvg = getCardmarketAvg(item, item.condition) || 0;
-        const cmLow = getCardmarketLowest(item, item.condition) || 0;
+        const tcg = computeTcgPrice(item, item.condition, currency);
+        const cmAvg = getCardmarketAvg(item, item.condition, currency) || 0;
+        const cmLow = getCardmarketLowest(item, item.condition, currency) || 0;
         const valid = [tcg, cmAvg, cmLow].filter(p => p > 0);
         marketPrice = valid.length > 0 ? Math.min(...valid) : 0;
       }
@@ -256,19 +259,14 @@ export function TradeCalculator() {
     }
     
     // For ungraded cards, use market prices
-    const tcg = computeTcgPrice(item, item.condition) * pct;
-    const cmAvg = (getCardmarketAvg(item, item.condition) || 0) * pct;
-    const cmLowest = (getCardmarketLowest(item, item.condition) || 0) * pct;
+    const tcg = computeTcgPrice(item, item.condition, currency) * pct;
+    const cmAvg = (getCardmarketAvg(item, item.condition, currency) || 0) * pct;
+    const cmLowest = (getCardmarketLowest(item, item.condition, currency) || 0) * pct;
     
-    // Check for PriceCharting fallback if other prices are 0
     let suggested = 0;
     if (tcg > 0 || cmAvg > 0 || cmLowest > 0) {
       const validPrices = [tcg, cmAvg, cmLowest].filter(p => p > 0);
       suggested = validPrices.length > 0 ? Math.min(...validPrices) : 0;
-    } else if (item.prices?.pricecharting) {
-      // Use PriceCharting fallback (in USD, need to convert)
-      const pcPrice = convertCurrency(parseFloat(item.prices.pricecharting), currency, 'USD');
-      suggested = pcPrice * pct;
     }
     
     const finalValue = item.overrideValue ?? suggested;
@@ -403,9 +401,9 @@ export function TradeCalculator() {
         } else if (item.isManualEntry && item.manualPrice) {
           unitPrice = convertCurrency(item.manualPrice, currency, item.manualPriceCurrency || 'USD');
         } else {
-          const tcgFull = computeTcgPrice(item, item.condition) || 0;
-          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
-          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const tcgFull = computeTcgPrice(item, item.condition, currency) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition, currency) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition, currency) || 0;
           const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
           unitPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }
@@ -425,34 +423,39 @@ export function TradeCalculator() {
         };
       });
 
-      let totalCost = selectedTotals.finalValue;
+      const totalCost = selectedTotals.finalValue;
       const inputCurrency = tradeCurrency;
-      if (inputCurrency !== currency) {
-        totalCost = convertCurrency(totalCost, currency, inputCurrency);
-      }
+      const originalTotalCost = inputCurrency !== currency
+        ? convertCurrency(totalCost, inputCurrency, currency)
+        : totalCost;
 
       const totalMarketValue = itemsIn.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
       const transactionData = {
+        ...transactionDetails,
         type: "buy",
         totalValue: totalCost,
+        originalTotal: originalTotalCost,
+        originalCurrency: inputCurrency,
         itemsIn,
         itemsOut: [],
         valueGained: totalMarketValue - totalCost,
         notes: `Purchase completed from trade calculator: ${selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s)`,
         currency,
+        source: "trade_calculator_buy",
       };
 
       if (inputCurrency && inputCurrency !== currency) {
         transactionData.inputCurrency = inputCurrency;
       }
 
-      await recordTransaction(db, user.uid, transactionData);
+      const savedTransaction = await recordTransaction(db, user.uid, transactionData);
 
       const inventoryItems = [];
-      selectedItems.forEach(item => {
+      selectedItems.forEach((item, itemIndex) => {
         const qty = item.quantity || 1;
         const values = calculateItemValue(item);
-        const perUnitBuyPrice = values.finalValue || 0;
+        const persistedLine = savedTransaction?.payload?.itemsIn?.[itemIndex];
+        const perUnitBuyPrice = persistedLine?.unitCost ?? values.finalValue ?? 0;
         for (let i = 0; i < qty; i++) {
           const inventoryItem = {
             entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -468,6 +471,14 @@ export function TradeCalculator() {
             addedAt: Date.now(),
             buyPrice: perUnitBuyPrice,
             acquiredVia: "buy",
+            acquisitionTransactionId: savedTransaction?.id || null,
+            taxAcquisition: {
+              marginSchemeEligibility: transactionDetails.marginSchemeEligibility || "unreviewed",
+              counterpartyType: transactionDetails.counterpartyType || "unknown",
+              documentNumber: transactionDetails.documentNumber || "",
+              recordedCost: perUnitBuyPrice,
+              currency,
+            },
           };
 
           if (item.isManualEntry) {
@@ -536,9 +547,9 @@ export function TradeCalculator() {
           marketSuggested = convertCurrency(item.gradedPrice, currency);
         } else {
           // Calculate market suggested price (100%, not trade percentage)
-          const tcgFull = computeTcgPrice(item, item.condition) || 0;
-          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
-          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const tcgFull = computeTcgPrice(item, item.condition, currency) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition, currency) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition, currency) || 0;
           const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
           marketSuggested = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }
@@ -636,28 +647,36 @@ export function TradeCalculator() {
       }
 
       // Convert totalValue if needed
-      let totalValue = selectedTotals.finalValue;
+      const totalValue = selectedTotals.finalValue;
       const inputCurrency = tradeCurrency;
-      if (inputCurrency !== currency) {
-        console.log(`Converting trade value from ${inputCurrency} to ${currency}: ${totalValue}`);
-        totalValue = convertCurrency(totalValue, currency, inputCurrency);
-        console.log(`Converted trade value: ${totalValue}`);
-      }
+      const originalTotal = inputCurrency !== currency
+        ? convertCurrency(totalValue, inputCurrency, currency)
+        : totalValue;
       
       const transactionData = {
+        ...transactionDetails,
         type: "trade",
         totalValue: totalValue,
+        originalTotal,
+        originalCurrency: inputCurrency,
         itemsIn,
         itemsOut,
         valueGained,
         notes: `Trade: ${itemsOut.length} card(s) out, ${itemsIn.length} card(s) in${cashValue > 0 ? `, ${cashDirection === 'in' ? 'received' : 'paid'} ${formatCurrency(cashValue, tradeCurrency)} cash` : ''}`,
-        currency
+        currency,
+        source: "trade_calculator",
       };
       
       // Add cash information if present
       if (cashValue > 0) {
         transactionData.cashAmount = cashInPrimaryCurrency;
         transactionData.cashDirection = cashDirection;
+        transactionData.cashCurrency = currency;
+        transactionData.cashOriginalAmount = cashValue;
+        transactionData.cashOriginalCurrency = tradeCurrency;
+        transactionData.cashFxRateToPrimary = cashInPrimaryCurrency / cashValue;
+        transactionData.cashFxPrimaryCurrency = currency;
+        transactionData.cashFxCapturedAt = Date.now();
       }
       
       // Only add inputCurrency if it's different from primary currency
@@ -665,10 +684,12 @@ export function TradeCalculator() {
         transactionData.inputCurrency = inputCurrency;
       }
       
-      await recordTransaction(db, user.uid, transactionData);
+      const savedTransaction = await recordTransaction(db, user.uid, transactionData);
 
       // Add incoming cards to inventory
       const inventoryItems = selectedItems.map((item, idx) => {
+        const persistedLine = savedTransaction?.payload?.itemsIn?.[idx];
+        const acquisitionValue = persistedLine?.marketUnitPrice ?? persistedLine?.unitPrice ?? itemsIn[idx]?.unitPrice ?? 0;
         const inventoryItem = {
           entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           id: item.id || item.baseId || "",
@@ -681,8 +702,17 @@ export function TradeCalculator() {
           quantity: 1,
           prices: item.prices || {},
           addedAt: Date.now(),
-          buyPrice: itemsIn[idx]?.unitPrice || 0,
+          buyPrice: acquisitionValue,
           acquiredVia: "trade",
+          acquisitionTransactionId: savedTransaction?.id || null,
+          taxAcquisition: {
+            marginSchemeEligibility: transactionDetails.marginSchemeEligibility || "unreviewed",
+            counterpartyType: transactionDetails.counterpartyType || "unknown",
+            documentNumber: transactionDetails.documentNumber || "",
+            valuation: acquisitionValue,
+            valuationMethod: "recorded_fair_market_value",
+            currency,
+          },
         };
         
         // Preserve manual entry information
@@ -1039,7 +1069,7 @@ export function TradeCalculator() {
       await navigator.clipboard.writeText(text);
       setSplitCopied(prev => ({ ...prev, [pct]: 'text' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
-    } catch (err) {
+    } catch (_err) {
       toast.error("Failed to copy to clipboard");
     }
   };
@@ -1069,7 +1099,7 @@ export function TradeCalculator() {
       const docRef = await addDoc(collection(db, "tradeOffers"), tradeOffer);
       const link = `${window.location.origin}/trade-offer?id=${docRef.id}`;
       setSplitShareLinks(prev => ({ ...prev, [pct]: link }));
-    } catch (err) {
+    } catch (_err) {
       toast.error("Failed to generate share link.");
     } finally {
       setSplitShareLoading(prev => ({ ...prev, [pct]: false }));
@@ -1081,7 +1111,7 @@ export function TradeCalculator() {
       await navigator.clipboard.writeText(splitShareLinks[pct]);
       setSplitCopied(prev => ({ ...prev, [pct]: 'link' }));
       setTimeout(() => setSplitCopied(prev => ({ ...prev, [pct]: null })), 2000);
-    } catch (err) {
+    } catch (_err) {
       toast.error("Failed to copy to clipboard");
     }
   };
@@ -1298,6 +1328,14 @@ export function TradeCalculator() {
       {tradeItems.length > 0 && (
         <Card className="rounded-2xl p-4 shadow mb-4">
           <CardContent className="p-0">
+            {selectedIds.size > 0 && (
+              <TransactionDetailsFields
+                value={transactionDetails}
+                onChange={setTransactionDetails}
+                type="trade"
+              />
+            )}
+
             <div className="flex flex-wrap gap-3">
               <Button
                 size="sm"

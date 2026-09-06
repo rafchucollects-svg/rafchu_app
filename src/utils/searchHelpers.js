@@ -784,7 +784,7 @@ export function filterByRelevance(results, query) {
         
         // Match with word boundaries (handles "24/203", "024", etc.)
         // Split by common separators and check if any part matches
-        const cardParts = cardNum.split(/[\/\-_\s]+/);
+        const cardParts = cardNum.split(/[/_\s-]+/);
         if (cardParts.some(part => part === queryNum || normalizeCardNumber(part) === normalizeCardNumber(queryNum))) {
           return true;
         }
@@ -839,25 +839,18 @@ export function filterByRelevance(results, query) {
   const matchesSet = (card) => {
     if (setWords.length === 0) return true;
     const setLower = normalizeApostrophes((card.set || '').toLowerCase());
+    const setPhrase = setWords.join(' ');
+    if (setPhrase === 'classic collection' && setLower.includes('celebrations')) return true;
     
     // For each setWord, check if the card's set matches it OR any of its parent/related sets
-    return setWords.some(setWord => {
+    return setWords.every(setWord => {
       const expansions = SET_FILTER_EXPANSIONS[setWord] || [setWord];
       return expansions.some(term => setLower.includes(term));
     });
   };
   
   // First pass: Apply ALL filters including set words
-  let filtered = results.filter(card => applyCoreFilters(card) && matchesSet(card));
-  
-  // FALLBACK: If set filtering removed ALL results, try without set filter
-  // This handles cases like "mewtwo destined" where "destined" isn't a real set
-  if (filtered.length === 0 && setWords.length > 0 && results.length > 0) {
-    // Set words matched no cards - fall back to name-only search
-    filtered = results.filter(card => applyCoreFilters(card));
-  }
-  
-  return filtered;
+  return results.filter(card => applyCoreFilters(card) && matchesSet(card));
 }
 
 /**
@@ -962,9 +955,19 @@ export function scoreRelevance(card, query) {
     }
   }
   
-  // 10. DATA COMPLETENESS BONUS (up to 7 points)
+  // 10. DATA QUALITY BONUS. Prefer exact provider identities and usable,
+  // recently updated price records over merely non-empty objects.
   if (card.image) score += 5;
-  if (card.prices) score += 2;
+  const tcgPrice = Number(card.prices?.tcgplayer?.market_price || card.prices?.tcgplayer?.mid_price) || 0;
+  const cmPrice = Number(
+    card.prices?.cardmarket?.lowest_near_mint ||
+    card.prices?.cardmarket?.avg30 ||
+    card.prices?.cardmarket?.['30d_average'],
+  ) || 0;
+  if (tcgPrice > 0 || cmPrice > 0) score += 4;
+  if (card.tcgid || card.tcgplayerId || card.tcgPlayerId || card.cardmarketId || card.cardMarketId) score += 3;
+  if (card.setCode) score += 1;
+  if (Number(card.prices?.cardmarket?.availableItems || card.prices?.cardmarket?.available_items) > 0) score += 1;
   
   return score;
 }
@@ -987,6 +990,40 @@ export function rankByRelevance(results, query) {
   
   // Return cards only (without scores)
   return scored.map(item => item.card);
+}
+
+/**
+ * Whether a cache result is strong enough to avoid a provider enrichment
+ * request. This is intentionally stricter than general relevance filtering:
+ * a query for "pikachu 25" may display "Ooyama's Pikachu #25" as a related
+ * result, but that related result must not convince search that it has already
+ * found the canonical Pikachu printing.
+ */
+export function isStrongSearchMatch(card, query) {
+  const parsed = parseQuery(query);
+  const normalizedName = normalizeApostrophes(String(card?.name || '').toLowerCase())
+    .replace(/[^a-z0-9'\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const primaryName = normalizeApostrophes(String(parsed.primaryName || '').toLowerCase())
+    .replace(/[^a-z0-9'\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const nameMatches = !primaryName ||
+    normalizedName === primaryName ||
+    normalizedName.startsWith(`${primaryName} `) ||
+    normalizedName.startsWith(`${primaryName}-`);
+  if (!nameMatches) return false;
+
+  if (parsed.numbers.length > 0) {
+    const cardNumber = normalizeCardNumber(card?.number).split('/')[0];
+    const allNumbersMatch = parsed.numbers.every(number =>
+      normalizeCardNumber(number).split('/')[0] === cardNumber,
+    );
+    if (!allNumbersMatch) return false;
+  }
+
+  return true;
 }
 
 /**
@@ -1037,12 +1074,34 @@ export function normalizeCardKey(card) {
     .replace(/\s+/g, ' ')
     .trim();
   
-  const number = String(card.number || '').toLowerCase().trim();
+  // Providers disagree on whether the printed denominator is included
+  // ("199" vs "199/165"). Within the same normalized set, the numerator is
+  // the stable card identity.
+  const number = normalizeCardNumber(card.number).split('/')[0];
   const set = normalizeSetName(card.set);
+  const language = String(
+    card.language || (card.isJapanese || card._isJapaneseCard ? 'japanese' : 'english'),
+  ).toLowerCase();
+  const rawVariant = String(
+    card.variant || card.printing || card.variantSource || 'standard',
+  ).toLowerCase();
+  const variant = ['', 'normal', 'standard', 'default'].includes(rawVariant)
+    ? 'standard'
+    : rawVariant.replace(/\s+/g, '-');
   
   // Primary key: name + number (most reliable)
   // Set is secondary to catch variations
-  return `${name}::${number}::${set}`;
+  return `${name}::${number}::${set}::${language}::${variant}`;
+}
+
+export function getCanonicalCardId(card) {
+  if (card?.tcgid) return `tcgid:${String(card.tcgid).toLowerCase()}`;
+  const language = String(card?.language || (card?.isJapanese ? 'japanese' : 'english')).toLowerCase();
+  const tcgplayerId = card?.tcgplayerId || card?.tcgPlayerId;
+  if (tcgplayerId) return `tcgplayer:${tcgplayerId}:${language}`;
+  const cardmarketId = card?.cardmarketId || card?.cardMarketId;
+  if (cardmarketId) return `cardmarket:${cardmarketId}:${language}`;
+  return `print:${normalizeCardKey(card)}`;
 }
 
 /**
@@ -1056,11 +1115,19 @@ export function calculateCompletenessScore(card) {
   if (card.set) score += 5;
   if (card.number) score += 5;
   if (card.rarity) score += 3;
-  if (card.prices?.tcgplayer) score += 3;
-  if (card.prices?.cardmarket) score += 3;
-  if (card.prices?.pricecharting) score += 3;
+  if (card.prices?.tcgplayer) score += 4;
+  if (card.prices?.cardmarket) score += 4;
+  if (card.prices?.us) score += 2;
+  if (card.prices?.eu) score += 2;
+  if (card.gradedPrices && Object.keys(card.gradedPrices).length > 0) score += 4;
+  if (card.tcgplayerId || card.tcgPlayerId) score += 2;
+  if (card.cardMarketId || card.cardmarketId) score += 2;
+  if (card.tcgid) score += 3;
+  if (card.setCode) score += 2;
   if (card.releaseDate) score += 2;
   if (card.artist) score += 1;
+  if (Array.isArray(card.variants) && card.variants.length > 0) score += 2;
+  if (card.pricesLastUpdated) score += 1;
   
   return score;
 }
@@ -1069,72 +1136,100 @@ export function calculateCompletenessScore(card) {
  * Merge two cards, keeping the best data from each
  */
 export function mergeBestData(card1, card2) {
-  // Helper to get the best price object
-  const mergePrices = (prices1, prices2) => {
-    if (!prices1 && !prices2) return undefined;
-    if (!prices1) return prices2;
-    if (!prices2) return prices1;
-    
-    return {
-      tcgplayer: prices1.tcgplayer || prices2.tcgplayer,
-      cardmarket: prices1.cardmarket || prices2.cardmarket,
-      pricecharting: prices1.pricecharting || prices2.pricecharting,
-    };
+  const isPlainObject = (value) => Boolean(
+    value && typeof value === 'object' && !Array.isArray(value)
+  );
+  const hasValue = (value) => {
+    if (value === null || value === undefined || value === '') return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (isPlainObject(value)) return Object.keys(value).length > 0;
+    return true;
   };
-  
-  return {
-    // Prefer card with image
-    image: card1.image || card2.image,
-    
-    // Basic info (prefer non-empty values)
-    name: card1.name || card2.name,
-    set: card1.set || card2.set,
-    number: card1.number || card2.number,
-    rarity: card1.rarity || card2.rarity,
-    
-    // Merge prices
-    prices: mergePrices(card1.prices, card2.prices),
-    
-    // Keep links from both (prefer array)
-    links: card1.links || card2.links,
-    
-    // Keep both sources for reference
-    sources: [
-      ...(card1.sources || [card1.source]).filter(Boolean),
-      ...(card2.sources || [card2.source]).filter(Boolean),
-    ],
-    
-    // Additional metadata
-    releaseDate: card1.releaseDate || card2.releaseDate,
-    artist: card1.artist || card2.artist,
-    
-    // Preserve IDs from both
-    id: card1.id || card2.id,
-    slug: card1.slug || card2.slug,
-    entryId: card1.entryId || card2.entryId,
+  const mergeObjects = (preferred, fallback) => {
+    const merged = {};
+    const keys = new Set([
+      ...Object.keys(fallback || {}),
+      ...Object.keys(preferred || {}),
+    ]);
+    keys.forEach(key => {
+      const preferredValue = preferred?.[key];
+      const fallbackValue = fallback?.[key];
+      if (isPlainObject(preferredValue) && isPlainObject(fallbackValue)) {
+        merged[key] = mergeObjects(preferredValue, fallbackValue);
+      } else {
+        merged[key] = hasValue(preferredValue) ? preferredValue : fallbackValue;
+      }
+    });
+    return merged;
   };
+
+  const score1 = calculateCompletenessScore(card1);
+  const score2 = calculateCompletenessScore(card2);
+  const preferred = score2 > score1 ? card2 : card1;
+  const fallback = preferred === card1 ? card2 : card1;
+  const merged = mergeObjects(preferred, fallback);
+  const chooseDescriptiveValue = (...values) => values
+    .filter(hasValue)
+    .map(value => String(value).trim())
+    .sort((a, b) => b.length - a.length)[0];
+
+  // Use the full display label and printed number while retaining the richer
+  // record's nested prices, identifiers, grading data, and images.
+  merged.set = chooseDescriptiveValue(card1.set, card2.set) || '';
+  merged.number = chooseDescriptiveValue(card1.number, card2.number) || '';
+  merged.image = preferred.image || fallback.image || preferred.imageUrl || fallback.imageUrl;
+
+  const toSourceArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
+  const sources = [
+    ...toSourceArray(card1.sources),
+    card1.source,
+    card1.dataSource,
+    ...toSourceArray(card2.sources),
+    card2.source,
+    card2.dataSource,
+  ].filter(Boolean);
+  if (sources.length > 0) merged.sources = Array.from(new Set(sources));
+  merged.canonicalId = getCanonicalCardId(merged);
+
+  return merged;
 }
 
 /**
  * Deduplicate results, merging duplicate cards
  */
 export function deduplicateResults(results) {
-  const cardMap = new Map();
-  
+  const identityGroups = new Map();
+
   for (const card of results) {
     const key = normalizeCardKey(card);
-    
-    if (!cardMap.has(key)) {
-      cardMap.set(key, card);
+    const [name, number, set, language, variant] = key.split('::');
+    const baseKey = `${name}::${number}::${language}::${variant}`;
+    if (!identityGroups.has(baseKey)) identityGroups.set(baseKey, new Map());
+    const setVariants = identityGroups.get(baseKey);
+
+    if (!setVariants.has(set)) {
+      setVariants.set(set, card);
     } else {
-      // Merge with existing card, keeping best data
-      const existing = cardMap.get(key);
-      const merged = mergeBestData(existing, card);
-      cardMap.set(key, merged);
+      setVariants.set(set, mergeBestData(setVariants.get(set), card));
     }
   }
-  
-  return Array.from(cardMap.values());
+
+  const deduplicated = [];
+  identityGroups.forEach(setVariants => {
+    const missingSetCard = setVariants.get('');
+    const knownSets = Array.from(setVariants.entries()).filter(([set]) => set);
+
+    // A record without set data is safe to merge only when one set candidate
+    // exists for that name and number. Otherwise keep it separate.
+    if (missingSetCard && knownSets.length === 1) {
+      deduplicated.push(mergeBestData(knownSets[0][1], missingSetCard));
+      return;
+    }
+
+    setVariants.forEach(card => deduplicated.push(card));
+  });
+
+  return deduplicated;
 }
 
 /**
@@ -1347,4 +1442,3 @@ export async function initSetCatalog(db) {
     console.warn('[initSetCatalog] Failed to load set catalog from Firestore:', error.message);
   }
 }
-

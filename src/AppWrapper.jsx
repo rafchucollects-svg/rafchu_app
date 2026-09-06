@@ -1,3 +1,5 @@
+import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
+import { getStorage, connectStorageEmulator } from "firebase/storage";
 import { useMemo, useEffect } from "react";
 import { initializeApp } from "firebase/app";
 import {
@@ -22,6 +24,7 @@ import { AppRouter } from "./Router";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Toaster, toast } from "./components/ui/Toaster";
 import { ConfirmDialogHost } from "./components/ui/ConfirmDialog";
+import { shouldUseRedirectAuth } from "./utils/authHelpers";
 
 /**
  * AppWrapper - Main application wrapper
@@ -42,20 +45,22 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase
-let app, auth, db, analytics;
+let app, auth, db;
 let useEmulators = false;
 
 try {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
-  analytics = getAnalytics(app);
+  getAnalytics(app);
   
   // Connect to emulators only when explicitly opted in via VITE_USE_EMULATORS=true
   if (import.meta.env.VITE_USE_EMULATORS === "true" && !useEmulators) {
     try {
       connectAuthEmulator(auth, "http://localhost:9099", { disableWarnings: true });
       connectFirestoreEmulator(db, "localhost", 8080);
+      connectFunctionsEmulator(getFunctions(app), "localhost", 5001);
+      connectStorageEmulator(getStorage(app), "localhost", 9199);
       useEmulators = true;
       console.log("🔧 Connected to Firebase Emulators");
       console.log("   Auth: http://localhost:9099");
@@ -79,16 +84,6 @@ try {
   } catch {
     console.error("Failed to initialize Firebase", error);
   }
-}
-
-// Heuristic: detect environments where popup-based OAuth flows are blocked or
-// broken (in-app browsers in social apps, very old WebViews, etc.). For these
-// we go straight to the redirect flow. Everywhere else we try the popup first
-// and fall back to redirect on known popup-failure error codes.
-function shouldUseRedirectAuth() {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent || "";
-  return /FBAN|FBAV|Instagram|Line|TikTok|MicroMessenger|Snapchat|Pinterest|LinkedInApp/i.test(ua);
 }
 
 const POPUP_FALLBACK_CODES = new Set([
@@ -127,7 +122,11 @@ export function AppWrapper() {
 
     const provider = new GoogleAuthProvider();
 
-    if (shouldUseRedirectAuth()) {
+    if (shouldUseRedirectAuth(
+      navigator.userAgent,
+      navigator.maxTouchPoints,
+      window.location.hostname,
+    )) {
       await signInWithRedirect(auth, provider);
       return;
     }
@@ -228,4 +227,3 @@ export function AppWrapper() {
     </ErrorBoundary>
   );
 }
-

@@ -48,8 +48,7 @@ export class ErrorBoundary extends Component {
               Something went wrong
             </h2>
             <p className="text-gray-600">
-              An unexpected error occurred. This has been logged and we'll look
-              into it.
+              An unexpected error occurred. Try again or refresh the page. If it continues, send feedback with the page and action that failed.
             </p>
             {import.meta.env.DEV && this.state.error && (
               <details className="text-left bg-red-50 border border-red-200 rounded-lg p-4 text-sm">

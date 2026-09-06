@@ -75,9 +75,8 @@ A hardcoded admin email (`rafchucollects@gmail.com`) has access to:
 ### External APIs (called from Cloud Functions)
 | API | Purpose | Auth |
 |-----|---------|------|
-| PriceCharting | Card pricing (raw + graded: PSA, BGS, CGC, SGC), CSV bulk data | API key |
 | Pokémon Price Tracker | TCGPlayer market prices, PSA graded prices via eBay data | API key |
-| CardMarket (via RapidAPI) | EU prices, card images, card search | RapidAPI key |
+| CardMarket (via RapidAPI) | EU prices, card images, card search, provider IDs, and graded market data | RapidAPI key |
 | JustTCG | Japanese card search (18,000+ cards) | API key |
 | TCGdex | Free fallback card search (no key required) | None |
 | exchangerate-api.com | Currency conversion rates | Free tier |
@@ -171,7 +170,7 @@ The search system is the core of the app. It uses a multi-source, cache-first ap
 1. User types a query → 500ms debounce
 2. Query is preprocessed: typo correction, set abbreviation expansion, query parsing (name, set, number)
 3. **Cache check**: search `card_database` (Firestore) first
-4. **Hybrid search**: PriceCharting + CardMarket APIs in parallel
+4. **Provider search**: CardMarket, with scoped JustTCG searches for Japanese cards
 5. Results are deduplicated, scored by relevance, and ranked
 6. Japanese cards searched via JustTCG as a separate source
 
@@ -185,7 +184,7 @@ The search system is the core of the app. It uses a multi-source, cache-first ap
 
 **Pricing Pipeline:**
 - `apiFetchMarketPrices(cardName, setName)` → US (TCGPlayer) and EU (CardMarket) prices
-- `apiFetchGradedPrices(cardName, setName)` → PSA, BGS, CGC, SGC prices from PriceCharting
+- `apiFetchGradedPrices(cardName, setName)` → embedded CardMarket/eBay graded data, with a Pokémon Price Tracker fallback for PSA
 - Prices are formatted per user's market source and currency preferences
 - In-memory client-side cache with 12-hour TTL (2-hour for low-result queries)
 
@@ -387,7 +386,7 @@ All derived from the in-memory inventory data (no separate Firestore reads):
 ### 5.14 Card Image System
 
 Multiple image sources with fallback chain:
-1. **API image** (from CardMarket, PriceCharting, or TCGdex)
+1. **API image** (from CardMarket, JustTCG, or TCGdex)
 2. **Community image** (user-submitted, admin-approved)
 3. **Placeholder** (no image)
 
@@ -407,8 +406,8 @@ Users can replace any card image via:
 Supported grading companies: **PSA, BGS, CGC, SGC, ACE, Other**
 
 - Grade values: 1–10 (half-point increments for BGS: 9.5, 10 Black Label)
-- Graded prices fetched from PriceCharting (PSA 10, PSA 9, BGS 10, BGS 9.5, CGC 10, CGC 9.5, SGC 10, SGC 9.5)
-- PSA prices also fetched from Pokémon Price Tracker (eBay-based)
+- Graded medians use CardMarket/eBay data when the provider supplies a matching company and grade
+- PSA prices can also be fetched from Pokémon Price Tracker (eBay-based)
 - Graded markup percentages available for manual adjustment
 - Visual badges show grading company logo and grade
 - CardLadder Pro CSV import for bulk graded card entry
@@ -427,7 +426,7 @@ Supported grading companies: **PSA, BGS, CGC, SGC, ACE, Other**
 **Price Sources:**
 - **TCGPlayer**: low, mid, high, market (US source)
 - **CardMarket**: low, average, trend (EU source)
-- **PriceCharting**: fallback for both, plus graded prices
+- **eBay graded data**: median sold price and sample size when supplied with the CardMarket payload
 
 **Price Display:**
 - `computeTcgPrice()` — uses market price, falls back to mid
@@ -458,7 +457,6 @@ Supported grading companies: **PSA, BGS, CGC, SGC, ACE, Other**
 |----------|---------|-------------|
 | `searchCards` | HTTPS | Cache-first search: checks `card_database`, falls back to CardMarket + TCGdex |
 | `searchCardMarket` | HTTPS | Direct CardMarket search proxy |
-| `searchPriceChartingCards` | HTTPS | PriceCharting search (card data, no prices) |
 | `searchJapaneseCards` | HTTPS | JustTCG Japanese card search |
 | `getJapaneseSets` | HTTPS | List all Japanese sets from JustTCG |
 | `getCardDetails` | HTTPS | Card details by ID from CardMarket |
@@ -466,15 +464,12 @@ Supported grading companies: **PSA, BGS, CGC, SGC, ACE, Other**
 ### Pricing Functions
 | Function | Trigger | Description |
 |----------|---------|-------------|
-| `fetchMarketPrices` | HTTPS | US (TCGPlayer via Price Tracker) + EU (CardMarket) prices with PriceCharting fallback |
-| `fetchGradedPrices` | HTTPS | Graded prices from PriceCharting (PSA, BGS, CGC, SGC grade tiers) |
+| `fetchMarketPrices` | HTTPS | US (TCGPlayer via Price Tracker) + EU (CardMarket), matched by canonical provider IDs when possible |
 | `getPsaGradedPrice` | HTTPS | PSA-specific graded prices via Pokémon Price Tracker eBay data |
-| `fetchComprehensivePrices` | HTTPS | DEPRECATED — legacy multi-source pricing |
 
 ### Scheduled Jobs
 | Function | Schedule | Description |
 |----------|----------|-------------|
-| `cachePriceChartingCSV` | Daily 2 AM UTC | Downloads and caches PriceCharting CSV to `pricecharting_cache` |
 | `scheduledCardDatabaseUpdate` | Daily 2 AM UTC | Discovers unique cards → updates `card_database` → refreshes user collection prices |
 | `syncJapaneseCards` | Sundays 3 AM UTC | Caches popular Japanese cards to `japanese_cards_cache` |
 | `syncSetCatalog` | Sundays 3 AM UTC | Syncs set catalog from CardMarket to `system/set_catalog` |
@@ -488,7 +483,6 @@ Supported grading companies: **PSA, BGS, CGC, SGC, ACE, Other**
 | Function | Trigger | Description |
 |----------|---------|-------------|
 | `initializeCardDatabase` | HTTPS (token) | One-time `card_database` initialization |
-| `triggerCsvCache` | HTTPS | Manual PriceCharting CSV cache trigger |
 | `triggerUserPriceRefresh` | HTTPS | Manual push of cached prices to user inventories |
 | `getCacheStats` | HTTPS | Stats for `card_database` |
 | `getUpdateLogs` | HTTPS | Read update logs for monitoring |
@@ -641,8 +635,6 @@ Supported grading companies: **PSA, BGS, CGC, SGC, ACE, Other**
 
 **`card_database/{cardId}`** — cached card data from APIs (name, set, prices, imageUrl, lastUpdated)
 
-**`pricecharting_cache/{docId}`** — cached PriceCharting CSV data
-
 **`japanese_cards_cache/{docId}`** — cached Japanese card data from JustTCG
 
 **`system/set_catalog`** — dynamic set catalog synced from CardMarket
@@ -727,7 +719,7 @@ Supported grading companies: **PSA, BGS, CGC, SGC, ACE, Other**
 1. Fetch raw market price from API (TCGPlayer or CardMarket based on user preference)
 2. Apply condition multiplier (NM=1.0, LP=0.8, MP=0.6, HP=0.4, DMG=0.25)
 3. For vendors: apply trade% or buy% to get offer value
-4. If graded: use graded price from PriceCharting instead of raw × condition
+4. If graded: use a verified provider price when available, otherwise keep the user's manual graded value
 5. If manual price override exists: use that instead
 6. If round-up enabled: round to nearest whole number
 7. Convert to user's preferred currency
@@ -743,7 +735,7 @@ Cards are scored based on:
 - Partial name match
 - Set name match
 - Card number match
-- Source priority (PriceCharting > CardMarket > TCGdex)
+- Exact provider identity and match confidence
 - Has image (bonus)
 - Has prices (bonus)
 
@@ -763,7 +755,6 @@ All prefixed with `VITE_`:
 
 ### Environment Variables (Cloud Functions)
 Set via Firebase Functions config:
-- `pricecharting.key`
 - `pokeprice.key`
 - `rapidapi.key`
 - `justtcg.key`

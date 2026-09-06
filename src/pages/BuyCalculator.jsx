@@ -1,3 +1,4 @@
+import { saveItemChanges } from "@/utils/inventoryStore";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -5,11 +6,14 @@ import { Input } from "@/components/ui/input";
 import { ShoppingCart, Calculator, Trash, CheckSquare, Square, Save, FolderOpen, Share2, Copy, Link, Check, X, Plus, Scissors, Camera } from "lucide-react";
 import { ManualCardEntry } from "@/components/ManualCardEntry";
 import { CardPhotoScanner } from "@/components/CardPhotoScanner";
+import { TransactionDetailsFields } from "@/components/TransactionDetailsFields";
+import { createEmptyTransactionDetails } from "@/utils/transactionHelpers";
 import { useApp } from "@/contexts/AppContext";
 import { ConditionSelect } from "@/components/CardComponents";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
-import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, recordTransaction, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
-import { collection, addDoc, doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
+import { computeTcgPrice, getCardmarketAvg, getCardmarketLowest, formatCurrency, cloneForFirestore, prepareTransactionRecord, computeItemMetrics, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
+import { mergePendingDeals, readPendingDealsFromStorage } from "@/utils/pendingDealHelpers";
+import { collection, addDoc, doc, setDoc, onSnapshot } from "firebase/firestore";
 import { toast } from "@/components/ui/Toaster";
 
 /**
@@ -34,11 +38,18 @@ function PercentSelect({ value, onChange, className = "" }) {
   );
 }
 
+function createOperationId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function BuyCalculator() {
   const { user, db, buyItems, setBuyItems, tradeItems, setTradeItems, currency, secondaryCurrency, collectionItems, setCollectionItems, triggerQuickAddFeedback, userProfile } = useApp();
   const [buyDefaultPct, setBuyDefaultPct] = useState(userProfile?.defaultBuyPct || 70);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [pendingDeals, setPendingDeals] = useState([]);
+  const [savingPending, setSavingPending] = useState(false);
+  const [isCompletingDeal, setIsCompletingDeal] = useState(false);
   const [showPendingModal, setShowPendingModal] = useState(false);
   const [buyCurrency, setBuyCurrency] = useState(currency); // Currency for purchase input
   const [showInventoryModal, setShowInventoryModal] = useState(false);
@@ -48,6 +59,8 @@ export function BuyCalculator() {
   const [cashAmount, setCashAmount] = useState("");
   const [cashCurrency, setCashCurrency] = useState(secondaryCurrency || currency);
   const [cashDirection, setCashDirection] = useState("in"); // "in" = receiving cash, "out" = paying cash
+  const [transactionDetails, setTransactionDetails] = useState(() => createEmptyTransactionDetails());
+  const [loadedFromPendingDealId, setLoadedFromPendingDealId] = useState(null);
   
   // Share buy offer state
   const [showShareModal, setShowShareModal] = useState(false);
@@ -74,6 +87,8 @@ export function BuyCalculator() {
   const [splitCopied, setSplitCopied] = useState({});
   const [splitShareLoading, setSplitShareLoading] = useState({});
   const importedLegacyTradeItems = useRef(false);
+  const pendingMigrationUid = useRef(null);
+  const purchaseOperationId = useRef(null);
 
   // Load default percentage from user profile
   useEffect(() => {
@@ -110,20 +125,29 @@ export function BuyCalculator() {
 
   // Helper function to save pending deals to Firestore
   const savePendingDealsToFirestore = useCallback(async (deals) => {
-    if (!user?.uid || !db) return;
+    if (!user?.uid || !db) return { synced: false, savedLocally: false };
+    const safeDeals = cloneForFirestore(Array.isArray(deals) ? deals : []);
     try {
       const docRef = doc(db, "pendingDeals", user.uid);
-      // First get current doc to preserve tradeDeals
-      const snapshot = await getDoc(docRef);
-      const currentData = snapshot.exists() ? snapshot.data() : {};
       await setDoc(docRef, {
-        ...currentData,
-        buyDeals: deals
-      });
+        buyDeals: safeDeals,
+        pendingDealsUpdatedAt: Date.now(),
+      }, { merge: true });
+      try {
+        localStorage.removeItem(`buy_pending_${user.uid}`);
+      } catch {
+        // Firestore is authoritative; a blocked storage cleanup is harmless.
+      }
+      return { synced: true, savedLocally: false };
     } catch (error) {
       console.error("Failed to save pending deals to Firestore:", error);
-      // Fallback to localStorage
-      localStorage.setItem(`buy_pending_${user.uid}`, JSON.stringify(deals));
+      try {
+        localStorage.setItem(`buy_pending_${user.uid}`, JSON.stringify(safeDeals));
+        return { synced: false, savedLocally: true, error };
+      } catch (storageError) {
+        console.error("Failed to save pending deals locally:", storageError);
+        return { synced: false, savedLocally: false, error };
+      }
     }
   }, [user, db]);
 
@@ -134,28 +158,60 @@ export function BuyCalculator() {
     const docRef = doc(db, "pendingDeals", user.uid);
     
     // Use onSnapshot for real-time sync across devices
+    pendingMigrationUid.current = null;
     const unsubscribe = onSnapshot(docRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        setPendingDeals(data.buyDeals || []);
-      } else {
-        setPendingDeals([]);
+      const data = snapshot.exists() ? snapshot.data() : {};
+      const localDeals = readPendingDealsFromStorage(localStorage, user.uid);
+      const mergedDeals = mergePendingDeals([
+        data.buyDeals,
+        data.tradeDeals,
+        localDeals.buyDeals,
+        localDeals.tradeDeals,
+      ], buyDefaultPct);
+      setPendingDeals(mergedDeals);
+
+      const hasLegacyOrLocalDeals = Boolean(
+        data.tradeDeals?.length || localDeals.buyDeals.length || localDeals.tradeDeals.length
+      );
+      const remoteBuyDeals = mergePendingDeals([data.buyDeals], buyDefaultPct);
+      const remoteNeedsNormalization = JSON.stringify(remoteBuyDeals) !== JSON.stringify(mergedDeals);
+
+      if (pendingMigrationUid.current !== user.uid && (hasLegacyOrLocalDeals || remoteNeedsNormalization)) {
+        pendingMigrationUid.current = user.uid;
+        setDoc(docRef, {
+          buyDeals: cloneForFirestore(mergedDeals),
+          tradeDeals: [],
+          pendingDealsMigratedAt: Date.now(),
+        }, { merge: true }).then(() => {
+          try {
+            localStorage.removeItem(`buy_pending_${user.uid}`);
+            localStorage.removeItem(`trade_pending_${user.uid}`);
+          } catch {
+            // The remote copy is saved even if browser storage is unavailable.
+          }
+          if (hasLegacyOrLocalDeals) {
+            triggerQuickAddFeedback(`Recovered ${mergedDeals.length} pending deal${mergedDeals.length === 1 ? "" : "s"}`);
+          }
+        }).catch((error) => {
+          console.error("Failed to migrate pending deals:", error);
+          pendingMigrationUid.current = null;
+        });
       }
     }, (error) => {
       console.error("Failed to load pending deals:", error);
-      // Fallback to localStorage if Firestore fails
       try {
-        const saved = localStorage.getItem(`buy_pending_${user.uid}`);
-        if (saved) {
-          setPendingDeals(JSON.parse(saved));
-        }
+        const localDeals = readPendingDealsFromStorage(localStorage, user.uid);
+        setPendingDeals(mergePendingDeals([
+          localDeals.buyDeals,
+          localDeals.tradeDeals,
+        ], buyDefaultPct));
       } catch (e) {
         console.error("localStorage fallback also failed:", e);
       }
     });
 
     return () => unsubscribe();
-  }, [user, db]);
+  }, [user, db, buyDefaultPct, triggerQuickAddFeedback]);
 
   const removeFromBuy = (entryId) => {
     setBuyItems((prev) => prev.filter((item) => item.entryId !== entryId));
@@ -237,9 +293,9 @@ export function BuyCalculator() {
         const src = item.manualPriceCurrency || 'USD';
         marketPrice = convertCurrency(parseFloat(item.manualPrice), currency, src);
       } else {
-        const tcg = computeTcgPrice(item, item.condition);
-        const cmAvg = getCardmarketAvg(item, item.condition) || 0;
-        const cmLow = getCardmarketLowest(item, item.condition) || 0;
+        const tcg = computeTcgPrice(item, item.condition, currency);
+        const cmAvg = getCardmarketAvg(item, item.condition, currency) || 0;
+        const cmLow = getCardmarketLowest(item, item.condition, currency) || 0;
         const valid = [tcg, cmAvg, cmLow].filter(p => p > 0);
         marketPrice = valid.length > 0 ? Math.min(...valid) : 0;
       }
@@ -279,23 +335,18 @@ export function BuyCalculator() {
     }
     
     // For ungraded cards, use market prices
-    const tcgBase = computeTcgPrice(item, item.condition);
-    const cmAvgBase = getCardmarketAvg(item, item.condition) || 0;
-    const cmLowBase = getCardmarketLowest(item, item.condition) || 0;
+    const tcgBase = computeTcgPrice(item, item.condition, currency);
+    const cmAvgBase = getCardmarketAvg(item, item.condition, currency) || 0;
+    const cmLowBase = getCardmarketLowest(item, item.condition, currency) || 0;
 
     const tcg = tcgBase * pct;
     const cmAvg = cmAvgBase * pct;
     const cmLowest = cmLowBase * pct;
     
-    // Check for PriceCharting fallback if other prices are 0
     let suggested = 0;
     if (tcg > 0 || cmAvg > 0 || cmLowest > 0) {
       const validPrices = [tcg, cmAvg, cmLowest].filter(p => p > 0);
       suggested = validPrices.length > 0 ? Math.min(...validPrices) : 0;
-    } else if (item.prices?.pricecharting) {
-      // Use PriceCharting fallback (in USD, need to convert)
-      const pcPrice = convertCurrency(parseFloat(item.prices.pricecharting), currency, 'USD');
-      suggested = pcPrice * pct;
     }
     
     const finalUnit = item.overrideValue ?? suggested;
@@ -388,6 +439,7 @@ export function BuyCalculator() {
   const hasMultipleTiers = groupedBuyItems.length > 1;
 
   const handleConfirmBuy = async () => {
+    if (isCompletingDeal) return;
     if (selectedIds.size === 0) {
       toast.info("Please select cards to confirm the purchase.");
       return;
@@ -399,11 +451,18 @@ export function BuyCalculator() {
     }
 
     const selectedItems = buyItems.filter(it => selectedIds.has(it.entryId));
+    const selectionSignature = selectedItems.map((item) => item.entryId).sort().join("|");
+    if (purchaseOperationId.current?.signature !== selectionSignature) {
+      purchaseOperationId.current = { signature: selectionSignature, id: createOperationId() };
+    }
+    const operationId = purchaseOperationId.current.id;
+    setIsCompletingDeal(true);
     
     try {
       // Create transaction log entry
       const itemsIn = selectedItems.map(item => {
         const qty = item.quantity || 1;
+        const assignedValues = calculateItemValue(item);
         
         // For graded cards, use the graded price; for ungraded, use market suggested
         let unitPrice;
@@ -412,9 +471,9 @@ export function BuyCalculator() {
           unitPrice = convertCurrency(item.gradedPrice, currency);
         } else {
           // Calculate market suggested price (100%, not buy percentage)
-          const tcgFull = computeTcgPrice(item, item.condition) || 0;
-          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
-          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const tcgFull = computeTcgPrice(item, item.condition, currency) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition, currency) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition, currency) || 0;
           const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
           unitPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }
@@ -427,6 +486,8 @@ export function BuyCalculator() {
           quantity: qty,
           unitPrice: unitPrice, // Market suggested price (inventory value)
           totalPrice: unitPrice * qty,
+          unitCost: assignedValues.finalUnit,
+          totalCost: assignedValues.finalTotal,
           image: item.image,
           // Include graded card information for transaction log display
           isGraded: item.isGraded || false,
@@ -437,26 +498,29 @@ export function BuyCalculator() {
 
       // Calculate value gained (market value - cost)
       const totalMarketValue = itemsIn.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
-      const totalCost = selectedTotals.finalValue;
-      const valueGained = totalMarketValue - totalCost;
+      const convertedTotalCost = selectedTotals.finalValue;
 
-      // Convert totalCost if needed
-      let convertedTotalCost = totalCost;
+      // Calculated deal values are always held in the primary currency. When
+      // the user chooses the secondary currency, preserve its converted amount
+      // as the source value instead of misreading the primary number as foreign.
       const inputCurrency = buyCurrency;
-      if (inputCurrency !== currency) {
-        console.log(`Converting purchase from ${inputCurrency} to ${currency}: ${convertedTotalCost}`);
-        convertedTotalCost = convertCurrency(convertedTotalCost, currency, inputCurrency);
-        console.log(`Converted purchase: ${convertedTotalCost}`);
-      }
+      const originalTotalCost = inputCurrency !== currency
+        ? convertCurrency(convertedTotalCost, inputCurrency, currency)
+        : convertedTotalCost;
+      const valueGained = totalMarketValue - convertedTotalCost;
       
       const transactionData = {
+        ...transactionDetails,
         type: "buy",
         totalValue: convertedTotalCost,
+        originalTotal: originalTotalCost,
+        originalCurrency: inputCurrency,
         itemsIn,
         itemsOut: [],
         valueGained,
         notes: `Deal completed as purchase: ${selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s)`,
-        currency
+        currency,
+        source: "buy_calculator",
       };
       
       // Only add inputCurrency if it's different from primary currency
@@ -464,17 +528,20 @@ export function BuyCalculator() {
         transactionData.inputCurrency = inputCurrency;
       }
       
-      await recordTransaction(db, user.uid, transactionData);
+      const savedTransaction = prepareTransactionRecord(db, user.uid, transactionData, {
+        id: `deal-buy-${operationId}`,
+      });
 
       // Add cards to inventory
       const inventoryItems = [];
-      selectedItems.forEach(item => {
+      selectedItems.forEach((item, itemIndex) => {
         const qty = item.quantity || 1;
         const values = calculateItemValue(item);
-        const perUnitBuyPrice = values.finalUnit || 0;
+        const persistedLine = savedTransaction?.payload?.itemsIn?.[itemIndex];
+        const perUnitBuyPrice = persistedLine?.unitCost ?? values.finalUnit ?? 0;
         for (let i = 0; i < qty; i++) {
           const inventoryItem = {
-            entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            entryId: `${savedTransaction.id}-in-${itemIndex}-${i}`,
             id: item.id || item.baseId || "",
             name: item.name || "",
             set: item.set || "",
@@ -484,9 +551,18 @@ export function BuyCalculator() {
             condition: item.condition || "NM",
             quantity: 1,
             prices: item.prices || {},
-            addedAt: Date.now(),
+            addedAt: savedTransaction.payload.ts,
             buyPrice: perUnitBuyPrice,
+            buyPriceCurrency: currency,
             acquiredVia: "buy",
+            acquisitionTransactionId: savedTransaction?.id || null,
+            taxAcquisition: {
+              marginSchemeEligibility: transactionDetails.marginSchemeEligibility || "unreviewed",
+              counterpartyType: transactionDetails.counterpartyType || "unknown",
+              documentNumber: transactionDetails.documentNumber || "",
+              recordedCost: perUnitBuyPrice,
+              currency,
+            },
           };
           
           // Preserve manual entry information
@@ -506,28 +582,41 @@ export function BuyCalculator() {
             inventoryItem.gradedPriceCurrency = item.gradedPriceCurrency || "USD";
           }
           
-          // Filter out undefined values before saving to Firestore
-          inventoryItems.push(
-            Object.fromEntries(
-              Object.entries(inventoryItem).filter(([, value]) => value !== undefined)
-            )
-          );
+          inventoryItems.push(cloneForFirestore(inventoryItem));
         }
       });
 
       const updatedInventory = [...collectionItems, ...inventoryItems];
       const inventoryRef = doc(db, "collections", user.uid);
-      await setDoc(inventoryRef, { items: updatedInventory }, { merge: true });
+
+
+      let remainingPendingDeals = pendingDeals;
+      if (loadedFromPendingDealId != null) {
+        remainingPendingDeals = pendingDeals.filter((deal) => deal.id !== loadedFromPendingDealId);
+
+      }
+
+      const savedInventory = await saveItemChanges(inventoryRef, collectionItems, cloneForFirestore(updatedInventory), {}, {
+        ...savedTransaction, pendingId: loadedFromPendingDealId,
+      });
+      setCollectionItems(savedInventory);
+      if (loadedFromPendingDealId != null) {
+        setPendingDeals(remainingPendingDeals);
+        setLoadedFromPendingDealId(null);
+      }
 
       // Remove confirmed items from the deal list
       setBuyItems(prev => prev.filter(it => !selectedIds.has(it.entryId)));
       setSelectedIds(new Set());
+      purchaseOperationId.current = null;
 
       const totalCards = selectedItems.reduce((sum, it) => sum + (it.quantity || 1), 0);
       triggerQuickAddFeedback(`Deal completed as purchase! ${totalCards} card(s) added to inventory.`);
     } catch (error) {
       console.error("Failed to confirm purchase:", error);
       toast.error("Failed to confirm purchase. Please try again.");
+    } finally {
+      setIsCompletingDeal(false);
     }
   };
 
@@ -545,33 +634,36 @@ export function BuyCalculator() {
     const selectedItems = buyItems.filter(it => selectedIds.has(it.entryId));
     setPendingTradeConfirmation({
       selectedItems,
-      selectedIds: new Set(selectedIds)
+      selectedIds: new Set(selectedIds),
+      operationId: createOperationId(),
     });
     setShowInventoryModal(true);
   };
 
   const handleCompleteTradeWithInventory = async () => {
-    if (!pendingTradeConfirmation) return;
+    if (!pendingTradeConfirmation || isCompletingDeal) return;
     if (selectedInventoryIds.size === 0) {
       toast.info("Please select cards from your inventory to trade out.");
       return;
     }
 
+    setIsCompletingDeal(true);
     try {
       const { selectedItems } = pendingTradeConfirmation;
       const selectedInventoryItems = collectionItems.filter(it => selectedInventoryIds.has(it.entryId));
 
       const itemsIn = selectedItems.map(item => {
         const qty = item.quantity || 1;
+        const assignedValues = calculateItemValue(item);
         let unitPrice;
         if (item.isGraded && item.gradedPrice) {
           unitPrice = convertCurrency(item.gradedPrice, currency, item.gradedPriceCurrency || 'USD');
         } else if (item.isManualEntry && item.manualPrice) {
           unitPrice = convertCurrency(item.manualPrice, currency, item.manualPriceCurrency || 'USD');
         } else {
-          const tcgFull = computeTcgPrice(item, item.condition) || 0;
-          const cmAvgFull = getCardmarketAvg(item, item.condition) || 0;
-          const cmLowFull = getCardmarketLowest(item, item.condition) || 0;
+          const tcgFull = computeTcgPrice(item, item.condition, currency) || 0;
+          const cmAvgFull = getCardmarketAvg(item, item.condition, currency) || 0;
+          const cmLowFull = getCardmarketLowest(item, item.condition, currency) || 0;
           const validPrices = [tcgFull, cmAvgFull, cmLowFull].filter(p => p > 0);
           unitPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
         }
@@ -585,6 +677,8 @@ export function BuyCalculator() {
           unitPrice: unitPrice || 0,
           totalPrice: (unitPrice || 0) * qty,
           marketValue: (unitPrice || 0) * qty,
+          unitCost: assignedValues.finalUnit,
+          totalCost: assignedValues.finalTotal,
           image: item.image || item.imageUrl || "",
           isGraded: item.isGraded || false,
           gradingCompany: item.gradingCompany || "",
@@ -593,6 +687,7 @@ export function BuyCalculator() {
       });
 
       const itemsOut = selectedInventoryItems.map(item => {
+        const qty = item.quantity || 1;
         let vendorPrice;
         if (item.overridePrice != null) {
           vendorPrice = item.overridePriceCurrency && item.overridePriceCurrency !== currency
@@ -605,16 +700,28 @@ export function BuyCalculator() {
 
         const metrics = computeItemMetrics(item, currency);
         const marketValue = metrics.suggested;
+        const rawCostBasis = item.buyPrice ?? item.costBasis;
+        const costCurrency = item.buyPrice != null
+          ? item.buyPriceCurrency || currency
+          : item.costBasisCurrency || currency;
+        const costBasis = rawCostBasis != null && !Number.isNaN(Number(rawCostBasis))
+          ? costCurrency === currency
+            ? Number(rawCostBasis)
+            : convertCurrency(Number(rawCostBasis), currency, costCurrency)
+          : null;
 
         return {
+          inventoryEntryId: item.entryId || null,
           name: item.name || "",
           set: item.set || "",
           number: item.number || "",
           condition: item.condition || "NM",
-          quantity: 1,
+          quantity: qty,
           unitPrice: vendorPrice || 0,
-          totalPrice: vendorPrice || 0,
-          marketValue: marketValue || 0,
+          totalPrice: (vendorPrice || 0) * qty,
+          marketValue: (marketValue || 0) * qty,
+          costBasis,
+          buyPrice: costBasis,
           image: item.image || item.imageUrl || "",
           isGraded: item.isGraded || false,
           gradingCompany: item.gradingCompany || "",
@@ -638,20 +745,24 @@ export function BuyCalculator() {
         valueGained += cashDirection === "in" ? cashInPrimaryCurrency : -cashInPrimaryCurrency;
       }
 
-      let totalValue = selectedTotals.finalValue;
+      const totalValue = selectedTotals.finalValue;
       const inputCurrency = buyCurrency;
-      if (inputCurrency !== currency) {
-        totalValue = convertCurrency(totalValue, currency, inputCurrency);
-      }
+      const originalTotal = inputCurrency !== currency
+        ? convertCurrency(totalValue, inputCurrency, currency)
+        : totalValue;
 
       const transactionData = {
+        ...transactionDetails,
         type: "trade",
         totalValue,
+        originalTotal,
+        originalCurrency: inputCurrency,
         itemsIn,
         itemsOut,
         valueGained,
         notes: `Trade completed from deal calculator: ${itemsOut.length} card(s) out, ${itemsIn.reduce((sum, it) => sum + (it.quantity || 1), 0)} card(s) in${cashValue > 0 ? `, ${cashDirection === 'in' ? 'received' : 'paid'} ${formatCurrency(cashValue, cashCurrency)} cash` : ''}`,
-        currency
+        currency,
+        source: "buy_calculator_trade",
       };
 
       if (cashValue > 0) {
@@ -669,16 +780,19 @@ export function BuyCalculator() {
         transactionData.inputCurrency = inputCurrency;
       }
 
-      await recordTransaction(db, user.uid, transactionData);
+      const savedTransaction = prepareTransactionRecord(db, user.uid, transactionData, {
+        id: `deal-trade-${pendingTradeConfirmation.operationId}`,
+      });
 
       const inventoryItems = [];
-      selectedItems.forEach(item => {
+      selectedItems.forEach((item, itemIndex) => {
         const qty = item.quantity || 1;
         const values = calculateItemValue(item);
-        const perUnitBuyPrice = values.finalUnit || 0;
+        const persistedLine = savedTransaction?.payload?.itemsIn?.[itemIndex];
+        const perUnitBuyPrice = persistedLine?.unitCost ?? values.finalUnit ?? persistedLine?.marketUnitPrice ?? persistedLine?.unitPrice ?? 0;
         for (let i = 0; i < qty; i++) {
           const inventoryItem = {
-            entryId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            entryId: `${savedTransaction.id}-in-${itemIndex}-${i}`,
             id: item.id || item.baseId || "",
             name: item.name || "",
             set: item.set || "",
@@ -688,9 +802,19 @@ export function BuyCalculator() {
             condition: item.condition || "NM",
             quantity: 1,
             prices: item.prices || {},
-            addedAt: Date.now(),
+            addedAt: savedTransaction.payload.ts,
             buyPrice: perUnitBuyPrice,
+            buyPriceCurrency: currency,
             acquiredVia: "trade",
+            acquisitionTransactionId: savedTransaction?.id || null,
+            taxAcquisition: {
+              marginSchemeEligibility: transactionDetails.marginSchemeEligibility || "unreviewed",
+              counterpartyType: transactionDetails.counterpartyType || "unknown",
+              documentNumber: transactionDetails.documentNumber || "",
+              valuation: perUnitBuyPrice,
+              valuationMethod: "assigned_deal_value",
+              currency,
+            },
           };
 
           if (item.isManualEntry) {
@@ -708,11 +832,7 @@ export function BuyCalculator() {
             inventoryItem.gradedPriceCurrency = item.gradedPriceCurrency || "USD";
           }
 
-          inventoryItems.push(
-            Object.fromEntries(
-              Object.entries(inventoryItem).filter(([, value]) => value !== undefined)
-            )
-          );
+          inventoryItems.push(cloneForFirestore(inventoryItem));
         }
       });
 
@@ -722,8 +842,22 @@ export function BuyCalculator() {
       ];
 
       const inventoryRef = doc(db, "collections", user.uid);
-      await setDoc(inventoryRef, { items: updatedInventory }, { merge: true });
-      setCollectionItems(updatedInventory);
+
+
+      let remainingPendingDeals = pendingDeals;
+      if (loadedFromPendingDealId != null) {
+        remainingPendingDeals = pendingDeals.filter((deal) => deal.id !== loadedFromPendingDealId);
+
+      }
+
+      const savedInventory = await saveItemChanges(inventoryRef, collectionItems, cloneForFirestore(updatedInventory), {}, {
+        ...savedTransaction, pendingId: loadedFromPendingDealId,
+      });
+      setCollectionItems(savedInventory);
+      if (loadedFromPendingDealId != null) {
+        setPendingDeals(remainingPendingDeals);
+        setLoadedFromPendingDealId(null);
+      }
 
       setBuyItems(prev => prev.filter(it => !pendingTradeConfirmation.selectedIds.has(it.entryId)));
       setSelectedIds(new Set());
@@ -739,10 +873,13 @@ export function BuyCalculator() {
     } catch (error) {
       console.error("Failed to complete trade from buy calculator:", error);
       toast.error("Failed to complete trade. Please try again.");
+    } finally {
+      setIsCompletingDeal(false);
     }
   };
 
-  const handleSaveAsPending = () => {
+  const handleSaveAsPending = async () => {
+    if (savingPending) return;
     if (selectedIds.size === 0) {
       toast.info("Please select cards to save as pending.");
       return;
@@ -770,27 +907,51 @@ export function BuyCalculator() {
     };
 
     const updated = [...pendingDeals, newDeal];
+    setSavingPending(true);
+    const result = await savePendingDealsToFirestore(updated);
+    setSavingPending(false);
+
+    if (!result.synced && !result.savedLocally) {
+      toast.error("Pending deal could not be saved. Your current cards are still here.");
+      return;
+    }
+
     setPendingDeals(updated);
-    savePendingDealsToFirestore(updated);
 
     // Remove saved items from current list
     setBuyItems(prev => prev.filter(it => !selectedIds.has(it.entryId)));
     setSelectedIds(new Set());
 
-    triggerQuickAddFeedback(`Pending deal saved! (${selectedItems.length} cards)`);
+    if (result.synced) {
+      triggerQuickAddFeedback(`Pending deal synced! (${selectedItems.length} cards)`);
+    } else {
+      toast.info("Saved on this device. It will sync when Firestore is available.");
+    }
   };
 
   const handleLoadPending = (deal) => {
-    setBuyItems(prev => [...prev, ...deal.items]);
+    setBuyItems((prev) => {
+      const existingIds = new Set(prev.map((item) => item.entryId));
+      return [...prev, ...deal.items.filter((item) => !existingIds.has(item.entryId))];
+    });
+    setLoadedFromPendingDealId(deal.id);
     setShowPendingModal(false);
     triggerQuickAddFeedback(`Loaded ${deal.items.length} cards from pending deal`);
   };
 
-  const handleDeletePending = (dealId) => {
+  const handleDeletePending = async (dealId) => {
+    if (savingPending) return;
     const updated = pendingDeals.filter(d => d.id !== dealId);
+    setSavingPending(true);
+    const result = await savePendingDealsToFirestore(updated);
+    setSavingPending(false);
+    if (!result.synced && !result.savedLocally) {
+      toast.error("Pending deal could not be deleted. Please try again.");
+      return;
+    }
     setPendingDeals(updated);
-    savePendingDealsToFirestore(updated);
-    triggerQuickAddFeedback("Pending deal deleted");
+    if (loadedFromPendingDealId === dealId) setLoadedFromPendingDealId(null);
+    triggerQuickAddFeedback(result.synced ? "Pending deal deleted" : "Pending deal deleted on this device");
   };
 
   // Handle manual card entry
@@ -1099,7 +1260,8 @@ export function BuyCalculator() {
     }
   };
 
-  const handleSaveSplitTierAsPending = (tierItems, pct, totalValue) => {
+  const handleSaveSplitTierAsPending = async (tierItems, pct, totalValue) => {
+    if (savingPending) return;
     if (pendingDeals.length >= 5) {
       toast.info("Maximum 5 pending deals allowed. Delete existing deals first.");
       return;
@@ -1113,9 +1275,17 @@ export function BuyCalculator() {
       totalValue,
     };
     const updated = [...pendingDeals, newDeal];
+    setSavingPending(true);
+    const result = await savePendingDealsToFirestore(updated);
+    setSavingPending(false);
+    if (!result.synced && !result.savedLocally) {
+      toast.error("Pending deal could not be saved. Please try again.");
+      return;
+    }
     setPendingDeals(updated);
-    savePendingDealsToFirestore(updated);
-    triggerQuickAddFeedback(`Saved ${pct}% tier (${tierItems.length} cards) to pending`);
+    triggerQuickAddFeedback(result.synced
+      ? `Synced ${pct}% tier (${tierItems.length} cards) to pending`
+      : `Saved ${pct}% tier on this device`);
   };
 
   const filteredInventoryItems = useMemo(() => {
@@ -1165,6 +1335,7 @@ export function BuyCalculator() {
   };
 
   const handleCancelInventorySelection = () => {
+    if (isCompletingDeal) return;
     setShowInventoryModal(false);
     setPendingTradeConfirmation(null);
     setSelectedInventoryIds(new Set());
@@ -1341,6 +1512,14 @@ export function BuyCalculator() {
               </div>
             )}
             
+            {selectedIds.size > 0 && (
+              <TransactionDetailsFields
+                value={transactionDetails}
+                onChange={setTransactionDetails}
+                type="buy"
+              />
+            )}
+
             <div className="flex flex-wrap gap-3">
               <Button
                 size="sm"
@@ -1363,7 +1542,7 @@ export function BuyCalculator() {
                 size="sm"
                 variant="default"
                 onClick={handleConfirmBuy}
-                disabled={selectedIds.size === 0}
+                disabled={selectedIds.size === 0 || isCompletingDeal}
                 className="bg-blue-600 hover:bg-blue-700"
               >
                 Finish as Buy ({selectedIds.size})
@@ -1372,7 +1551,7 @@ export function BuyCalculator() {
                 size="sm"
                 variant="outline"
                 onClick={handleConfirmTradeFromBuy}
-                disabled={selectedIds.size === 0}
+                disabled={selectedIds.size === 0 || isCompletingDeal}
                 className="border-green-300 text-green-700 hover:bg-green-50"
               >
                 <Calculator className="h-4 w-4 mr-2" />
@@ -1382,7 +1561,7 @@ export function BuyCalculator() {
                 size="sm"
                 variant="outline"
                 onClick={handleSaveAsPending}
-                disabled={selectedIds.size === 0 || pendingDeals.length >= 5}
+                disabled={selectedIds.size === 0 || pendingDeals.length >= 5 || savingPending}
               >
                 <Save className="h-4 w-4 mr-2" />
                 Save as Pending ({selectedIds.size})
@@ -1619,6 +1798,7 @@ export function BuyCalculator() {
                             size="sm"
                             variant="destructive"
                             onClick={() => handleDeletePending(deal.id)}
+                            disabled={savingPending}
                           >
                             <Trash className="h-4 w-4" />
                           </Button>
@@ -1829,15 +2009,16 @@ export function BuyCalculator() {
                 <Button
                   variant="outline"
                   onClick={handleCancelInventorySelection}
+                  disabled={isCompletingDeal}
                 >
                   Cancel
                 </Button>
                 <Button
                   onClick={handleCompleteTradeWithInventory}
-                  disabled={selectedInventoryIds.size === 0}
+                  disabled={selectedInventoryIds.size === 0 || isCompletingDeal}
                   className="bg-green-600 hover:bg-green-700"
                 >
-                  Complete Trade
+                  {isCompletingDeal ? "Completing…" : "Complete Trade"}
                 </Button>
               </div>
             </CardContent>
@@ -2101,7 +2282,7 @@ export function BuyCalculator() {
                         size="sm"
                         variant="outline"
                         onClick={() => handleSaveSplitTierAsPending(items, pct, total)}
-                        disabled={pendingDeals.length >= 5}
+                        disabled={pendingDeals.length >= 5 || savingPending}
                         className="border-orange-300 text-orange-700"
                       >
                         <Save className="h-3 w-3 mr-1" /> Save to Pending

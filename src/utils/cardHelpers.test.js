@@ -11,6 +11,7 @@ import {
   getCardmarketLowest,
   getCardmarketAvg,
   computeSuggestedPrice,
+  computeMarketValues,
   computeItemMetrics,
   computeInventoryTotals,
   normalizeApiCard,
@@ -297,6 +298,58 @@ describe("computeSuggestedPrice", () => {
   });
 });
 
+describe("computeMarketValues", () => {
+  const card = {
+    prices: {
+      tcgplayer: { market_price: 10, currency: "EUR" },
+      cardmarket: { lowest7: 8, "30d_average": 12, currency: "EUR" },
+    },
+  };
+
+  it("keeps the current ask while deriving distinct market views", () => {
+    const values = computeMarketValues(card, {
+      condition: "NM",
+      targetCurrency: "EUR",
+      marketSource: "cardmarket",
+    });
+    expect(values.sellerAsk).toBe(12);
+    expect(values.preferredMarket).toBe(12);
+    expect(values.preferredSource).toBe("CardMarket");
+    expect(values.quickSale).toBe(8);
+    expect(values.availableBenchmarkCount).toBe(3);
+  });
+
+  it("uses TCGplayer for the selected market", () => {
+    const values = computeMarketValues(card, {
+      condition: "NM",
+      targetCurrency: "EUR",
+      marketSource: "tcg",
+    });
+    expect(values.preferredMarket).toBe(10);
+    expect(values.preferredSource).toBe("TCGplayer");
+  });
+
+  it("falls back cleanly when only one feed is available", () => {
+    const values = computeMarketValues(
+      { prices: { tcgplayer: { market_price: 9, currency: "EUR" } } },
+      { targetCurrency: "EUR", marketSource: "cardmarket" },
+    );
+    expect(values.preferredMarket).toBe(9);
+    expect(values.quickSale).toBe(9);
+    expect(values.availableBenchmarkCount).toBe(1);
+  });
+
+  it("uses the current manual inventory price only for Seller Ask", () => {
+    const values = computeMarketValues(
+      { overridePrice: 600, overridePriceCurrency: "EUR", prices: {} },
+      { targetCurrency: "EUR", marketSource: "tcg" },
+    );
+    expect(values.sellerAsk).toBe(600);
+    expect(values.preferredMarket).toBe(0);
+    expect(values.quickSale).toBe(0);
+  });
+});
+
 describe("computeItemMetrics", () => {
   it("computes metrics for a standard card", () => {
     const item = {
@@ -372,6 +425,20 @@ describe("computeItemMetrics", () => {
     // Should not pass through 100 USD as 100 EUR
     expect(eur.suggested).not.toBe(100);
     expect(eur.suggested).toBeGreaterThan(0);
+  });
+
+  it("normalizes provider currencies before choosing a suggested price", () => {
+    const item = {
+      condition: "NM",
+      prices: {
+        tcgplayer: { market_price: 100, currency: "USD" },
+        cardmarket: { "30d_average": 100, currency: "EUR" },
+      },
+    };
+    const metrics = computeItemMetrics(item, "USD");
+    expect(metrics.tcg).toBe(100);
+    expect(metrics.cmAvg).toBeGreaterThan(100);
+    expect(metrics.suggested).toBe(metrics.cmAvg);
   });
 });
 
@@ -559,6 +626,32 @@ describe("cloneForFirestore", () => {
     expect(cloned).toEqual(original);
     expect(cloned).not.toBe(original);
   });
+
+  it("removes undefined values at every nesting level", () => {
+    const original = {
+      keep: true,
+      remove: undefined,
+      nested: { keep: "value", remove: undefined },
+      list: [1, undefined, { keep: 2, remove: undefined }],
+    };
+
+    expect(cloneForFirestore(original)).toEqual({
+      keep: true,
+      nested: { keep: "value" },
+      list: [1, { keep: 2 }],
+    });
+  });
+
+  it("clones dates while preserving Firestore-style class instances", () => {
+    class FirestoreValue {}
+    const date = new Date("2026-08-11T00:00:00.000Z");
+    const firestoreValue = new FirestoreValue();
+    const cloned = cloneForFirestore({ date, firestoreValue });
+
+    expect(cloned.date).toEqual(date);
+    expect(cloned.date).not.toBe(date);
+    expect(cloned.firestoreValue).toBe(firestoreValue);
+  });
 });
 
 describe("normalizeApiCard", () => {
@@ -593,6 +686,46 @@ describe("normalizeApiCard", () => {
     expect(card.id).toBeUndefined();
     expect(card.name).toBeUndefined();
     expect(card.prices.cardmarket.currency).toBe("EUR");
+  });
+
+  it("preserves canonical IDs, provider metadata, availability, and graded sales", () => {
+    const card = normalizeApiCard({
+      id: "sv3pt5-199",
+      name: "Charizard ex",
+      card_number: "199/165",
+      tcgid: "sv3pt5-199",
+      cardmarket_id: 2682,
+      tcgplayer_id: 517045,
+      episode: {
+        name: "151",
+        code: "MEW",
+        series: { name: "Scarlet & Violet" },
+      },
+      prices: {
+        cardmarket: {
+          currency: "EUR",
+          available_items: 42,
+          graded: { psa: { "10": { price: 900 } } },
+        },
+        tcg_player: { currency: "USD", market_price: 380.19 },
+        ebay: {
+          currency: "USD",
+          graded: { psa: { "10": { median_price: 925, sample_size: 12 } } },
+        },
+      },
+    });
+
+    expect(card).toMatchObject({
+      set: "Scarlet & Violet 151",
+      setName: "151",
+      setSeries: "Scarlet & Violet",
+      setCode: "MEW",
+      tcgid: "sv3pt5-199",
+      cardMarketId: 2682,
+      tcgplayerId: 517045,
+    });
+    expect(card.prices.cardmarket.availableItems).toBe(42);
+    expect(card.prices.ebay.graded.psa["10"].sample_size).toBe(12);
   });
 });
 

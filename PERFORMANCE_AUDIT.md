@@ -179,7 +179,7 @@ export function useCommunityImages() {
 **Issue**: Same card searched multiple times = duplicate API calls  
 **Solution**: 
 - Implement Redis cache on Cloud Functions
-- Cache PriceCharting responses for 15 mins
+- Cache canonical CardMarket and TCGPlayer responses with provider timestamps
 - Cache CardMarket responses for 5 mins
 
 ---
@@ -297,4 +297,3 @@ Estimated cost reduction with fixes: **60-80% fewer Firestore reads**
 *Audit completed: October 17, 2025*
 *Version: 3.0*
 *Auditor: AI Assistant*
-

@@ -6,14 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "lint": "eslint .",
+    "lint": "eslint src functions/*.js tests/*.mjs scripts/*.js vite.config.js eslint.config.js",
     "preview": "vite preview",
-    "emulators": "firebase emulators:start",
+    "emulators": "npm exec --yes --package firebase-tools@15.29.0 -- firebase emulators:start --only auth,firestore,functions,storage --project demo-rafchu-review",
     "emulators:export": "firebase emulators:export ./emulator-data",
     "emulators:import": "firebase emulators:start --import=./emulator-data",
     "seed": "node scripts/seed-emulator-data.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:rules": "npm exec --yes --package firebase-tools@15.29.0 -- firebase emulators:exec --only firestore --project demo-rafchu-review \"node --test tests/firestore.rules.test.mjs\""
   },
   "dependencies": {
     "@dataconnect/generated": "file:src/dataconnect-generated",
@@ -29,11 +30,13 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "eslint": "^9.36.0",
+    "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.22",
     "globals": "^16.4.0",

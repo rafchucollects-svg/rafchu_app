@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,6 @@ export function Wishlist() {
     user,
     db,
     wishlistItems,
-    setWishlistItems,
     removeFromWishlist,
     marketSource,
     currency,
@@ -24,59 +23,6 @@ export function Wishlist() {
   } = useApp();
 
   const [wishlistSearch, setWishlistSearch] = useState("");
-
-  // Load wishlist from Firestore
-  useEffect(() => {
-    if (!db || !user) {
-      setWishlistItems([]);
-      return undefined;
-    }
-
-    let unsub = null;
-    let cancelled = false;
-
-    const loadWishlist = async () => {
-      const { doc, onSnapshot, setDoc } = await import("firebase/firestore");
-      if (cancelled) return;
-      const ref = doc(db, "collector_wishlists", user.uid);
-
-      unsub = onSnapshot(
-        ref,
-        (snap) => {
-          if (snap.exists()) {
-            const data = snap.data() || {};
-            const rawItems = Array.isArray(data.items) ? data.items : [];
-            const missingEntryIds = rawItems.some((item) => !item.entryId);
-            const items = rawItems.map((item) => ({
-              ...item,
-              entryId: item.entryId || crypto.randomUUID(),
-            }));
-            setWishlistItems(items);
-
-            // Persist minted entryIds once so removes/edits key off a stable id.
-            if (missingEntryIds) {
-              setDoc(ref, { items }, { merge: true }).catch((err) =>
-                console.error("Failed to persist wishlist entryIds", err)
-              );
-            }
-          } else {
-            setWishlistItems([]);
-          }
-        },
-        (error) => {
-          console.error("Failed to load wishlist", error);
-          setWishlistItems([]);
-        }
-      );
-    };
-
-    loadWishlist();
-
-    return () => {
-      cancelled = true;
-      if (unsub) unsub();
-    };
-  }, [db, user, setWishlistItems]);
 
   // Filter items
   const filteredItems = useMemo(() => {

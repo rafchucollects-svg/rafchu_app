@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   FileText,
@@ -41,7 +42,6 @@ import { useTax } from "@/contexts/TaxContext";
 import {
   formatCurrency,
   computeItemMetrics,
-  computeInventoryTotals,
 } from "@/utils/cardHelpers";
 import {
   calculateMarginTax,
@@ -50,7 +50,6 @@ import {
   getQuarterRange,
   getMonthRange,
   getAnnualRange,
-  getAcquisitionCost,
   FINLAND_VAT_RATE,
   FINLAND_CORPORATE_TAX_RATE,
   FINLAND_MILEAGE_RATE,
@@ -72,22 +71,41 @@ import {
   exportProfitLossCSV,
   exportProfitLossPDF,
   generateBillOfSalePDF,
+  fetchECBRates,
+  convertToEUR,
+  convertTransactionForTaxEUR,
 } from "@/utils/taxHelpers";
 import { useExpenses } from "@/contexts/ExpenseContext";
 import { getCategoryColor } from "@/utils/expenseHelpers";
 import { parseWiseCSV, computeBankSummary, exportBankCSV } from "@/utils/bankHelpers";
 import {
+  buildAccountantReportData,
+  exportAccountantPackagePDF,
+} from "@/utils/accountantReport";
+import {
   collection as fsCollection,
   query,
   orderBy,
   getDocs,
-  where,
-  addDoc,
-  deleteDoc,
   doc,
-  setDoc,
   writeBatch,
 } from "firebase/firestore";
+
+async function prepareTransactionsForTaxEUR(transactions) {
+  const ratesByDate = new Map();
+  const prepared = [];
+  for (const transaction of transactions) {
+    const currency = transaction.currency || "EUR";
+    let rates = { EUR: 1 };
+    if (currency !== "EUR") {
+      const date = new Date(transaction.ts || Date.now()).toISOString().slice(0, 10);
+      if (!ratesByDate.has(date)) ratesByDate.set(date, await fetchECBRates(date));
+      rates = ratesByDate.get(date);
+    }
+    prepared.push(convertTransactionForTaxEUR(transaction, rates));
+  }
+  return prepared;
+}
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import SignaturePad from "signature_pad";
 import { toast } from "@/components/ui/Toaster";
@@ -96,7 +114,48 @@ import { confirm } from "@/components/ui/ConfirmDialog";
 export function TaxReporting() {
   const { user, db, collectionItems, currency } = useApp();
   const tax = useTax();
+  const { expenses } = useExpenses();
   const [activeTab, setActiveTab] = useState("settings");
+  const currentYear = new Date().getFullYear();
+  const [accountantYear, setAccountantYear] = useState(currentYear);
+  const [exportingAccountantPackage, setExportingAccountantPackage] = useState(false);
+
+  const handleAccountantExport = async () => {
+    if (!user || !db || exportingAccountantPackage) return;
+    setExportingAccountantPackage(true);
+    try {
+      const transactionCollection = fsCollection(db, "transactions", user.uid, "entries");
+      const transactionSnapshot = await getDocs(query(transactionCollection, orderBy("ts", "desc")));
+      const transactions = await prepareTransactionsForTaxEUR(
+        transactionSnapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() })),
+      );
+      const report = buildAccountantReportData({
+        year: accountantYear,
+        fiscalYearStart: tax.taxConfig?.fiscalYearStart || 1,
+        transactions,
+        expenses,
+        purchaseDiary: tax.purchaseDiary,
+        inventoryItems: collectionItems,
+        shareholderEntries: tax.shareholderEntries,
+        otherRevenue: tax.otherRevenue,
+        mileageTrips: tax.mileageTrips,
+        taxFreeBenefits: tax.taxFreeBenefits,
+        computeItemMetrics,
+        currency,
+      });
+      exportAccountantPackagePDF(
+        report,
+        tax.taxConfig,
+        `accountant_package_FY_${accountantYear}.pdf`,
+      );
+      toast.success(`Accountant package for FY ${accountantYear} downloaded.`);
+    } catch (error) {
+      console.error("Failed to export accountant package:", error);
+      toast.error("Failed to create the accountant package. Please try again.");
+    } finally {
+      setExportingAccountantPackage(false);
+    }
+  };
 
   if (!user) {
     return (
@@ -135,8 +194,61 @@ export function TaxReporting() {
         </div>
       </div>
 
+      <Card className="mb-6 overflow-hidden border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-blue-50">
+        <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <ClipboardSignature className="h-5 w-5 text-emerald-700" />
+              <h2 className="font-bold text-emerald-950">Accountant Export</h2>
+            </div>
+            <p className="mt-1 text-sm text-emerald-900/75">
+              One PDF with P&amp;L, expenses, per diems, purchase diary, margin tax, COGS, inventory, and shareholder records.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Select
+              value={accountantYear}
+              onChange={(event) => setAccountantYear(Number(event.target.value))}
+              className="w-28 bg-white"
+              aria-label="Accountant export fiscal year"
+            >
+              {[currentYear, currentYear - 1, currentYear - 2, currentYear - 3, currentYear - 4].map((year) => (
+                <option key={year} value={year}>FY {year}</option>
+              ))}
+            </Select>
+            <Button onClick={handleAccountantExport} disabled={exportingAccountantPackage}>
+              {exportingAccountantPackage ? (
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="mr-2 h-4 w-4" />
+              )}
+              {exportingAccountantPackage ? "Building…" : "Download Package"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="w-full flex flex-wrap gap-1 h-auto p-1">
+        <Select
+          value={activeTab}
+          onChange={(event) => setActiveTab(event.target.value)}
+          className="mb-4 w-full sm:hidden"
+          aria-label="Tax reporting section"
+        >
+          <option value="settings">Settings</option>
+          <option value="purchases">Purchase Diary</option>
+          <option value="margin">Margin Tax</option>
+          <option value="valuation">Inventory Valuation</option>
+          <option value="shareholder">Shareholder Loan Ledger</option>
+          <option value="cogs">COGS</option>
+          <option value="pnl">P&amp;L / Income Statement</option>
+          <option value="bank">Bank Transactions</option>
+          <option value="losses">Loss Carry-Forward</option>
+          <option value="dividends">Dividends</option>
+          <option value="taxfree">Tax-Free Payments</option>
+        </Select>
+
+        <TabsList className="hidden h-auto w-full flex-wrap gap-1 p-1 sm:flex">
           <TabsTrigger value="settings">
             <Settings className="h-4 w-4 mr-1" />
             <span className="hidden sm:inline">Settings</span>
@@ -433,7 +545,7 @@ function TaxSettingsTab() {
 
 function PurchaseDiaryTab() {
   const tax = useTax();
-  const { user, db, currency } = useApp();
+  const { user, db } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     date: new Date().toISOString().slice(0, 10),
@@ -463,50 +575,85 @@ function PurchaseDiaryTab() {
         const col = fsCollection(db, "transactions", user.uid, "entries");
         const snap = await getDocs(query(col, orderBy("ts", "desc")));
         const auto = [];
-        snap.docs.forEach((d) => {
+        const ratesByDate = new Map();
+        const convertAmountToEur = async (amount, originalCurrency, timestamp) => {
+          if (!originalCurrency || originalCurrency === "EUR") {
+            return { amountEUR: Number(amount) || 0, rate: 1, reliable: true };
+          }
+          const date = new Date(timestamp || Date.now()).toISOString().slice(0, 10);
+          if (!ratesByDate.has(date)) ratesByDate.set(date, await fetchECBRates(date));
+          return convertToEUR(amount, originalCurrency, ratesByDate.get(date));
+        };
+
+        for (const d of snap.docs) {
           const tx = { id: d.id, ...d.data() };
           if (tx.type === "buy" && tx.itemsIn) {
-            tx.itemsIn.forEach((item, idx) => {
+            for (const [idx, item] of tx.itemsIn.entries()) {
+              const quantity = item.quantity || 1;
+              const originalCurrency = item.originalCostCurrency || tx.totals?.originalCurrency || tx.currency || "EUR";
+              const originalAmount = item.originalUnitCost ?? item.unitCost ?? (
+                item.totalCost != null ? Number(item.totalCost) / quantity : item.unitPrice ?? 0
+              );
+              const converted = await convertAmountToEur(originalAmount, originalCurrency, tx.ts);
               auto.push({
                 id: `tx-${tx.id}-in-${idx}`,
-                purchaseId: "BUY",
+                purchaseId: tx.internalVoucherId || tx.documents?.number || "BUY",
                 date: tx.ts,
-                location: "",
-                sellerName: "",
+                location: tx.location || tx.channel || "",
+                sellerName: tx.counterparty?.name || tx.counterpartyName || "",
                 itemName: item.name || "",
                 set: item.set || "",
                 condition: item.condition || "NM",
-                quantity: item.quantity || 1,
-                originalCurrency: tx.currency || "EUR",
-                originalAmount: item.unitPrice || 0,
-                priceEUR: item.unitPrice || 0,
-                paymentMethod: "",
+                quantity,
+                originalCurrency,
+                originalAmount,
+                priceEUR: converted.amountEUR,
+                exchangeRate: converted.rate,
+                fxReliable: converted.reliable,
+                paymentMethod: tx.payment?.method || tx.paymentMethod || "",
+                receiptUrls: tx.documents?.urls || tx.receiptUrls || [],
+                documentNumber: tx.documents?.number || tx.documentNumber || "",
+                taxRecordStatus: tx.taxRecord?.status || "legacy_record",
+                missingTaxFields: tx.taxRecord?.missingFields || [],
                 notes: tx.notes || "",
                 source: "buy",
               });
-            });
+            }
           } else if (tx.type === "trade" && tx.itemsIn) {
-            tx.itemsIn.forEach((item, idx) => {
+            for (const [idx, item] of tx.itemsIn.entries()) {
+              const quantity = item.quantity || 1;
+              const originalCurrency = item.currency || tx.currency || "EUR";
+              const originalAmount = item.unitCost ?? item.marketUnitPrice ?? item.marketValue ?? item.unitPrice ?? (
+                item.marketTotal != null ? Number(item.marketTotal) / quantity : 0
+              );
+              const converted = await convertAmountToEur(originalAmount, originalCurrency, tx.ts);
               auto.push({
                 id: `tx-${tx.id}-in-${idx}`,
-                purchaseId: "TRADE-IN",
+                purchaseId: tx.internalVoucherId || tx.documents?.number || "TRADE-IN",
                 date: tx.ts,
-                location: "",
-                sellerName: "",
+                location: tx.location || tx.channel || "",
+                sellerName: tx.counterparty?.name || tx.counterpartyName || "",
                 itemName: item.name || "",
                 set: item.set || "",
                 condition: item.condition || "NM",
-                quantity: item.quantity || 1,
-                originalCurrency: tx.currency || "EUR",
-                originalAmount: item.unitPrice || item.marketValue || 0,
-                priceEUR: item.unitPrice || item.marketValue || 0,
-                paymentMethod: "Trade",
+                quantity,
+                originalCurrency,
+                originalAmount,
+                priceEUR: converted.amountEUR,
+                exchangeRate: converted.rate,
+                fxReliable: converted.reliable,
+                paymentMethod: tx.payment?.method || "Trade",
+                receiptUrls: tx.documents?.urls || tx.receiptUrls || [],
+                documentNumber: tx.documents?.number || tx.documentNumber || "",
+                valuationMethod: "recorded_fair_market_value",
+                taxRecordStatus: tx.taxRecord?.status || "legacy_record",
+                missingTaxFields: tx.taxRecord?.missingFields || [],
                 notes: tx.notes || "",
                 source: "trade",
               });
-            });
+            }
           }
-        });
+        }
         if (!cancelled) setTxEntries(auto);
       } catch (err) {
         console.error("Failed to load transaction entries for diary:", err);
@@ -856,6 +1003,14 @@ function PurchaseDiaryTab() {
                           {sourceLabel(entry)}
                         </span>
                       )}
+                      {entry.taxRecordStatus === "needs_review" && (
+                        <span
+                          className="ml-1 inline-flex align-middle text-amber-600"
+                          title={`Tax details to review: ${(entry.missingTaxFields || []).join(", ")}`}
+                        >
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">
                       {entry.date
@@ -938,7 +1093,7 @@ function PurchaseDiaryTab() {
 // =============================
 
 function MarginTaxTab() {
-  const { user, db, currency } = useApp();
+  const { user, db } = useApp();
   const tax = useTax();
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear);
@@ -959,7 +1114,9 @@ function MarginTaxTab() {
     try {
       const col = fsCollection(db, "transactions", user.uid, "entries");
       const snap = await getDocs(query(col, orderBy("ts", "desc")));
-      const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const all = await prepareTransactionsForTaxEUR(
+        snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      );
       setAllTransactions(all);
     } catch (err) {
       console.error("Failed to load transactions:", err);
@@ -1018,19 +1175,21 @@ function MarginTaxTab() {
   );
 
   // Trade outgoing items count as sales
-  const trades = salesData.filter((tx) => tx.type === "trade");
-  const tradeOutgoing = [];
-  trades.forEach((tx) => {
-    (tx.itemsOut || []).forEach((item) => {
-      tradeOutgoing.push({
-        ...item,
-        ts: tx.ts,
-        notes: tx.notes || "Trade (Out)",
-        totalValue: (item.unitPrice || 0) * (item.quantity || 1),
-        source: "trade",
-      });
-    });
-  });
+  const tradeOutgoing = useMemo(
+    () =>
+      salesData
+        .filter((tx) => tx.type === "trade")
+        .flatMap((tx) =>
+          (tx.itemsOut || []).map((item) => ({
+            ...item,
+            ts: tx.ts,
+            notes: tx.notes || "Trade (Out)",
+            totalValue: (item.unitPrice || 0) * (item.quantity || 1),
+            source: "trade",
+          })),
+        ),
+    [salesData],
+  );
   const tradeOutgoingTotal = tradeOutgoing.reduce(
     (s, item) => s + (item.totalValue || 0),
     0
@@ -1945,6 +2104,12 @@ function ShareholderLedgerTab() {
         )}
 
         {/* Past Bills of Sale */}
+        {loadingBills && !showBillOfSale && (
+          <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            Loading past bills of sale...
+          </div>
+        )}
         {pastBills.length > 0 && !showBillOfSale && (
           <div className="mb-4">
             <h4 className="text-xs font-medium text-muted-foreground mb-2">Past Bills of Sale</h4>
@@ -2219,7 +2384,7 @@ function ShareholderLedgerTab() {
 // =============================
 
 function COGSTab() {
-  const { user, db, currency } = useApp();
+  const { user, db } = useApp();
   const tax = useTax();
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear);
@@ -2236,8 +2401,10 @@ function COGSTab() {
 
       const col = fsCollection(db, "transactions", user.uid, "entries");
       const snap = await getDocs(query(col, orderBy("ts", "desc")));
-      const all = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
+      const prepared = await prepareTransactionsForTaxEUR(
+        snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      );
+      const all = prepared
         .filter((tx) => {
           if (tx.type !== "sale" && tx.type !== "sell") return false;
           const ts = tx.ts || 0;
@@ -2444,7 +2611,7 @@ const OTHER_REVENUE_CATEGORIES = [
 ];
 
 function ProfitLossTab() {
-  const { user, db, currency } = useApp();
+  const { user, db } = useApp();
   const tax = useTax();
   const { expenses } = useExpenses();
   const currentYear = new Date().getFullYear();
@@ -2471,7 +2638,10 @@ function ProfitLossTab() {
     try {
       const col = fsCollection(db, "transactions", user.uid, "entries");
       const snap = await getDocs(query(col, orderBy("ts", "desc")));
-      setAllTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const prepared = await prepareTransactionsForTaxEUR(
+        snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      );
+      setAllTransactions(prepared);
     } catch (err) {
       console.error("Failed to load transactions:", err);
     } finally {
@@ -2522,12 +2692,13 @@ function ProfitLossTab() {
     return total;
   }, [periodTransactions]);
 
-  // COGS from sales
+  // COGS from sales and cards traded out. Trade-outs are included in revenue,
+  // so their recorded acquisition costs must be included here as well.
   const cogsData = useMemo(() => {
-    const salesTx = periodTransactions.filter(
-      (tx) => tx.type === "sale" || tx.type === "sell"
+    const taxableOutgoingTransactions = periodTransactions.filter(
+      (tx) => tx.type === "sale" || tx.type === "sell" || tx.type === "trade"
     );
-    return calculateCOGS(salesTx);
+    return calculateCOGS(taxableOutgoingTransactions);
   }, [periodTransactions]);
 
   // Filter expenses to period

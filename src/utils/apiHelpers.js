@@ -7,12 +7,22 @@
  */
 
 import { normalizeApiCard } from './cardHelpers';
+import { getAuth } from 'firebase/auth';
 
 // Import improved search helpers (ranking is done ONCE via improveSearchResults)
-import { improveSearchResults, preprocessQuery, parseQuery } from './searchHelpers';
+import {
+  improveSearchResults,
+  isStrongSearchMatch,
+  mergeBestData,
+  preprocessQuery,
+  parseQuery,
+} from './searchHelpers';
 
 // Cloud Functions base URL (secure - no API keys exposed)
-const CLOUD_FUNCTIONS_BASE = 'https://us-central1-rafchu-tcg-app.cloudfunctions.net';
+import { CLOUD_FUNCTIONS_BASE } from "./functionEndpoint";
+const CONDITION_PRICING_BETA_BASE = (
+  import.meta.env.VITE_CONDITION_PRICING_BETA_BASE || CLOUD_FUNCTIONS_BASE
+).replace(/\/$/, '');
 
 // Legacy exports for backwards compatibility (no longer contain sensitive data)
 export const RAPIDAPI_KEY = null; // REMOVED - now handled server-side
@@ -27,8 +37,36 @@ export const SEARCH_CACHE_RESULT_LIMIT = 200;
 export const MAX_SUGGESTION_LIMIT = 50;
 export const DEFAULT_SUGGESTION_LIMIT = 5;
 
+// CardMarket's broad search can bury older Gold Star printings behind newer
+// cards with the same Pokemon name or collector number. These verified,
+// narrowly targeted queries keep those printings discoverable without making
+// every numbered-card search depend on a large provider response.
+const GOLD_STAR_BY_POKEMON = {
+  'pikachu':   '104 holon',
+  'mewtwo':    '103 holon',
+  'gyarados':  '102 holon',
+  'charizard': '100 frontiers',
+  'mew':       '101 frontiers',
+  'rayquaza':  '107 deoxys',
+  'latias':    '105 latias deoxys',
+  'latios':    '106 latios deoxys',
+  'entei':     '113 unseen',
+  'raikou':    '114 unseen',
+  'suicune':   '115 unseen',
+  'groudon':   '111 groudon legend',
+  'kyogre':    '112 kyogre legend',
+  'alakazam':  '99 alakazam crystal',
+  'celebi':    '100 celebi crystal',
+  'mudkip':    '107 mudkip rocket',
+  'torchic':   '108 torchic rocket',
+  'treecko':   '109 treecko rocket',
+  'flareon':   '100 keepers',
+  'jolteon':   '101 keepers',
+  'vaporeon':  '102 keepers',
+};
+
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v4.5-stable';
+const CACHE_VERSION = 'v4.10-power-keepers-gold-stars';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {
@@ -64,10 +102,21 @@ const cardDetailCache = new Map();
 /**
  * Normalize search query for caching (includes version for cache invalidation)
  */
-export function canonicalizeQuery(query) {
+export function canonicalizeQuery(query, languageScope = 'english') {
   if (!query || typeof query !== "string") return "";
   const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
-  return `${CACHE_VERSION}:${normalized}`;
+  return `${CACHE_VERSION}:${languageScope}:${normalized}`;
+}
+
+export function matchesLanguageScope(card, languageScope = 'english') {
+  const isJapanese = Boolean(
+    card?.isJapanese ||
+    card?._isJapaneseCard ||
+    String(card?.language || '').toLowerCase().startsWith('jap'),
+  );
+  if (languageScope === 'all') return true;
+  if (languageScope === 'japanese') return isJapanese;
+  return !isJapanese;
 }
 
 /**
@@ -117,7 +166,8 @@ async function apiSearchCardsRaw(
   query,
   {
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
-    includeJapanese = true,
+    includeJapanese = false,
+    signal = null,
   } = {},
 ) {
   if (!query?.trim()) return [];
@@ -126,7 +176,7 @@ async function apiSearchCardsRaw(
     // Search both CardMarket (English) and JustTCG (Japanese) in parallel
     const searchPromises = [
       // CardMarket search (English cards)
-      fetch(`${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=${maxResults}`)
+      fetch(`${CLOUD_FUNCTIONS_BASE}/searchCardMarket?q=${encodeURIComponent(query)}&maxResults=${maxResults}`, { signal })
         .then(r => r.ok ? r.json() : { success: false })
         .catch(() => ({ success: false })),
     ];
@@ -134,7 +184,7 @@ async function apiSearchCardsRaw(
     // Add Japanese card search if enabled
     if (includeJapanese) {
       searchPromises.push(
-        fetch(`${CLOUD_FUNCTIONS_BASE}/searchJapaneseCards?q=${encodeURIComponent(query)}&limit=20`)
+        fetch(`${CLOUD_FUNCTIONS_BASE}/searchJapaneseCards?q=${encodeURIComponent(query)}&limit=20`, { signal })
           .then(r => r.ok ? r.json() : { success: false })
           .catch(() => ({ success: false }))
       );
@@ -202,13 +252,14 @@ export async function apiSearchCards(
     useCache = true,
     allowExpired = false,
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
-    includeJapanese = true,
+    includeJapanese = false,
     skipRanking = false, // Allow skipping ranking for hybrid search
+    signal = null,
   } = {},
 ) {
   if (!query?.trim()) return [];
 
-  const canonical = canonicalizeQuery(query);
+  const canonical = canonicalizeQuery(query, includeJapanese ? 'all' : 'english');
   if (useCache) {
     const cached = getSearchCacheEntry(canonical);
     if (cached && cached.results.length) {
@@ -219,7 +270,7 @@ export async function apiSearchCards(
   }
 
   // Fetch raw results
-  let items = await apiSearchCardsRaw(query, { maxResults, includeJapanese });
+  let items = await apiSearchCardsRaw(query, { maxResults, includeJapanese, signal });
   
   // If skipRanking is true, return raw results (used by hybrid search)
   if (skipRanking) {
@@ -254,6 +305,15 @@ export async function apiFetchCardDetails(card) {
 
   if (cacheKey && cardDetailCache.has(cacheKey)) {
     return cardDetailCache.get(cacheKey);
+  }
+
+  const hasCanonicalIdentity = Boolean(
+    card.tcgid || card.tcgplayerId || card.tcgPlayerId || card.cardmarketId || card.cardMarketId,
+  );
+  const hasCoreDetails = Boolean(card.name && card.set && card.number && card.image && card.rarity);
+  if (hasCanonicalIdentity && hasCoreDetails) {
+    if (cacheKey) cardDetailCache.set(cacheKey, card);
+    return card;
   }
 
   // Try to fetch card details via Cloud Function if we have an ID
@@ -323,39 +383,62 @@ export function enrichCardWithMarketPrices(card, marketPrices) {
   if (!card || !marketPrices) return card;
 
   card.prices = card.prices || {};
-  card.isFallbackPrice = false;
 
   // US / TCGPlayer prices
   if (marketPrices.us?.found) {
     card.prices.tcgplayer = {
+      ...(card.prices.tcgplayer || {}),
       market_price: marketPrices.us.market,
       low_price: marketPrices.us.low,
       mid_price: marketPrices.us.mid,
       high_price: marketPrices.us.high,
+      currency: marketPrices.us.currency || card.prices.tcgplayer?.currency || 'USD',
+      source: marketPrices.us.source || 'TCGPlayer',
+      lastUpdated: marketPrices.us.lastUpdated || new Date().toISOString(),
       tcgPlayerId: marketPrices.us.tcgPlayerId || null,
     };
     if (marketPrices.us.tcgPlayerId) {
       card.tcgPlayerId = marketPrices.us.tcgPlayerId;
       card.tcgplayerId = marketPrices.us.tcgPlayerId;
     }
-    card.priceSource = marketPrices.us.fallback ? 'PriceCharting' : 'TCGPlayer';
-    if (marketPrices.us.fallback === true) {
-      card.isFallbackPrice = true;
-      card.prices.pricecharting = marketPrices.us.market;
-    }
+    card.priceSource = marketPrices.us.source || 'TCGPlayer';
   }
 
   // EU / CardMarket prices
   if (marketPrices.eu?.found) {
     card.prices.cardmarket = {
+      ...(card.prices.cardmarket || {}),
       avg30: marketPrices.eu.avg,
       avg7: marketPrices.eu.trend,
       lowest_near_mint: marketPrices.eu.low,
       averageSellPrice: marketPrices.eu.avg,
       lowPrice: marketPrices.eu.low,
       trendPrice: marketPrices.eu.trend,
+      currency: marketPrices.eu.currency || card.prices.cardmarket?.currency || 'EUR',
+      availableItems: marketPrices.eu.availableItems ?? card.prices.cardmarket?.availableItems ?? null,
+      countryLows: marketPrices.eu.countryLows || card.prices.cardmarket?.countryLows || {},
+      graded: marketPrices.eu.graded || card.prices.cardmarket?.graded || {},
+      lastUpdated: marketPrices.eu.lastUpdated || new Date().toISOString(),
     };
+    if (marketPrices.eu.ebayGraded && Object.keys(marketPrices.eu.ebayGraded).length > 0) {
+      card.prices.ebay = {
+        ...(card.prices.ebay || {}),
+        currency: marketPrices.eu.ebayCurrency || card.prices.ebay?.currency || 'USD',
+        graded: marketPrices.eu.ebayGraded,
+      };
+    }
+    if (marketPrices.eu.cardmarketId) {
+      card.cardMarketId = marketPrices.eu.cardmarketId;
+      card.cardmarketId = marketPrices.eu.cardmarketId;
+    }
+    if (marketPrices.eu.tcgplayerId && !card.tcgplayerId && !card.tcgPlayerId) {
+      card.tcgplayerId = marketPrices.eu.tcgplayerId;
+      card.tcgPlayerId = marketPrices.eu.tcgplayerId;
+    }
+    if (marketPrices.eu.tcgid) card.tcgid = marketPrices.eu.tcgid;
   }
+
+  card.pricesLastUpdated = marketPrices.timestamp || new Date().toISOString();
 
   return card;
 }
@@ -365,114 +448,102 @@ export function enrichCardWithMarketPrices(card, marketPrices) {
  */
 export function formatSearchResults(results, query, limit) {
   if (!Array.isArray(results)) return [];
-  return results.slice(0, limit).map((card) => ({
+  return improveSearchResults(results, query, {
+    maxResults: limit,
+    enableDeduplication: true,
+    enableFiltering: true,
+    enableRanking: true,
+  }).map((card) => ({
     ...card,
     searchQuery: query,
   }));
 }
 
-/**
- * Generate unique ID
- */
-export function uniqueId() {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+function numericPrice(value) {
+  const price = Number(value);
+  return Number.isFinite(price) && price > 0 ? price : 0;
+}
+
+function timestampToMillis(value) {
+  if (!value) return 0;
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  if (typeof value?.seconds === 'number') return value.seconds * 1000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function getEmbeddedMarketPrices(card) {
+  const tcg = card?.prices?.tcgplayer || {};
+  const cm = card?.prices?.cardmarket || {};
+  const market = numericPrice(tcg.market_price ?? tcg.mid_price);
+  const cmAverage = numericPrice(cm.avg30 ?? cm['30d_average'] ?? cm.avg7 ?? cm['7d_average']);
+  const cmLow = numericPrice(cm.lowest_near_mint ?? cm.lowest ?? cm.lowest_price);
+  const timestamp = card?.pricesLastUpdated || tcg.lastUpdated || cm.lastUpdated || null;
+
+  return {
+    us: market > 0 ? {
+      found: true,
+      source: tcg.source || 'TCGPlayer',
+      market,
+      low: numericPrice(tcg.low_price) || null,
+      mid: numericPrice(tcg.mid_price) || market,
+      high: numericPrice(tcg.high_price) || null,
+      currency: tcg.currency || 'USD',
+      tcgPlayerId: card?.tcgplayerId || card?.tcgPlayerId || tcg.tcgPlayerId || null,
+      lastUpdated: tcg.lastUpdated || timestamp,
+    } : { found: false, source: 'TCGPlayer' },
+    eu: cmAverage > 0 || cmLow > 0 ? {
+      found: true,
+      source: 'CardMarket',
+      avg: cmAverage || cmLow,
+      low: cmLow || cmAverage,
+      trend: numericPrice(cm.avg7 ?? cm['7d_average'] ?? cm.trend) || cmAverage || cmLow,
+      currency: cm.currency || 'EUR',
+      availableItems: cm.availableItems ?? cm.available_items ?? null,
+      countryLows: cm.countryLows || {},
+      lastUpdated: cm.lastUpdated || timestamp,
+    } : { found: false, source: 'CardMarket' },
+    timestamp,
+  };
+}
+
+export function hasFreshEmbeddedMarketPrices(card, maxAgeMs = CACHE_DURATION_MS) {
+  const embedded = getEmbeddedMarketPrices(card);
+  if (!embedded.us?.found && !embedded.eu?.found) return false;
+  const updatedAt = timestampToMillis(embedded.timestamp);
+  return updatedAt > 0 && Date.now() - updatedAt <= maxAgeMs;
+}
+
+function normalizeGradedEntry(entry) {
+  if (typeof entry === 'number') return { price: numericPrice(entry), sampleSize: null };
+  return {
+    price: numericPrice(entry?.median_price ?? entry?.medianPrice ?? entry?.price),
+    sampleSize: Number(entry?.sample_size ?? entry?.sampleSize) || null,
+  };
+}
+
+export function getEmbeddedGradedPrices(card, gradingCompany) {
+  const companyKey = String(gradingCompany || 'PSA').toLowerCase();
+  const ebayCompany = card?.prices?.ebay?.graded?.[companyKey] || {};
+  const cardmarketCompany = card?.prices?.cardmarket?.graded?.[companyKey] || {};
+  const allGrades = {};
+
+  Object.entries(cardmarketCompany).forEach(([key, value]) => {
+    const grade = String(key).toLowerCase().replace(companyKey, '').replace(/_/g, '.');
+    const normalized = normalizeGradedEntry(value);
+    if (grade && normalized.price > 0) allGrades[grade] = normalized;
+  });
+  Object.entries(ebayCompany).forEach(([grade, value]) => {
+    const normalized = normalizeGradedEntry(value);
+    if (normalized.price > 0) allGrades[String(grade)] = normalized;
+  });
+
+  return allGrades;
 }
 
 /**
- * =============================================================================
- * TRIPLE API INTEGRATION (v2.1)
- * All external API calls routed through Cloud Functions for security
- * =============================================================================
- */
-
-/**
- * Search PriceCharting API directly (PRIMARY SEARCH SOURCE)
- * This provides comprehensive card data including all graded prices
- */
-export async function apiSearchPriceCharting(query, { limit = 50 } = {}) {
-  if (!query?.trim()) return [];
-  
-  try {
-    const url = `${CLOUD_FUNCTIONS_BASE}/searchPriceChartingCards?query=${encodeURIComponent(query)}&limit=${limit}`;
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.warn('PriceCharting search failed:', response.status);
-      return [];
-    }
-    
-    const data = await response.json();
-    
-    if (!data.success || !data.results) {
-      return [];
-    }
-    
-    // Transform PriceCharting results to our normalized format
-    // Cloud Function already parses and returns: name, set, number, fullName, priceChartingId
-    return data.results.map(card => {
-      return {
-        id: card.id || uniqueId(),
-        name: card.name,
-        set: card.set || '',
-        number: card.number || '',
-        rarity: card.rarity || '',
-        image: null, // Will be enriched from CardMarket
-        priceChartingId: card.priceChartingId,
-        fullName: card.fullName,
-        // Store raw PriceCharting data for reference
-        priceChartingData: card,
-      };
-    });
-  } catch (error) {
-    console.error('Error searching PriceCharting:', error);
-    return [];
-  }
-}
-
-/**
- * Fetch comprehensive prices for a specific card from all three APIs
- * Returns pricing data from PriceCharting, Pokemon Price Tracker, and CardMarket
- */
-export async function apiFetchComprehensivePrices(card, { isGraded = false, grade = null } = {}) {
-  if (!card?.name) return null;
-  
-  try {
-    const params = new URLSearchParams({
-      name: card.name,
-      ...(card.set && { set: card.set }),
-      ...(card.number && { number: card.number }),
-      ...(isGraded && { isGraded: 'true' }),
-      ...(grade && { grade: grade }),
-    });
-    
-    const url = `${CLOUD_FUNCTIONS_BASE}/fetchComprehensivePrices?${params}`;
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.warn('Comprehensive prices fetch failed:', response.status);
-      return null;
-    }
-    
-    const data = await response.json();
-    
-    if (!data.success) {
-      return null;
-    }
-    
-    return data.prices;
-  } catch (error) {
-    console.error('Error fetching comprehensive prices:', error);
-    return null;
-  }
-}
-
-/**
- * Fetch on-demand market prices for a specific card
- * Called when user clicks a card or adds to collection/inventory
- * Returns both US (TCGPlayer) and EU (CardMarket) prices
- */
-/**
- * Fetch graded card prices from PriceCharting via Cloud Function
+ * Resolve graded prices from data already supplied by CardMarket/eBay. PSA can
+ * additionally fall back to Pokemon Price Tracker, the supported live source.
  */
 export async function apiFetchGradedPrices(card, gradingCompany, grade) {
   if (!card) {
@@ -487,41 +558,91 @@ export async function apiFetchGradedPrices(card, gradingCompany, grade) {
     return { success: false, error: 'Card name is required' };
   }
   
+  const company = gradingCompany || 'PSA';
+  const gradeKey = String(grade || '10');
+  const embeddedGrades = getEmbeddedGradedPrices(card, company);
+  const embedded = embeddedGrades[gradeKey];
+  if (embedded?.price > 0) {
+    const hasEbayGrade = Boolean(card?.prices?.ebay?.graded?.[company.toLowerCase()]?.[gradeKey]);
+    return {
+      success: true,
+      card: { name: cardName, tcgplayerId: card.tcgplayerId || card.tcgPlayerId || null },
+      graded: {
+        company,
+        grade: gradeKey,
+        price: embedded.price,
+        currency: hasEbayGrade
+          ? (card?.prices?.ebay?.currency || 'USD')
+          : (card?.prices?.cardmarket?.currency || 'EUR'),
+        sampleSize: embedded.sampleSize,
+        source: hasEbayGrade ? 'eBay sold listings' : 'CardMarket graded data',
+        allGrades: { [company.toLowerCase()]: Object.fromEntries(
+          Object.entries(embeddedGrades).map(([itemGrade, value]) => [itemGrade, value.price]),
+        ) },
+      },
+    };
+  }
+
+  if (String(company).toUpperCase() !== 'PSA') {
+    return { success: false, error: `No verified ${company} ${gradeKey} market data is available` };
+  }
+
   try {
     const params = new URLSearchParams({
       name: cardName,
       set: card.set || card.episode?.name || '',
-      number: card.number || card.card_number || '',
-      company: gradingCompany || 'PSA',
-      grade: grade || '10'
+      cardNumber: card.number || card.card_number || '',
+      grade: gradeKey,
     });
     
-    const url = `${CLOUD_FUNCTIONS_BASE}/fetchGradedPrices?${params.toString()}`;
-    // Fetching graded price
+    const url = `${CLOUD_FUNCTIONS_BASE}/getPsaGradedPrice?${params.toString()}`;
     const response = await fetch(url);
     
     if (!response.ok) {
-      console.error('Failed to fetch graded prices:', response.status, response.statusText);
       return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
     }
     
     const data = await response.json();
-    // Graded price fetched
-    return data;
+    if (!data.success || !numericPrice(data.price)) return data;
+    return {
+      success: true,
+      card: {
+        name: data.cardName || cardName,
+        set: data.setName || card.set,
+        number: data.cardNumber || card.number,
+        tcgplayerId: data.tcgPlayerId || card.tcgplayerId || card.tcgPlayerId || null,
+      },
+      graded: {
+        company: 'PSA',
+        grade: gradeKey,
+        price: numericPrice(data.price),
+        currency: 'USD',
+        confidence: data.confidence || null,
+        source: 'Pokemon Price Tracker / eBay',
+        allGrades: { psa: { [gradeKey]: numericPrice(data.price) } },
+      },
+    };
   } catch (error) {
     console.error('Error fetching graded prices:', error);
     return { success: false, error: error.message };
   }
 }
 
-export async function apiFetchMarketPrices(card) {
+export async function apiFetchMarketPrices(card, { force = false } = {}) {
   try {
-    // Fetching on-demand prices
+    if (!force && hasFreshEmbeddedMarketPrices(card)) {
+      return getEmbeddedMarketPrices(card);
+    }
     
     const params = new URLSearchParams({
       name: card.name,
       ...(card.set && { set: card.set }),
       ...(card.number && { number: card.number }),
+      ...(card.setCode && { setCode: card.setCode }),
+      ...(card.setSeries && { series: card.setSeries }),
+      ...((card.tcgplayerId || card.tcgPlayerId) && { tcgplayerId: card.tcgplayerId || card.tcgPlayerId }),
+      ...((card.cardmarketId || card.cardMarketId) && { cardmarketId: card.cardmarketId || card.cardMarketId }),
+      ...(card.tcgid && { tcgid: card.tcgid }),
     });
     
     const url = `${CLOUD_FUNCTIONS_BASE}/fetchMarketPrices?${params}`;
@@ -549,11 +670,41 @@ export async function apiFetchMarketPrices(card) {
 }
 
 /**
- * Hybrid search using PriceCharting (primary) enriched with CardMarket (images)
- * CORRECTED FLOW:
- * - PriceCharting: PRIMARY search for card data (NO PRICES in search results)
- * - CardMarket: Image enrichment during search
- * - Prices: Fetched ON-DEMAND via apiFetchMarketPrices when user interacts with card
+ * Testing-only exact condition/printing lookup.
+ * This endpoint is user-triggered and never changes the saved seller price.
+ */
+export async function apiFetchConditionAwarePriceBeta(card, { printing = '' } = {}) {
+  const user = getAuth().currentUser;
+  if (!user) throw new Error('Sign in to test condition-aware pricing.');
+
+  const token = await user.getIdToken();
+  const params = new URLSearchParams({
+    name: card?.name || '',
+    condition: card?.condition || 'NM',
+    language: card?.language || (card?.isJapanese ? 'Japanese' : 'English'),
+    ...(card?.set && { set: card.set }),
+    ...(card?.number && { number: card.number }),
+    ...(card?.rarity && { rarity: card.rarity }),
+    ...((card?.tcgplayerId || card?.tcgPlayerId) && {
+      tcgplayerId: card.tcgplayerId || card.tcgPlayerId,
+    }),
+    ...((printing || card?.variant) && { printing: printing || card.variant }),
+  });
+
+  const response = await fetch(`${CONDITION_PRICING_BETA_BASE}/getConditionAwarePriceBeta?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.success) {
+    throw new Error(payload?.error || `Condition-aware pricing returned HTTP ${response.status}.`);
+  }
+  return payload.result;
+}
+
+/**
+ * Provider fallback search used when the shared card database has no match.
+ * CardMarket and Japanese results are normalized here; prices are fetched
+ * on-demand via apiFetchMarketPrices when the user selects a card.
  * 
  * Now includes query preprocessing for typo correction and set expansion!
  */
@@ -563,12 +714,13 @@ export async function apiSearchCardsHybrid(query, options = {}) {
     allowExpired = false, 
     maxResults = SEARCH_CACHE_RESULT_LIMIT,
     signal = null,
+    languageScope = 'english',
   } = options;
   
   if (!query?.trim()) return [];
   
   // STEP 0: Preprocess query (typo correction, set expansion)
-  const { processed: processedQuery, wasModified, corrections } = preprocessQuery(query);
+  const { processed: processedQuery, wasModified } = preprocessQuery(query);
   
   if (wasModified) {
     // Query preprocessed (typos/sets corrected)
@@ -642,26 +794,6 @@ export async function apiSearchCardsHybrid(query, options = {}) {
       // GOLD STAR + POKEMON NAME: Add targeted secondary search
       // e.g., "pikachu gold star" → also search "104 holon" to find Pikachu ★
       if (parsed.rarityFilters.includes('gold star')) {
-        const GOLD_STAR_BY_POKEMON = {
-          'pikachu':   '104 holon',
-          'mewtwo':    '103 holon',
-          'gyarados':  '102 holon',
-          'charizard': '100 frontiers',
-          'mew':       '101 frontiers',
-          'rayquaza':  '107 deoxys',
-          'latias':    '105 latias deoxys',
-          'latios':    '106 latios deoxys',
-          'entei':     '113 unseen',
-          'raikou':    '114 unseen',
-          'suicune':   '115 unseen',
-          'groudon':   '111 groudon legend',
-          'kyogre':    '112 kyogre legend',
-          'alakazam':  '99 alakazam crystal',
-          'celebi':    '100 celebi crystal',
-          'mudkip':    '107 mudkip rocket',
-          'torchic':   '108 torchic rocket',
-          'treecko':   '109 treecko rocket',
-        };
         const targetedQuery = GOLD_STAR_BY_POKEMON[parsed.primaryName.toLowerCase()];
         if (targetedQuery) {
           setOnlyQueries.push(targetedQuery);
@@ -727,6 +859,22 @@ export async function apiSearchCardsHybrid(query, options = {}) {
           setOnlyQueries.push(num);
         }
       }
+
+      // A name + collector number is enough to identify the known Gold Star
+      // printing. Users should not also have to type the rarity or set name.
+      // Example: "mew 101" needs "101 frontiers" because the provider's
+      // generic 101 results are dominated by newer cards.
+      const targetedGoldStarQuery = GOLD_STAR_BY_POKEMON[parsed.primaryName.toLowerCase()];
+      if (targetedGoldStarQuery) {
+        const targetedNumber = targetedGoldStarQuery.split(/\s+/)[0].replace(/^0+/, '') || '0';
+        const hasTargetedNumber = parsed.numbers.some(number => {
+          const queryNumber = String(number).split('/')[0].replace(/^0+/, '') || '0';
+          return queryNumber === targetedNumber;
+        });
+        if (hasTargetedNumber && !setOnlyQueries.includes(targetedGoldStarQuery)) {
+          setOnlyQueries.push(targetedGoldStarQuery);
+        }
+      }
       
       // If no explicit set, also try "[name] promo" search for promo variants
       if (parsed.setWords.length === 0) {
@@ -737,7 +885,7 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   }
   
   // Check cache first (using original query for cache key)
-  const canonical = canonicalizeQuery(query);
+  const canonical = canonicalizeQuery(query, languageScope);
   if (useCache) {
     const cached = getSearchCacheEntry(canonical);
     if (cached && cached.results.length) {
@@ -750,59 +898,69 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Bail early if already aborted
   if (signal?.aborted) return [];
   
-  // Search BOTH APIs in parallel for comprehensive results
-  // Add timeout to prevent hanging (8s for CardMarket, 10s for PriceCharting)
+  // Keep a timeout guard around provider calls so a slow upstream cannot hold
+  // the UI indefinitely.
   const timeout = (ms) => new Promise((_, reject) => 
     setTimeout(() => reject(new Error('Search timeout')), ms)
   );
   
-  // Build search promises - include set-only search if we have set words
-  const searchPromises = [
-    // Primary search: Pokemon name
-    Promise.race([
-      apiSearchPriceCharting(searchQuery, { limit: maxResults }),
-      timeout(10000)
-    ]).catch(err => {
-      console.error('PriceCharting search error:', err.message);
-      return [];
+  const cardMarketResults = await Promise.race([
+    apiSearchCards(searchQuery, {
+      useCache: false,
+      maxResults,
+      includeJapanese: languageScope !== 'english',
+      skipRanking: true,
+      signal,
     }),
-    Promise.race([
-      apiSearchCards(searchQuery, { useCache: false, maxResults: maxResults, skipRanking: true }),
-      timeout(8000)
-    ]).catch(err => {
-      console.error('CardMarket search error:', err.message);
-      return [];
-    })
-  ];
-  
-  // Add set-only searches if applicable (to find cards FROM those sets)
-  // This handles cases like "classic collection" which needs to also search "celebrations"
-  // For rarity searches (Gold Star), use smaller result limit since we only need 1-3 per query
-  const isRaritySearch = (parsed.rarityFilters || []).length > 0;
-  const secondaryMaxResults = isRaritySearch ? 5 : 50;
-  for (const setQuery of setOnlyQueries) {
-    searchPromises.push(
+    timeout(8000),
+  ]).catch(err => {
+    if (err?.name !== 'AbortError') console.error('Card search error:', err.message);
+    return [];
+  });
+
+  // Judge the primary response by relevant matches, not its raw size. A query
+  // such as "moltres 229" can return 20 Moltres cards without returning #229;
+  // that must still trigger the targeted number fallback.
+  const primaryRelevantResults = improveSearchResults(
+    cardMarketResults,
+    processedQuery || query,
+    {
+      maxResults: DEFAULT_SUGGESTION_LIMIT,
+      enableDeduplication: true,
+      enableFiltering: true,
+      enableRanking: true,
+    },
+  );
+  const primaryNeedsFallback =
+    cardMarketResults.length < DEFAULT_SUGGESTION_LIMIT ||
+    primaryRelevantResults.length === 0;
+
+  let setSearchResults = [];
+  if (primaryNeedsFallback && setOnlyQueries.length > 0 && !signal?.aborted) {
+    const isRaritySearch = (parsed.rarityFilters || []).length > 0;
+    const secondaryMaxResults = isRaritySearch ? 5 : 50;
+    setSearchResults = await Promise.all(setOnlyQueries.map(setQuery =>
       Promise.race([
-        apiSearchCards(setQuery, { useCache: false, maxResults: secondaryMaxResults, skipRanking: true }),
-        timeout(8000)
+        apiSearchCards(setQuery, {
+          useCache: false,
+          maxResults: secondaryMaxResults,
+          includeJapanese: languageScope !== 'english',
+          skipRanking: true,
+          signal,
+        }),
+        timeout(8000),
       ]).catch(err => {
-        console.error(`Set search "${setQuery}" error:`, err.message);
+        if (err?.name !== 'AbortError') console.error(`Set search "${setQuery}" error:`, err.message);
         return [];
       })
-    );
+    ));
   }
-  
-  const searchResults = await Promise.all(searchPromises);
   
   // Bail if aborted while waiting for API responses
   if (signal?.aborted) return [];
   
-  const [priceChartingResults, cardMarketResults, ...setSearchResults] = searchResults;
-  
   // Merge all set search results into cardMarket results
   const combinedCardMarketResults = [...cardMarketResults, ...setSearchResults.flat()];
-  
-  // Results received from both APIs
   
   // Helper to normalize set names for better deduplication
   const normalizeSetName = (setName) => {
@@ -826,55 +984,26 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   // Create a Map to track unique cards (avoid duplicates)
   const cardMap = new Map();
   
-  // Track position scores for better ranking (earlier results from either API = higher priority)
-  const positionScores = new Map();
-  
   // Add CardMarket results (they have better images and set data)
   // Use combined results which includes set-only search results
-  combinedCardMarketResults.forEach((cmCard, index) => {
+  combinedCardMarketResults.forEach((cmCard) => {
     const key = createCardKey(cmCard);
     // Normalize field names (API returns card_number, we use number)
-    cardMap.set(key, {
+    const normalizedCard = {
       ...cmCard,
       number: cmCard.number || cmCard.card_number, // Normalize card number field
       set: cmCard.set || cmCard.episode?.name, // Normalize set field
-      source: 'cardmarket',
-      // CardMarket cards need priceChartingId for graded lookups
-      priceChartingId: null,
-    });
-    // Lower index = higher score (result #1 gets high score)
-    positionScores.set(key, 100 - index);
-  });
-  
-  // Enrich with PriceCharting data (adds priceChartingId for graded support)
-  priceChartingResults.forEach((pcCard, index) => {
-    const key = createCardKey(pcCard);
-    
-    if (cardMap.has(key)) {
-      // Card exists from CardMarket, just add PriceCharting ID
-      const existing = cardMap.get(key);
-      cardMap.set(key, {
-        ...existing,
-        priceChartingId: pcCard.priceChartingId,
-        fullName: pcCard.fullName, // Keep full name for reference
-      });
-      // Boost score if it's also early in PriceCharting results
-      const cmScore = positionScores.get(key) || 0;
-      const pcScore = 100 - index;
-      positionScores.set(key, cmScore + pcScore); // Combined score from both sources
-    } else {
-      // New card from PriceCharting only
-      cardMap.set(key, {
-        ...pcCard,
-        source: 'pricecharting',
-      });
-      // PriceCharting-only cards get their position score
-      positionScores.set(key, 100 - index);
-    }
+      source: cmCard.dataSource === 'justtcg' || cmCard._isJapaneseCard ? 'justtcg' : 'cardmarket',
+    };
+    cardMap.set(
+      key,
+      cardMap.has(key) ? mergeBestData(cardMap.get(key), normalizedCard) : normalizedCard,
+    );
   });
   
   // Convert Map back to array
-  let finalResults = Array.from(cardMap.values());
+  let finalResults = Array.from(cardMap.values())
+    .filter(card => matchesLanguageScope(card, languageScope));
   
   // Applying search improvements (filter, dedupe, rank)
   
@@ -903,8 +1032,8 @@ export async function apiSearchCardsHybrid(query, options = {}) {
   
   // Clean summary log (not verbose debug)
   const cmCount = finalResults.filter(c => c.source === 'cardmarket').length;
-  const pcCount = finalResults.filter(c => c.source === 'pricecharting').length;
-  if (import.meta.env.DEV) console.log(`✅ Search "${query}" → ${finalResults.length} results (${cmCount} CM, ${pcCount} PC)`);
+  const jpCount = finalResults.filter(c => c.source === 'justtcg').length;
+  if (import.meta.env.DEV) console.log(`✅ Search "${query}" → ${finalResults.length} results (${cmCount} CM, ${jpCount} JP)`);
   
   return finalResults;
 }
@@ -929,13 +1058,19 @@ export async function apiSearchCardsCached(query, options = {}) {
   const {
     useCache = true,
     maxResults = MAX_SUGGESTION_LIMIT,
+    signal = null,
+    languageScope = 'english',
+    skipDatabaseCache = false,
   } = options;
 
   // Searching with intelligent cache
+  if (skipDatabaseCache || languageScope !== 'english') {
+    return apiSearchCardsHybrid(query, { ...options, signal, languageScope });
+  }
   
   try {
-    const searchUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/searchCards?q=${encodeURIComponent(query)}`;
-    const response = await fetch(searchUrl);
+    const searchUrl = `${CLOUD_FUNCTIONS_BASE}/searchCards?q=${encodeURIComponent(query)}`;
+    const response = await fetch(searchUrl, { signal });
     
     if (!response.ok) {
       throw new Error(`Search failed: ${response.statusText}`);
@@ -951,17 +1086,60 @@ export async function apiSearchCardsCached(query, options = {}) {
     
     // If cached search returned results, use them
     if (data.results.length > 0) {
-      return data.results.slice(0, maxResults);
+      const cachedResults = improveSearchResults(data.results, query, {
+        maxResults,
+        enableDeduplication: true,
+        enableFiltering: true,
+        enableRanking: true,
+      });
+      const hasRichStrongMatch = cachedResults.some(card => {
+        const hasIdentity = Boolean(
+          card.tcgid || card.tcgplayerId || card.tcgPlayerId || card.cardmarketId || card.cardMarketId,
+        );
+        const hasPrice = Number(
+          card.prices?.tcgplayer?.market_price ||
+          card.prices?.cardmarket?.lowest_near_mint ||
+          card.prices?.cardmarket?.avg30,
+        ) > 0;
+        return hasIdentity && hasPrice && Boolean(card.image) && isStrongSearchMatch(card, query);
+      });
+
+      if (hasRichStrongMatch) {
+        if (useCache) setSearchCacheEntry(canonicalizeQuery(query, languageScope), cachedResults);
+        return cachedResults;
+      }
+
+      // Keep the fast cache candidates visible in the final merge, but do not
+      // let weak or sparse matches prevent a real provider lookup.
+      const providerResults = await apiSearchCardsHybrid(query, {
+        ...options,
+        useCache: false,
+        signal,
+        languageScope,
+      });
+      const mergedResults = improveSearchResults(
+        [...cachedResults, ...providerResults],
+        query,
+        {
+          maxResults,
+          enableDeduplication: true,
+          enableFiltering: true,
+          enableRanking: true,
+        },
+      );
+      if (useCache && mergedResults.length > 0) {
+        setSearchCacheEntry(canonicalizeQuery(query, languageScope), mergedResults);
+      }
+      return mergedResults;
     }
     
-    // No results from cache - fall back to hybrid search (PriceCharting + CardMarket)
-    // No cache results, falling back to hybrid search
-    return apiSearchCardsHybrid(query, options);
+    // No results from the database-backed endpoint: use the provider fallback.
+    return apiSearchCardsHybrid(query, { ...options, signal });
     
   } catch (error) {
+    if (error?.name === 'AbortError' || signal?.aborted) return [];
     console.error('❌ Cached search failed, falling back to hybrid search:', error.message);
     // Fallback to the existing hybrid search if cache search fails
-    return apiSearchCardsHybrid(query, options);
+    return apiSearchCardsHybrid(query, { ...options, signal });
   }
 }
-

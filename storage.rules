@@ -9,7 +9,7 @@ service firebase.storage {
     function isStorageAdmin() {
       return request.auth != null && (
         firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'rafchucollects@gmail.com'
+        (request.auth.token.email == 'rafchucollects@gmail.com' && request.auth.token.email_verified == true)
       );
     }
 

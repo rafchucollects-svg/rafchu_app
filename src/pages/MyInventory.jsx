@@ -1,9 +1,11 @@
+import { saveItemChanges } from "@/utils/inventoryStore";
+import { InventoryTrash } from "@/components/InventoryTrash";
 import { useMemo, useState, useEffect, useCallback, useDeferredValue } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, ExternalLink, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye, Percent } from "lucide-react";
+import { Store, Trash2, Edit2, Check, X, Download, Share2, Copy, DollarSign, CheckSquare, Square, Filter, Upload, Camera, History, Search, ChevronDown, ChevronUp, RotateCcw, Wallet, EyeOff, Eye, Percent } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { computeInventoryTotals, formatCurrency, computeItemMetrics, exportToCSV, getConditionColorClass, recordTransaction, convertCurrency } from "@/utils/cardHelpers";
 import {
@@ -12,14 +14,19 @@ import {
   computeSalePayout,
 } from "@/utils/consignmentHelpers";
 import { ConditionSelect, CardPrices, ExternalLinks } from "@/components/CardComponents";
+import { InventoryMarketValues } from "@/components/InventoryMarketValues";
+import { ConditionAwarePriceBeta } from "@/components/ConditionAwarePriceBeta";
+import { isGradedCard } from "@/utils/marketValueDisplay";
 import { CardBadges, CardPriceInfo, GradedCardInfo, VariantInfo } from "@/components/CardBadges";
 import { GradingBadge } from "@/components/GradingCompanyLogo";
 import { ImageUploadModal } from "@/components/ImageUploadModal";
 import { CashManager } from "@/components/CashManager";
+import { TransactionDetailsFields } from "@/components/TransactionDetailsFields";
+import { createEmptyTransactionDetails } from "@/utils/transactionHelpers";
 import { needsImage } from "@/utils/imageHelpers";
 import { CardLadderImport } from "@/components/CardLadderImport";
 import { CardImageReplacer } from "@/components/CardImageReplacer";
-import { apiFetchMarketPrices } from "@/utils/apiHelpers";
+import { apiFetchGradedPrices, apiFetchMarketPrices } from "@/utils/apiHelpers";
 import { setDoc, doc, addDoc, collection, serverTimestamp, getDocs, query, orderBy, deleteDoc, updateDoc } from "firebase/firestore";
 import { CardSearch } from "./CardSearch";
 import { toast } from "@/components/ui/Toaster";
@@ -43,6 +50,7 @@ export function MyInventory() {
     setCollectionSortDir,
     roundUpPrices,
     setRoundUpPrices,
+    marketSource,
     currency,
     secondaryCurrency,
     triggerQuickAddFeedback,
@@ -56,6 +64,8 @@ export function MyInventory() {
 
   const [editingPriceId, setEditingPriceId] = useState(null);
   const [editingPriceValue, setEditingPriceValue] = useState("");
+  const [editingPurchasePriceId, setEditingPurchasePriceId] = useState(null);
+  const [editingPurchasePriceValue, setEditingPurchasePriceValue] = useState("");
   const [shareEnabled, setShareEnabled] = useState(false);
   const [shareUsername, setShareUsername] = useState("");
   const [selectedCards, setSelectedCards] = useState(new Set());
@@ -98,13 +108,13 @@ export function MyInventory() {
   const [editCardNumber, setEditCardNumber] = useState("");
   
   // Filter states
-  const [filterRarity, setFilterRarity] = useState("all");
-  const [filterCondition, setFilterCondition] = useState("all");
-  const [filterSet, setFilterSet] = useState("all");
+  const [filterRarity] = useState("all");
+  const [filterCondition] = useState("all");
+  const [filterSet] = useState("all");
   const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded", "manualPrice"
   const [filterVisibility, setFilterVisibility] = useState("all"); // "all", "visible", "hidden"
   const [filterOwnership, setFilterOwnership] = useState("all"); // "all", "owned", "consigned"
-  const [showFilters, setShowFilters] = useState(false);
+
   
   // Image upload modal state
   const [imageUploadModalOpen, setImageUploadModalOpen] = useState(false);
@@ -126,7 +136,7 @@ export function MyInventory() {
       const updatedItems = (data.items || []).map(it =>
         it.entryId === entryId ? { ...it, image: newImageUrl, imageManuallySet: true } : it
       );
-      await setDoc(docRef, { ...data, items: updatedItems }, { merge: true });
+      await saveItemChanges(docRef, data.items || [], updatedItems);
       updateCollectionItem(entryId, { image: newImageUrl, imageManuallySet: true });
       console.log("[ImageUpdate] Persisted image for", entryId);
     } catch (err) {
@@ -201,15 +211,9 @@ export function MyInventory() {
   }, [collectionItems, communityImages, getImageForCard, refreshCommunityImages]);
 
   // Get unique sets and rarities for filters
-  const uniqueSets = useMemo(() => {
-    const sets = new Set(collectionItems.map(item => item.set).filter(Boolean));
-    return Array.from(sets).sort();
-  }, [collectionItems]);
 
-  const uniqueRarities = useMemo(() => {
-    const rarities = new Set(collectionItems.map(item => item.rarity).filter(Boolean));
-    return Array.from(rarities).sort();
-  }, [collectionItems]);
+
+
 
   // Defer the search term so typing in the box stays responsive even when
   // the inventory has thousands of cards. React will keep rendering the
@@ -368,6 +372,14 @@ export function MyInventory() {
   // Format price with rounding and selected currency
   const formatPrice = (value) => formatCurrency(roundUpPrices ? Math.ceil(Number(value ?? 0)) : Number(value ?? 0), currency);
 
+  const getPurchasePriceInCurrency = (item) => {
+    if (item?.buyPrice == null || Number.isNaN(Number(item.buyPrice))) return null;
+    const sourceCurrency = item.buyPriceCurrency || currency;
+    return sourceCurrency === currency
+      ? Number(item.buyPrice)
+      : convertCurrency(Number(item.buyPrice), currency, sourceCurrency);
+  };
+
   // Round up to nearest multiple of 5
   const roundUpMarkup = (basePrice, pct) => Math.ceil((basePrice * (1 + pct / 100)) / 5) * 5;
 
@@ -387,7 +399,7 @@ export function MyInventory() {
   const saveInventory = async (items, metadata = {}) => {
     if (!user || !db) return;
     const ref = doc(db, "collections", user.uid);
-    await setDoc(ref, { items, ...metadata }, { merge: true });
+    await saveItemChanges(ref, collectionItems, items, metadata);
   };
 
   // Handler for roundUpPrices toggle
@@ -407,7 +419,7 @@ export function MyInventory() {
   // Delete item
   const deleteItem = async (entryId) => {
     if (!user || !db) return;
-    // Delete directly without confirmation (trash icon is confirmation enough)
+    // Deleted cards remain recoverable in Recently deleted. (trash icon is confirmation enough)
 
     try {
       const updatedItems = collectionItems.filter(item => item.entryId !== entryId);
@@ -420,17 +432,7 @@ export function MyInventory() {
   };
 
   // Update condition
-  const updateCondition = async (entryId, newCondition) => {
-    if (!user || !db) return;
-    try {
-      const updatedItems = collectionItems.map(item =>
-        item.entryId === entryId ? { ...item, condition: newCondition } : item
-      );
-      await saveInventory(updatedItems);
-    } catch (error) {
-      console.error("Failed to update condition", error);
-    }
-  };
+
 
   // Start editing condition/grade
   const startEditingCondition = (card) => {
@@ -459,22 +461,16 @@ export function MyInventory() {
       setUpdatingGradePrice(true);
       let newGradedPrice = cardDetailsModal.gradedPrice;
 
-      // If graded card, fetch new price from PriceCharting
+      // Refresh from supported graded market data when available.
       if (cardDetailsModal.isGraded) {
         try {
-          const apiUrl = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchGradedPrices?name=${encodeURIComponent(
-            cardDetailsModal.name || ''
-          )}&set=${encodeURIComponent(cardDetailsModal.set || '')}&number=${encodeURIComponent(
-            cardDetailsModal.number || ''
-          )}&company=${encodeURIComponent(editGradingCompany)}&grade=${encodeURIComponent(editGrade)}`;
-          
-          const response = await fetch(apiUrl);
-
-          if (response.ok) {
-            const data = await response.json();
-            if (data.graded && data.graded.price) {
-              newGradedPrice = data.graded.price; // Price is in USD
-            }
+          const data = await apiFetchGradedPrices(cardDetailsModal, editGradingCompany, editGrade);
+          if (data?.success && data.graded?.price) {
+            newGradedPrice = convertCurrency(
+              data.graded.price,
+              'USD',
+              data.graded.currency || 'USD',
+            );
           }
         } catch (err) {
           console.warn("Failed to fetch updated graded price:", err);
@@ -525,6 +521,8 @@ export function MyInventory() {
 
   // Start editing price
   const startEditingPrice = (entryId, currentPrice) => {
+    setEditingPurchasePriceId(null);
+    setEditingPurchasePriceValue("");
     setEditingPriceId(entryId);
     setEditingPriceValue(currentPrice != null ? String(currentPrice) : "");
   };
@@ -559,6 +557,58 @@ export function MyInventory() {
     setEditingPriceValue("");
   };
 
+  const startEditingPurchasePrice = (item) => {
+    setEditingPriceId(null);
+    setEditingPriceValue("");
+    setEditingPurchasePriceId(item.entryId);
+    const currentPrice = getPurchasePriceInCurrency(item);
+    setEditingPurchasePriceValue(currentPrice != null ? currentPrice.toFixed(2) : "");
+  };
+
+  const cancelEditingPurchasePrice = () => {
+    setEditingPurchasePriceId(null);
+    setEditingPurchasePriceValue("");
+  };
+
+  const savePurchasePrice = async (entryId) => {
+    if (!user || !db) return;
+    const rawValue = editingPurchasePriceValue.trim();
+    const nextValue = rawValue === "" ? null : Number(rawValue);
+    if (nextValue != null && (!Number.isFinite(nextValue) || nextValue < 0)) {
+      toast.info("Please enter a valid purchase price");
+      return;
+    }
+
+    try {
+      const updatedItems = collectionItems.map((item) => {
+        if (item.entryId !== entryId) return item;
+        return {
+          ...item,
+          buyPrice: nextValue,
+          buyPriceCurrency: nextValue == null ? null : currency,
+          buyPriceManuallySet: true,
+          taxAcquisition: {
+            ...(item.taxAcquisition || {}),
+            recordedCost: nextValue,
+            currency,
+            manuallyAdjusted: true,
+          },
+        };
+      });
+      await saveInventory(updatedItems);
+      setCardDetailsModal((current) => {
+        if (!current || current.entryId !== entryId) return current;
+        const updated = updatedItems.find((item) => item.entryId === entryId);
+        return updated || current;
+      });
+      cancelEditingPurchasePrice();
+      triggerQuickAddFeedback(nextValue == null ? "Purchase price cleared" : "Purchase price updated");
+    } catch (error) {
+      console.error("Failed to update purchase price", error);
+      toast.error("Failed to update purchase price. Please try again.");
+    }
+  };
+
   // Reset price to suggested (clear override)
   const resetPriceToSuggested = async (entryId) => {
     if (!user || !db) return;
@@ -583,7 +633,7 @@ export function MyInventory() {
   // Clear all
   const clearInventory = async () => {
     if (!user || !db) return;
-    const confirmed = await confirm("Clear entire inventory? This cannot be undone.", {
+    const confirmed = await confirm("Move your entire inventory to Recently deleted? You can restore cards there.", {
       title: "Clear inventory",
       confirmText: "Clear",
       variant: "destructive",
@@ -1107,7 +1157,7 @@ export function MyInventory() {
           : item
       );
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       triggerQuickAddFeedback(
         !currentValue ? "Card hidden from marketplace" : "Card visible in marketplace"
       );
@@ -1170,11 +1220,11 @@ export function MyInventory() {
   // Bulk delete
   const handleBulkDelete = async () => {
     if (selectedCards.size === 0) return;
-    // Delete directly without confirmation
+    // Deleted cards remain recoverable in Recently deleted.
     try {
       const updatedItems = collectionItems.filter(item => !selectedCards.has(item.entryId));
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       setSelectedCards(new Set());
       setSelectAll(false);
       triggerQuickAddFeedback(`${selectedCards.size} card(s) deleted`);
@@ -1198,7 +1248,7 @@ export function MyInventory() {
       
       const updatedItems = [...collectionItems, ...duplicatedItems];
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       setSelectedCards(new Set());
       setSelectAll(false);
       triggerQuickAddFeedback(`${duplicatedItems.length} card(s) duplicated`);
@@ -1218,7 +1268,7 @@ export function MyInventory() {
           : item
       );
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       setSelectedCards(new Set());
       setSelectAll(false);
       triggerQuickAddFeedback(
@@ -1357,9 +1407,25 @@ export function MyInventory() {
     setSalesModal({
       cards: cardsWithPrices,
       defaultTotal: totalValue,
-      cardPrices: cardsWithPrices.map(c => c.unitPrice)
+      cardPrices: cardsWithPrices.map(c => c.unitPrice),
+      transactionDetails: createEmptyTransactionDetails("sale"),
     });
     setSalesCurrency(currency); // Reset to primary currency
+  };
+
+  const handleSalesCurrencyChange = (nextCurrency) => {
+    if (!salesModal || nextCurrency === salesCurrency) return;
+    const convertInput = (element) => {
+      if (!element) return;
+      const amount = Number(element.value);
+      if (!Number.isFinite(amount)) return;
+      element.value = convertCurrency(amount, nextCurrency, salesCurrency).toFixed(2);
+    };
+    convertInput(document.getElementById("totalPriceInput"));
+    salesModal.cards.forEach((_, index) => {
+      convertInput(document.getElementById(`cardPrice-${index}`));
+    });
+    setSalesCurrency(nextCurrency);
   };
 
   // Confirm sale and log transaction
@@ -1370,13 +1436,15 @@ export function MyInventory() {
     }
     
     try {
-      const { cards, defaultTotal } = salesModal;
+      const { cards } = salesModal;
       let finalPrice = parseFloat(finalTotal);
       
       if (isNaN(finalPrice) || finalPrice <= 0) {
         toast.info("Please enter a valid sales price");
         return;
       }
+
+      const originalSaleTotal = finalPrice;
       
       // Convert from sales currency to primary currency if needed
       const inputCurrency = salesCurrency;
@@ -1386,14 +1454,25 @@ export function MyInventory() {
         console.log(`Converted price: ${finalPrice}`);
       }
       
-      // Calculate proportional prices if total changed
-      const originalTotal = cards.reduce((sum, c) => sum + (parseFloat(cardPrices[cards.indexOf(c)]) * c.quantity), 0);
-      const discountRatio = finalPrice / originalTotal;
+      // Individual inputs are entered in the selected sales currency; normalize
+      // them before comparing to the primary-currency transaction total.
+      const cardPricesInPrimary = cardPrices.map((price) =>
+        inputCurrency !== currency
+          ? convertCurrency(parseFloat(price) || 0, currency, inputCurrency)
+          : parseFloat(price) || 0
+      );
+      const originalTotal = cards.reduce(
+        (sum, c, index) => sum + cardPricesInPrimary[index] * c.quantity,
+        0,
+      );
+      const discountRatio = originalTotal > 0 ? finalPrice / originalTotal : 0;
+      const totalQuantity = cards.reduce((sum, card) => sum + (card.quantity || 1), 0);
       
       const cardsWithFinalPrices = cards.map((c, idx) => {
-        const originalUnitPrice = parseFloat(cardPrices[idx]);
-        const originalCardTotal = originalUnitPrice * c.quantity;
-        const finalUnitPrice = originalUnitPrice * discountRatio;
+        const originalUnitPrice = cardPricesInPrimary[idx];
+        const finalUnitPrice = originalTotal > 0
+          ? originalUnitPrice * discountRatio
+          : finalPrice / Math.max(1, totalQuantity);
         const finalCardTotal = finalUnitPrice * c.quantity;
         
         const imageUrl = c.image || c.imageUrl || null;
@@ -1423,9 +1502,10 @@ export function MyInventory() {
         // Consigned goods were never owned, so their cost basis is 0.
         const parseCost = (v) =>
           v != null && !isNaN(parseFloat(v)) ? parseFloat(v) : null;
+        const purchasePriceInSaleCurrency = getPurchasePriceInCurrency(c);
         const resolvedCostBasis = consignmentLine
           ? 0
-          : parseCost(c.buyPrice) ?? parseCost(c.overridePrice) ?? parseCost(c.costBasis);
+          : parseCost(purchasePriceInSaleCurrency) ?? parseCost(c.overridePrice) ?? parseCost(c.costBasis);
 
         // Create object and filter out undefined values (Firestore doesn't accept undefined)
         const cardData = {
@@ -1438,7 +1518,9 @@ export function MyInventory() {
           unitPrice: finalUnitPrice,
           totalPrice: finalCardTotal,
           costBasis: resolvedCostBasis,
-          buyPrice: parseCost(c.buyPrice),
+          buyPrice: parseCost(purchasePriceInSaleCurrency),
+          acquisitionTransactionId: c.acquisitionTransactionId || null,
+          taxAcquisition: c.taxAcquisition || null,
           image: imageUrl,
           // Include graded card information for transaction log display
           isGraded: c.isGraded || false,
@@ -1486,6 +1568,7 @@ export function MyInventory() {
       
       // Prepare transaction data, ensuring no undefined values
       const transactionData = {
+        ...(salesModal.transactionDetails || {}),
         userId: user.uid,
         type: "sale",
         cards: cardsWithFinalPrices,
@@ -1516,12 +1599,16 @@ export function MyInventory() {
       // Log to transaction log (for Transaction Log page)
       try {
         const logData = {
+          ...(salesModal.transactionDetails || {}),
           type: "sale",
           totalValue: finalPrice,
+          originalTotal: originalSaleTotal,
+          originalCurrency: inputCurrency,
           itemsOut: cardsWithFinalPrices,
           itemsIn: [],
           notes: `Sale of ${cards.length} card(s)`,
-          currency: currency
+          currency: currency,
+          source: "inventory_sale",
         };
 
         // Only add inputCurrency if it's different from primary currency
@@ -1550,7 +1637,7 @@ export function MyInventory() {
       const updatedItems = collectionItems.filter(item => !soldIds.has(item.entryId));
       
       const ref = doc(db, "collections", user.uid);
-      await setDoc(ref, { items: updatedItems }, { merge: true });
+      await saveItemChanges(ref, collectionItems, updatedItems);
       console.log("Inventory updated");
       
       setSalesModal(null);
@@ -1584,6 +1671,7 @@ export function MyInventory() {
 
   return (
     <div className="max-w-6xl mx-auto">
+      <InventoryTrash collectionName="collections" />
       <div className="mb-4 sm:mb-6 flex items-center gap-3">
         <Store className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
         <div>
@@ -2125,6 +2213,8 @@ export function MyInventory() {
           }
           
           const isEditing = editingPriceId === item.entryId;
+          const isEditingPurchasePrice = editingPurchasePriceId === item.entryId;
+          const purchasePrice = getPurchasePriceInCurrency(item);
           const isSelected = selectedCards.has(item.entryId);
           
           return (
@@ -2262,6 +2352,42 @@ export function MyInventory() {
                       {item.condition || "NM"}
                     </span>
                   ))}
+                  {!isEditing && !isConsignedItem(item) && (
+                    isEditingPurchasePrice ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-muted-foreground">Paid</span>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={editingPurchasePriceValue}
+                          onChange={(e) => setEditingPurchasePriceValue(e.target.value)}
+                          className="w-24 h-7 text-xs font-semibold"
+                          placeholder="0.00"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") savePurchasePrice(item.entryId);
+                            else if (e.key === "Escape") cancelEditingPurchasePrice();
+                          }}
+                        />
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => savePurchasePrice(item.entryId)} title="Save purchase price">
+                          <Check className="h-3.5 w-3.5 text-green-600" />
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={cancelEditingPurchasePrice} title="Cancel">
+                          <X className="h-3.5 w-3.5 text-red-600" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => startEditingPurchasePrice(item)}
+                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary hover:underline"
+                        title="Edit purchase price / cost basis"
+                      >
+                        Paid {purchasePrice == null ? "—" : formatCurrency(purchasePrice, currency)}
+                        <Edit2 className="h-2.5 w-2.5" />
+                      </button>
+                    )
+                  )}
                   {!isEditing && isConsignedItem(item) && (
                     <span
                       className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-300 bg-amber-100 text-amber-800"
@@ -2272,7 +2398,16 @@ export function MyInventory() {
                   )}
                 </div>
 
-                {/* Row 3: exclude + markup buttons + actions */}
+                {/* Row 3: ungraded market values, matching the card details view */}
+                <InventoryMarketValues
+                  card={item}
+                  condition={item.condition || "NM"}
+                  currency={currency}
+                  formatPrice={formatPrice}
+                  marketSource={marketSource}
+                />
+
+                {/* Row 4: exclude + markup buttons + actions */}
                 <div className="flex items-center gap-1.5 pl-6 sm:pl-7" onClick={(e) => e.stopPropagation()}>
                   <label className="flex items-center gap-1 text-[10px] cursor-pointer whitespace-nowrap flex-shrink-0">
                     <input
@@ -2348,9 +2483,9 @@ export function MyInventory() {
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
-                        name="salesCurrency"
-                        checked={salesCurrency === currency}
-                        onChange={() => setSalesCurrency(currency)}
+                      name="salesCurrency"
+                      checked={salesCurrency === currency}
+                      onChange={() => handleSalesCurrencyChange(currency)}
                         className="w-4 h-4"
                       />
                       <span className="text-sm font-medium">{currency} (Primary)</span>
@@ -2358,9 +2493,9 @@ export function MyInventory() {
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
-                        name="salesCurrency"
-                        checked={salesCurrency === secondaryCurrency}
-                        onChange={() => setSalesCurrency(secondaryCurrency)}
+                      name="salesCurrency"
+                      checked={salesCurrency === secondaryCurrency}
+                      onChange={() => handleSalesCurrencyChange(secondaryCurrency)}
                         className="w-4 h-4"
                       />
                       <span className="text-sm font-medium">{secondaryCurrency} (Secondary)</span>
@@ -2491,6 +2626,15 @@ export function MyInventory() {
                 </p>
               </div>
 
+              <TransactionDetailsFields
+                value={salesModal.transactionDetails}
+                onChange={(transactionDetails) => setSalesModal((current) => ({
+                  ...current,
+                  transactionDetails,
+                }))}
+                type="sale"
+              />
+
               <div className="flex gap-3">
                 <Button
                   variant="outline"
@@ -2579,7 +2723,7 @@ export function MyInventory() {
                               const updatedItems = collectionItems.map(it =>
                                 it.entryId === cardDetailsModal.entryId ? { ...it, ...updates } : it
                               );
-                              await setDoc(ref, { items: updatedItems }, { merge: true });
+                              await saveItemChanges(ref, collectionItems, updatedItems);
                               triggerQuickAddFeedback("Card details updated");
                             } catch (err) {
                               console.error("Failed to save card details:", err);
@@ -2798,6 +2942,56 @@ export function MyInventory() {
                     </div>
                   </div>
 
+                  {!isConsignedItem(cardDetailsModal) && (
+                    <div className="border-t pt-3">
+                      <div className="flex justify-between items-center gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">Purchase price</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            Used as this card&apos;s cost basis
+                            {cardDetailsModal.source === "cardladder" ? " · imported from Card Ladder" : ""}
+                          </p>
+                        </div>
+                        {editingPurchasePriceId === cardDetailsModal.entryId ? (
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={editingPurchasePriceValue}
+                              onChange={(e) => setEditingPurchasePriceValue(e.target.value)}
+                              className="w-28 h-8 text-sm"
+                              placeholder="0.00"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") savePurchasePrice(cardDetailsModal.entryId);
+                                else if (e.key === "Escape") cancelEditingPurchasePrice();
+                              }}
+                            />
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => savePurchasePrice(cardDetailsModal.entryId)} title="Save purchase price">
+                              <Check className="h-4 w-4 text-green-600" />
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={cancelEditingPurchasePrice} title="Cancel">
+                              <X className="h-4 w-4 text-red-600" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => startEditingPurchasePrice(cardDetailsModal)}
+                            className="inline-flex items-center gap-2 font-semibold text-primary hover:underline"
+                            title="Edit purchase price / cost basis"
+                          >
+                            {(() => {
+                              const value = getPurchasePriceInCurrency(cardDetailsModal);
+                              return value == null ? "Not set" : formatCurrency(value, currency);
+                            })()}
+                            <Edit2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Variant Tags */}
                   <div className="border-t pt-3">
                     <p className="text-sm font-semibold mb-2">Variants / Tags</p>
@@ -2825,7 +3019,7 @@ export function MyInventory() {
                                 const updatedItems = collectionItems.map(it =>
                                   it.entryId === cardDetailsModal.entryId ? { ...it, [key]: newVal } : it
                                 );
-                                await setDoc(ref, { items: updatedItems }, { merge: true });
+                                await saveItemChanges(ref, collectionItems, updatedItems);
                               } catch (err) {
                                 console.error("Failed to save variant:", err);
                               }
@@ -2964,40 +3158,37 @@ export function MyInventory() {
               </div>
 
               {/* Market Prices */}
-              {!cardDetailsModal.isGraded && cardDetailsModal.prices && (
+              {!isGradedCard(cardDetailsModal) && (
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold mb-3">Market Prices</h3>
-                  <CardPrices
+                  {cardDetailsModal.prices && (
+                    <CardPrices
+                      card={cardDetailsModal}
+                      condition={cardDetailsModal.condition || "NM"}
+                      formatPrice={formatPrice}
+                      mode="vendor"
+                      marketSource={marketSource}
+                      currency={currency}
+                    />
+                  )}
+                  <ConditionAwarePriceBeta
                     card={cardDetailsModal}
-                    condition={cardDetailsModal.condition || "NM"}
-                    formatPrice={formatPrice}
-                    mode="vendor"
-                    marketSource="tcg"
                     currency={currency}
+                    formatPrice={formatPrice}
                   />
                 </div>
               )}
 
               {/* Graded Price Info */}
-              {cardDetailsModal.isGraded && cardDetailsModal.gradedPrice && (
+              {isGradedCard(cardDetailsModal) && cardDetailsModal.gradedPrice && (
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold mb-3">Graded Price</h3>
                   <Card className="rounded-2xl p-4 shadow border-purple-200 bg-purple-50">
                     <CardContent className="p-0">
                       <div className="mb-2 flex items-center justify-between">
                         <span className="font-semibold text-purple-700">
-                          PriceCharting - {cardDetailsModal.gradingCompany} {cardDetailsModal.grade} ({currency})
+                          Graded market — {cardDetailsModal.gradingCompany} {cardDetailsModal.grade} ({currency})
                         </span>
-                        {cardDetailsModal.name && (
-                          <a
-                            href={`https://www.pricecharting.com/game/pokemon-cards?q=${encodeURIComponent(cardDetailsModal.name)}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 underline"
-                          >
-                            View <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
                       </div>
                       <div className="text-lg font-bold">
                         {formatPrice(convertCurrency(parseFloat(cardDetailsModal.gradedPrice), currency))}
@@ -3482,4 +3673,3 @@ export function MyInventory() {
     </div>
   );
 }
-

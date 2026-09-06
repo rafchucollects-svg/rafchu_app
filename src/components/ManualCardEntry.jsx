@@ -231,7 +231,7 @@ export function ManualCardEntry({
   }, []);
   
   // Upload image to Firebase Storage
-  const uploadImageToStorage = useCallback(async (file, cardId) => {
+  const uploadImageToStorage = useCallback(async (file) => {
     if (!file || !user) return null;
     
     try {

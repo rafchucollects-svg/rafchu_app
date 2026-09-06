@@ -104,11 +104,6 @@ Filter by: Sold listings, last 90 days
 - **Cost:** Requires TCGPlayer partnership
 - **API:** https://docs.tcgplayer.com/
 
-**Option C: PriceCharting API**
-- **Pros:** Historical graded card pricing
-- **Cons:** Primarily focused on video games, limited TCG
-- **API:** https://www.pricecharting.com/api-documentation
-
 **Recommended:** eBay API for graded card pricing (Phase 2)
 
 **Effort:** 5-7 days development + testing
@@ -476,7 +471,6 @@ The CardMarket API is card-focused and does NOT include:
 - Timeline constraints?
 
 **Note:** This plan assumes the current CardMarket API will remain as the primary card data source, with new features built on top of our existing infrastructure.
-
 
 
 

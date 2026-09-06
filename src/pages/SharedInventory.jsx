@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Store, Package, Search, LogIn, Award, MapPin, Sparkles, TrendingUp, Filter, ArrowUpDown, Clock } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { LoginModal } from "@/components/LoginModal";
-import { computeInventoryTotals, formatCurrency, computeItemMetrics, getConditionColorClass, convertCurrency, getConditionDisplayLabel, isViewerInEurope } from "@/utils/cardHelpers";
+import {  formatCurrency, computeItemMetrics, getConditionColorClass, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { getDoc, doc } from "firebase/firestore";
 
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
@@ -55,7 +55,7 @@ export function SharedInventory() {
         setLoading(true);
         
         // Load vendor profile
-        const userRef = doc(db, "users", inventoryUserId);
+        const userRef = doc(db, "public_profiles", inventoryUserId);
         const userSnap = await getDoc(userRef);
         
         if (userSnap.exists()) {
@@ -66,7 +66,7 @@ export function SharedInventory() {
         }
         
         // Load inventory
-        const inventoryRef = doc(db, "collections", inventoryUserId);
+        const inventoryRef = doc(db, "public_inventories", inventoryUserId);
         const inventorySnap = await getDoc(inventoryRef);
         
         if (inventorySnap.exists()) {

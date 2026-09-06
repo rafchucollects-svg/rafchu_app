@@ -5,7 +5,7 @@ import { Input } from './ui/input';
 import { Card, CardContent } from './ui/card';
 import { useApp } from '@/contexts/AppContext';
 import { convertCurrency, formatCurrency } from '@/utils/cardHelpers';
-import { apiFetchMarketPrices } from '@/utils/apiHelpers';
+import { apiFetchGradedPrices, apiFetchMarketPrices, getEmbeddedGradedPrices } from '@/utils/apiHelpers';
 import { ConsignmentFields } from './ConsignmentFields';
 import {
   DEFAULT_CONSIGNOR_PCT,
@@ -44,6 +44,9 @@ const GRADING_COMPANIES = [
   { value: 'Other', label: 'Other' },
 ];
 
+const formatProviderPrice = (value, providerCurrency) =>
+  Number(value) > 0 ? formatCurrency(Number(value), providerCurrency || 'USD') : '–';
+
 const GRADES = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6', '5', '4', '3', '2', '1'];
 
 // Auto-detect language based on card data (Japanese cards have different set names/numbers)
@@ -70,8 +73,8 @@ export function AddCardModal({
   const [fetchingMarketPrices, setFetchingMarketPrices] = useState(false);
   
   // Variant fields (v2.1)
-  const [variant, setVariant] = useState('');
-  const [variantOther, setVariantOther] = useState('');
+  const [variant] = useState('');
+  const [variantOther] = useState('');
   
   // Graded fields (v2.1)
   const [isGraded, setIsGraded] = useState(false);
@@ -90,7 +93,7 @@ export function AddCardModal({
     if (!card) return 'English';
     
     const setName = (card.set || '').toLowerCase();
-    const cardName = (card.name || '').toLowerCase();
+
     
     // Japanese set indicators
     const japaneseSetKeywords = [
@@ -175,51 +178,11 @@ export function AddCardModal({
     const fetchAvailableGrades = async () => {
       setFetchingAvailableGrades(true);
       try {
-        console.log('🔍 Fetching available grades for', gradingCompany);
-        
-        const params = new URLSearchParams();
-        
-        if (card.priceChartingId) {
-          params.append('priceChartingId', card.priceChartingId);
-        } else if (card.name) {
-          params.append('name', card.name);
-          if (card.set) params.append('set', card.set);
-          if (card.number) params.append('number', card.number);
-        }
-        
-        // Fetch with a dummy grade to get all grades back
-        params.append('grade', '10');
-        params.append('company', gradingCompany);
-        
-        const url = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchGradedPrices?${params}`;
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.success && data.graded?.allGrades) {
-          // Extract available grades for this company
-          const companyKey = gradingCompany.toLowerCase();
-          const companyGrades = data.graded.allGrades[companyKey] || {};
-          
-          // Filter to only grades with non-zero prices
-          const available = {};
-          Object.entries(companyGrades).forEach(([gradeKey, price]) => {
-            if (price && price > 0) {
-              available[gradeKey] = price;
-            }
-          });
-          
-          console.log(`✅ Available ${gradingCompany} grades:`, Object.keys(available));
-          setAvailableGrades(available);
-        } else {
-          // No grades available, set empty object
-          console.warn('⚠️ No graded pricing data found');
-          setAvailableGrades({});
-        }
+        const embedded = getEmbeddedGradedPrices(card, gradingCompany);
+        const available = Object.fromEntries(
+          Object.entries(embedded).map(([gradeKey, value]) => [gradeKey, value.price]),
+        );
+        setAvailableGrades(Object.keys(available).length > 0 ? available : null);
       } catch (error) {
         console.error('❌ Error fetching available grades:', error);
         // On error, show all grades (fallback)
@@ -245,88 +208,20 @@ export function AddCardModal({
     }
     
     // Show only available grades
-    return GRADES.filter(g => availableGrades.hasOwnProperty(g));
+    return GRADES.filter(g => Object.prototype.hasOwnProperty.call(availableGrades, g));
   }, [availableGrades]);
 
   // Smart variant filtering based on card set
-  const relevantVariants = useMemo(() => {
-    if (!card) return VARIANT_OPTIONS;
-    
-    const setName = (card.set || '').toLowerCase();
-    const filtered = [{ value: '', label: 'Not Specified' }];
-    
-    // Classic sets (1st Edition, Shadowless, Unlimited)
-    const classicSets = ['base set', 'jungle', 'fossil', 'base set 2', 'team rocket', 'gym heroes', 'gym challenge'];
-    const isClassic = classicSets.some(s => setName.includes(s));
-    
-    if (isClassic) {
-      if (setName.includes('base set') && !setName.includes('base set 2')) {
-        filtered.push({ value: '1st-edition', label: '1st Edition' });
-        filtered.push({ value: 'shadowless', label: 'Shadowless' });
-        filtered.push({ value: 'unlimited', label: 'Unlimited' });
-      } else {
-        filtered.push({ value: '1st-edition', label: '1st Edition' });
-        filtered.push({ value: 'unlimited', label: 'Unlimited' });
-      }
-    }
-    
-    // Reverse holo (available for most modern sets)
-    const hasReverseHolo = !classicSets.some(s => setName.includes(s));
-    if (hasReverseHolo) {
-      filtered.push({ value: 'regular-holo', label: 'Regular Holo' });
-      filtered.push({ value: 'reverse-holo', label: 'Reverse Holo' });
-    }
-    
-    // Special variants (available for all)
-    filtered.push({ value: 'promo', label: 'Promo' });
-    filtered.push({ value: 'full-art', label: 'Full Art' });
-    filtered.push({ value: 'secret-rare', label: 'Secret Rare' });
-    filtered.push({ value: 'alt-art', label: 'Alternate Art' });
-    filtered.push({ value: 'other', label: 'Other' });
-    
-    return filtered;
-  }, [card]);
 
-  // Auto-fetch graded price from PriceCharting when grade is selected
+
+  // Resolve graded price from verified provider data when grade is selected.
   useEffect(() => {
     if (!isGraded || !gradingCompany || !grade || !card) return;
     
     const fetchGradedPrice = async () => {
       setFetchingGradedPrice(true);
       try {
-        console.log('🏆 Fetching graded price from PriceCharting for:', {
-          name: card.name,
-          priceChartingId: card.priceChartingId,
-          company: gradingCompany,
-          grade
-        });
-        
-        // Fetch from new graded prices endpoint
-        const params = new URLSearchParams();
-        
-        if (card.priceChartingId) {
-          params.append('priceChartingId', card.priceChartingId);
-        } else if (card.name) {
-          params.append('name', card.name);
-          if (card.set) params.append('set', card.set);
-          if (card.number) params.append('number', card.number);
-        }
-        
-        params.append('grade', grade);
-        params.append('company', gradingCompany);
-        
-        const url = `https://us-central1-rafchu-tcg-app.cloudfunctions.net/fetchGradedPrices?${params}`;
-        console.log('📡 Fetching graded price:', url.replace(/priceChartingId=\d+/, 'priceChartingId=***'));
-        
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-          console.error('❌ API response not OK:', response.status);
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-        
-        const data = await response.json();
-        console.log('📦 Graded price response:', data);
+        const data = await apiFetchGradedPrices(card, gradingCompany, grade);
         
         if (!data.success || !data.graded) {
           console.warn('⚠️ No graded price data found');
@@ -335,7 +230,11 @@ export function AddCardModal({
           return;
         }
         
-        const priceUSD = data.graded.price;
+        const priceUSD = convertCurrency(
+          data.graded.price,
+          'USD',
+          data.graded.currency || 'USD',
+        );
         
         if (priceUSD && priceUSD > 0) {
           const priceConverted = convertCurrency(priceUSD, currency || 'USD');
@@ -525,11 +424,11 @@ export function AddCardModal({
                               <div className="grid grid-cols-2 gap-2 text-sm">
                                 <div>
                                   <span className="text-muted-foreground">Average:</span>
-                                  <span className="ml-2 font-semibold">€{marketPrices.eu.avg.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.eu.avg, marketPrices.eu.currency || 'EUR')}</span>
                                 </div>
                                 <div>
                                   <span className="text-muted-foreground">Low:</span>
-                                  <span className="ml-2 font-semibold">€{marketPrices.eu.low.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.eu.low, marketPrices.eu.currency || 'EUR')}</span>
                                 </div>
                               </div>
                             </div>
@@ -537,27 +436,20 @@ export function AddCardModal({
                             <p className="text-sm text-yellow-600">⚠️ CardMarket pricing not available for this card</p>
                           )
                         ) : (
-                          // Show US prices (TCGPlayer or PriceCharting fallback) - DEFAULT
+                          // Show US prices (TCGPlayer) - DEFAULT
                           marketPrices.us?.found ? (
-                            <div className={`bg-white p-3 rounded border ${marketPrices.us.fallback ? 'border-purple-200' : 'border-green-200'}`}>
-                              <p className={`text-xs font-semibold mb-2 ${marketPrices.us.fallback ? 'text-purple-600' : 'text-green-600'}`}>
-                                {marketPrices.us.fallback ? '🔄 PriceCharting (Fallback)' : '🇺🇸 US Market (TCGPlayer)'}
-                              </p>
+                            <div className="bg-white p-3 rounded border border-green-200">
+                              <p className="text-xs font-semibold mb-2 text-green-600">🇺🇸 US Market (TCGPlayer)</p>
                               <div className="grid grid-cols-2 gap-2 text-sm">
                                 <div>
                                   <span className="text-muted-foreground">Market:</span>
-                                  <span className="ml-2 font-semibold">${marketPrices.us.market.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.us.market, marketPrices.us.currency)}</span>
                                 </div>
                                 <div>
                                   <span className="text-muted-foreground">Low:</span>
-                                  <span className="ml-2 font-semibold">${marketPrices.us.low.toFixed(2)}</span>
+                                  <span className="ml-2 font-semibold">{formatProviderPrice(marketPrices.us.low, marketPrices.us.currency)}</span>
                                 </div>
                               </div>
-                              {marketPrices.us.fallback && (
-                                <p className="text-xs text-purple-600 mt-2">
-                                  ℹ️ Using PriceCharting data (not in TCGPlayer/CardMarket)
-                                </p>
-                              )}
                             </div>
                           ) : (
                             <p className="text-sm text-yellow-600">⚠️ TCGPlayer pricing not available for this card</p>
@@ -570,29 +462,22 @@ export function AddCardModal({
                     {mode === 'vendor' && (
                       <div className="space-y-2">
                         {marketPrices.us?.found && (
-                          <div className={`bg-white p-3 rounded border ${marketPrices.us.fallback ? 'border-purple-200' : 'border-green-200'}`}>
-                            <p className={`text-xs font-semibold mb-2 ${marketPrices.us.fallback ? 'text-purple-600' : 'text-green-600'}`}>
-                              {marketPrices.us.fallback ? '🔄 PriceCharting (Fallback)' : '🇺🇸 US Market (TCGPlayer)'}
-                            </p>
+                          <div className="bg-white p-3 rounded border border-green-200">
+                            <p className="text-xs font-semibold mb-2 text-green-600">🇺🇸 US Market (TCGPlayer)</p>
                             <div className="grid grid-cols-3 gap-2 text-sm">
                               <div>
                                 <span className="text-muted-foreground">Market:</span>
-                                <span className="ml-1 font-semibold">${marketPrices.us.market.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.us.market, marketPrices.us.currency)}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Low:</span>
-                                <span className="ml-1 font-semibold">${marketPrices.us.low.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.us.low, marketPrices.us.currency)}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Mid:</span>
-                                <span className="ml-1 font-semibold">${marketPrices.us.mid.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.us.mid, marketPrices.us.currency)}</span>
                               </div>
                             </div>
-                            {marketPrices.us.fallback && (
-                              <p className="text-xs text-purple-600 mt-2">
-                                ℹ️ Using PriceCharting data (not in TCGPlayer/CardMarket)
-                              </p>
-                            )}
                           </div>
                         )}
                         
@@ -602,15 +487,15 @@ export function AddCardModal({
                             <div className="grid grid-cols-3 gap-2 text-sm">
                               <div>
                                 <span className="text-muted-foreground">Average:</span>
-                                <span className="ml-1 font-semibold">€{marketPrices.eu.avg.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.eu.avg, marketPrices.eu.currency || 'EUR')}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Low:</span>
-                                <span className="ml-1 font-semibold">€{marketPrices.eu.low.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.eu.low, marketPrices.eu.currency || 'EUR')}</span>
                               </div>
                               <div>
                                 <span className="text-muted-foreground">Trend:</span>
-                                <span className="ml-1 font-semibold">€{marketPrices.eu.trend.toFixed(2)}</span>
+                                <span className="ml-1 font-semibold">{formatProviderPrice(marketPrices.eu.trend, marketPrices.eu.currency || 'EUR')}</span>
                               </div>
                             </div>
                           </div>
@@ -630,44 +515,7 @@ export function AddCardModal({
               </div>
             )}
 
-            {/* Variant (v2.1) - TEMPORARILY HIDDEN
-                Issue: Variants should only show if the API has actual variant data for this specific card.
-                Currently showing variants that don't exist (e.g., Reverse Holo for promos).
-                TODO: Implement proper variant detection from API or remove entirely.
-                Users should search for the exact card variant they want in search results.
-            */}
-            {false && (
-              <div>
-                <label className="block text-sm font-semibold mb-2">
-                  <Star className="inline h-4 w-4 mr-1" />
-                  Variant (Optional) <span className="text-blue-600 text-xs">NEW in v2.1</span>
-                </label>
-                <select
-                  value={variant}
-                  onChange={(e) => setVariant(e.target.value)}
-                  className="w-full p-2 border rounded-md"
-                >
-                  {relevantVariants.map(opt => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                {variant === 'other' && (
-                  <Input
-                    placeholder="Specify variant"
-                    value={variantOther}
-                    onChange={(e) => setVariantOther(e.target.value)}
-                    className="mt-2"
-                  />
-                )}
-                {variant && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    ℹ️ Variants can have different values (e.g., 1st Edition vs Unlimited)
-                  </p>
-                )}
-              </div>
-            )}
+
 
             {/* Graded Card Support (v2.1) - PSA, BGS, CGC, SGC */}
             <div className="border-t pt-4">
@@ -891,5 +739,3 @@ export function AddCardModal({
     </div>
   );
 }
-
-

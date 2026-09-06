@@ -1,3 +1,4 @@
+import { hasVendorAccess } from "@/utils/vendorAccess";
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import {
   doc,
@@ -13,7 +14,7 @@ import {
 } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useApp } from "./AppContext";
-import { fetchECBRates, generatePurchaseId, convertToEUR, FINLAND_MILEAGE_RATE } from "@/utils/taxHelpers";
+import { fetchECBRates, generatePurchaseId, convertToEUR, FINLAND_MILEAGE_RATE } from "@/utils/taxCore";
 
 const TaxContext = createContext(null);
 
@@ -24,7 +25,8 @@ export const useTax = () => {
 };
 
 export function TaxProvider({ children }) {
-  const { user, db } = useApp();
+  const { user, db, userProfile } = useApp();
+  const vendorEnabled = hasVendorAccess(userProfile);
 
   const [taxConfig, setTaxConfig] = useState(null);
   const [purchaseDiary, setPurchaseDiary] = useState([]);
@@ -38,7 +40,7 @@ export function TaxProvider({ children }) {
 
   // Load all tax data when user is available
   useEffect(() => {
-    if (!user || !db) {
+    if (!user || !db || !vendorEnabled) {
       setTaxConfig(null);
       setPurchaseDiary([]);
       setShareholderEntries([]);
@@ -50,7 +52,7 @@ export function TaxProvider({ children }) {
       return;
     }
     loadAllTaxData();
-  }, [user, db]);
+  }, [user, db, vendorEnabled]);
 
   // Fetch ECB rates on mount
   useEffect(() => {

@@ -20,7 +20,7 @@ const ADMIN_EMAILS = [
 ];
 
 export function Admin() {
-  const { user, db, triggerQuickAddFeedback, invalidateCommunityImagesCache } = useApp();
+  const { user, userProfile, db, triggerQuickAddFeedback, invalidateCommunityImagesCache } = useApp();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -36,7 +36,7 @@ export function Admin() {
   const [activeTab, setActiveTab] = useState("users"); // "users", "requests", "feedback", or "images"
 
   // Check if current user is admin
-  const isAdmin = user && ADMIN_EMAILS.includes(user.email);
+  const isAdmin = user && userProfile?.isAdmin === true;
 
   // Load users from Firestore
   useEffect(() => {

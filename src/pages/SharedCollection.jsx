@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Package, Search, LogIn } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { LoginModal } from "@/components/LoginModal";
-import { formatCurrency, computeTcgPrice, getCardmarketAvg, getCardmarketLowest, getConditionColorClass, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
+import { formatCurrency, computeTcgPrice, getCardmarketAvg, getConditionColorClass, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { getDoc, doc } from "firebase/firestore";
 
 /**
@@ -45,7 +45,7 @@ export function SharedCollection() {
         setLoading(true);
         
         // Load collector profile
-        const userRef = doc(db, "users", collectionUserId);
+        const userRef = doc(db, "public_profiles", collectionUserId);
         const userSnap = await getDoc(userRef);
         
         if (userSnap.exists()) {
@@ -54,7 +54,7 @@ export function SharedCollection() {
         }
         
         // Load collection
-        const collectionRef = doc(db, "collector_collections", collectionUserId);
+        const collectionRef = doc(db, "public_collections", collectionUserId);
         const collectionSnap = await getDoc(collectionRef);
         
         if (collectionSnap.exists()) {

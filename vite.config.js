@@ -30,6 +30,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 800,
     rollupOptions: {
       output: {
+        onlyExplicitManualChunks: true,
         // Split heavy vendor libs into their own chunks so they cache
         // independently from our app code. A change to a single page no longer
         // invalidates Firebase/React/framer-motion in users' browser caches,
@@ -44,7 +45,7 @@ export default defineConfig({
           if (id.includes("signature_pad")) return "vendor-signature";
           if (id.includes("react-router-dom") || id.includes("/react-router/")) return "vendor-router";
           if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("scheduler")) return "vendor-react";
-          return "vendor-misc";
+          return undefined;
         },
       },
     },

@@ -1,118 +1,7 @@
-/**
- * Tax reporting helpers for Finnish margin tax scheme (Marginaaliverotus)
- * Handles ECB exchange rates, margin tax calculation, COGS, and report exports.
- */
-
-import { formatCurrency } from "./cardHelpers";
+import { FINLAND_VAT_RATE, FINLAND_MILEAGE_RATE } from "./taxCore";
+export { FINLAND_VAT_RATE, FINLAND_MILEAGE_RATE, fetchECBRates, convertToEUR, convertTransactionForTaxEUR, generatePurchaseId } from "./taxCore";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
-
-// Finnish VAT rate (25.5% as of 2025)
-export const FINLAND_VAT_RATE = 0.255;
-
-// ECB reference rates. Frankfurter serves the official ECB daily reference
-// rates for free, with per-date historical lookups (unlike the previous
-// "latest only" exchangerate-api call). Finnish margin/VAT reporting expects
-// the ECB rate on the transaction date, so pass a YYYY-MM-DD dateStr.
-let ecbRateCache = {};
-let ecbCacheDate = null;
-
-const STATIC_RATE_FALLBACK = {
-  EUR: 1,
-  USD: 1.08,
-  JPY: 162.0,
-  GBP: 0.86,
-  SEK: 11.2,
-  NOK: 11.5,
-  DKK: 7.46,
-  CHF: 0.97,
-};
-
-/**
- * Fetch ECB daily reference rates for a given date (or latest). Returns rates
- * relative to EUR (1 EUR = X foreign). Falls back to cache, then a static table.
- * @param {string} [dateStr] YYYY-MM-DD. Omit for the latest rates.
- */
-export async function fetchECBRates(dateStr) {
-  const today = new Date().toISOString().slice(0, 10);
-  const requested = dateStr || today;
-  // Frankfurter only serves closed (past) dates; today/future -> "latest".
-  const endpointDate = requested >= today ? "latest" : requested;
-
-  if (ecbCacheDate === endpointDate && Object.keys(ecbRateCache).length > 0) {
-    return ecbRateCache;
-  }
-
-  // 1) ECB reference rates on the requested date (Frankfurter, no API key).
-  try {
-    const res = await fetch(`https://api.frankfurter.app/${endpointDate}?from=EUR`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.rates) {
-        ecbRateCache = { EUR: 1, ...data.rates };
-        ecbCacheDate = endpointDate;
-        return ecbRateCache;
-      }
-    }
-  } catch (err) {
-    console.warn("Frankfurter ECB rates unavailable, trying fallback:", err);
-  }
-
-  // 2) Fallback: latest rates only (not date-specific).
-  try {
-    const res = await fetch(`https://api.exchangerate-api.com/v4/latest/EUR`);
-    const data = await res.json();
-    if (data?.rates) {
-      ecbRateCache = { EUR: 1, ...data.rates };
-      ecbCacheDate = endpointDate;
-      return ecbRateCache;
-    }
-  } catch (err) {
-    console.warn("Failed to fetch fallback FX rates, using static table:", err);
-  }
-
-  if (Object.keys(ecbRateCache).length > 0) return ecbRateCache;
-  return { ...STATIC_RATE_FALLBACK };
-}
-
-/**
- * Convert an amount to EUR using ECB rates.
- * @returns {{ amountEUR: number, rate: number|null, reliable: boolean }}
- *   `reliable` is false when no rate was available for the currency — callers
- *   must not treat such an amount as a trustworthy EUR figure.
- */
-export function convertToEUR(amount, fromCurrency, rates) {
-  const numeric = parseFloat(amount) || 0;
-  if (!amount || fromCurrency === "EUR") {
-    return { amountEUR: numeric, rate: 1, reliable: true };
-  }
-  const rate = rates?.[fromCurrency];
-  if (!rate || rate === 0) {
-    // No rate available. Surface the raw amount but flag it so nothing silently
-    // treats foreign money as EUR at 1:1 (the previous behaviour).
-    console.warn(`No FX rate for ${fromCurrency}; EUR conversion is unreliable.`);
-    return { amountEUR: numeric, rate: null, reliable: false };
-  }
-  return { amountEUR: numeric / rate, rate, reliable: true };
-}
-
-/**
- * Generate the next purchase diary ID.
- * Format: PUR-YYYY-NNN
- */
-export function generatePurchaseId(existingEntries, year) {
-  const y = year || new Date().getFullYear();
-  const prefix = `PUR-${y}-`;
-  let max = 0;
-  (existingEntries || []).forEach((e) => {
-    if (e.purchaseId?.startsWith(prefix)) {
-      const num = parseInt(e.purchaseId.replace(prefix, ""), 10);
-      if (num > max) max = num;
-    }
-  });
-  return `${prefix}${String(max + 1).padStart(3, "0")}`;
-}
-
 // =============================
 // Margin Tax Calculation
 // =============================
@@ -645,8 +534,6 @@ export function exportMarginTaxPDF(report, period, salesList, config, filename) 
   // Summary box
   const boxW = 85;
   const boxH = 28;
-  const pageW = doc.internal.pageSize.getWidth();
-
   const boxes = [
     { label: "Total Sales", value: `€${report.totalSales?.toFixed(2)}`, color: [219, 234, 254] },
     { label: "Purchase Cost", value: `€${report.totalPurchaseCost?.toFixed(2)}`, color: [254, 235, 200] },
@@ -1322,7 +1209,7 @@ export function calculateDividendOptimization(netAssets, distributableProfit, ma
 // Mileage Allowance
 // =============================
 
-export const FINLAND_MILEAGE_RATE = 0.30; // €/km (2025 Vero rate)
+
 
 /**
  * Calculate total mileage allowance for a set of trips.
@@ -1355,9 +1242,9 @@ export function calculateMileageAllowance(trips) {
 // =============================
 
 export const TAX_FREE_BENEFITS = [
-  { id: "per_diem_full", label: "Per Diem (Full Day, >10h)", annualLimit: null, perUse: 51 },
-  { id: "per_diem_partial", label: "Per Diem (Partial Day, >6h)", annualLimit: null, perUse: 24 },
-  { id: "mileage", label: "Mileage Allowance", annualLimit: null, perUse: 0.30, unit: "€/km" },
+  { id: "per_diem_full", label: "Per Diem (Full Day, >10h)", annualLimit: null, perUse: 54 },
+  { id: "per_diem_partial", label: "Per Diem (Partial Day, >6h)", annualLimit: null, perUse: 25 },
+  { id: "mileage", label: "Mileage Allowance", annualLimit: null, perUse: 0.55, unit: "€/km" },
   { id: "sports_culture", label: "Sports & Culture Benefit", annualLimit: 400, perUse: null },
   { id: "phone", label: "Phone Benefit", annualLimit: null, perUse: null, note: "Reasonable business use — Oy pays bill directly" },
   { id: "internet", label: "Home Internet", annualLimit: null, perUse: null, note: "Business portion — Oy pays directly" },

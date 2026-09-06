@@ -215,7 +215,7 @@ function normalizeCardKey(card) {
 **Priority for selecting "best" version:**
 1. Card with image > card without image
 2. Card with more complete price data
-3. Card from more reliable source (PriceCharting > CardMarket)
+3. Card with an exact provider identity and fresher source timestamp
 4. Card with more metadata (rarity, release date, etc.)
 
 **Implementation:**
@@ -257,10 +257,6 @@ function mergeBestData(card1, card2) {
       cardmarket: Math.max(
         card1.prices?.cardmarket || 0,
         card2.prices?.cardmarket || 0
-      ) || undefined,
-      pricecharting: Math.max(
-        card1.prices?.pricecharting || 0,
-        card2.prices?.pricecharting || 0
       ) || undefined,
     },
     
@@ -366,7 +362,7 @@ function calculateCompletenessScore(card) {
   if (card.rarity) score += 3;
   if (card.prices?.tcgplayer) score += 3;
   if (card.prices?.cardmarket) score += 3;
-  if (card.prices?.pricecharting) score += 3;
+  if (card.prices?.ebay?.graded) score += 3;
   if (card.releaseDate) score += 2;
   if (card.artist) score += 1;
   
@@ -499,7 +495,6 @@ function calculateFinalScore(card, query) {
 - No breaking changes to existing APIs
 - Can be rolled back easily if issues arise
 - User privacy is maintained (no PII without consent)
-
 
 
 

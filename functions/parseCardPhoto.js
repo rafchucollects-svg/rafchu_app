@@ -1,11 +1,11 @@
-const functions = require("firebase-functions");
+const functions = require("firebase-functions/v1");
 const admin = require("firebase-admin");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const CARD_SCAN_MODELS = [
+  "gemini-2.5-flash",
   "gemini-2.0-flash-lite",
   "gemini-1.5-flash",
-  "gemini-2.5-flash",
 ];
 
 const CARD_SCAN_PROMPT = `You are an expert Pokemon TCG card identifier. Analyze this photo and identify every visible Pokemon card.
@@ -22,7 +22,13 @@ Return ONLY valid JSON with this structure:
       "isGraded": false,
       "gradingCompany": null,
       "grade": null,
-      "confidence": 0.95
+      "confidence": 0.95,
+      "position": {
+        "x": 0.08,
+        "y": 0.06,
+        "width": 0.40,
+        "height": 0.42
+      }
     }
   ],
   "totalDetected": 1
@@ -42,6 +48,9 @@ For Tag Team GX cards: the label often says two Pokemon names like "EEVEE & SNOR
 
 Rules:
 - Identify EVERY distinct card visible in the image. Do not skip cards.
+- Return at most 12 cards. Sort them visually from top-to-bottom, then left-to-right within each row.
+- For position, return the bounding rectangle of the entire card or graded slab using normalized 0-to-1 coordinates. x/y are the top-left corner; width/height are its size relative to the full image. Include the grading label inside a slab's rectangle.
+- Cards may be arranged unevenly (for example three cards above two cards). Measure each actual card; do not force a grid.
 - Include suffixes like "ex", "EX", "V", "VMAX", "VSTAR", "GX", "Tag Team GX", etc.
 - For ungraded cards: read the name from the card face, collector number from the bottom.
 - For Japanese ungraded cards: transliterate the name to English (e.g. ミュウ → Mew, リザードン → Charizard).
@@ -106,7 +115,13 @@ exports.parseCardPhoto = functions
 
       for (const modelName of CARD_SCAN_MODELS) {
         try {
-          const model = genAI.getGenerativeModel({ model: modelName });
+          const model = genAI.getGenerativeModel({
+            model: modelName,
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
+            },
+          });
           result = await model.generateContent([
             CARD_SCAN_PROMPT,
             {
@@ -151,17 +166,42 @@ exports.parseCardPhoto = functions
       }
 
       const cards = Array.isArray(parsed.cards) ? parsed.cards : [];
-      const sanitized = cards.map((c) => ({
-        name: c.name || null,
-        setName: c.setName || null,
-        collectorNumber: c.collectorNumber || null,
-        rarity: c.rarity || null,
-        language: c.language || "EN",
-        isGraded: !!c.isGraded,
-        gradingCompany: c.gradingCompany || null,
-        grade: c.grade != null ? String(c.grade) : null,
-        confidence: typeof c.confidence === "number" ? c.confidence : 0.5,
-      }));
+      const sanitized = cards.slice(0, 12).map((c) => {
+        const rawPosition = c.position;
+        const positionValues = rawPosition && typeof rawPosition === "object"
+          ? [rawPosition.x, rawPosition.y, rawPosition.width, rawPosition.height].map(Number)
+          : null;
+        const hasValidPosition = positionValues
+          && positionValues.every(Number.isFinite)
+          && positionValues[2] > 0
+          && positionValues[3] > 0
+          && positionValues[0] >= 0
+          && positionValues[1] >= 0
+          && positionValues[0] < 1
+          && positionValues[1] < 1;
+
+        const position = hasValidPosition
+          ? {
+              x: Math.max(0, Math.min(1, positionValues[0])),
+              y: Math.max(0, Math.min(1, positionValues[1])),
+              width: Math.max(0.01, Math.min(1 - positionValues[0], positionValues[2])),
+              height: Math.max(0.01, Math.min(1 - positionValues[1], positionValues[3])),
+            }
+          : null;
+
+        return {
+          name: c.name || null,
+          setName: c.setName || null,
+          collectorNumber: c.collectorNumber || null,
+          rarity: c.rarity || null,
+          language: c.language || "EN",
+          isGraded: !!c.isGraded,
+          gradingCompany: c.gradingCompany || null,
+          grade: c.grade != null ? String(c.grade) : null,
+          confidence: typeof c.confidence === "number" ? c.confidence : 0.5,
+          position,
+        };
+      });
 
       return {
         cards: sanitized,
