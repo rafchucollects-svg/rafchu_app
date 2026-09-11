@@ -8,6 +8,7 @@ vi.mock("@/contexts/AppContext", () => ({ useApp: () => mocks.app }));
 vi.mock("firebase/firestore", () => ({ collection: vi.fn(), getDocs: mocks.getDocs }));
 vi.mock("@/utils/reconciliationStore", () => ({ loadReconciliation: mocks.load, finalizeReconciliation: mocks.finalize, saveReconciliationDraft: mocks.save, importReconciliationSources: mocks.importSources, automaticallyReconcile: mocks.automatic }));
 import { Reconciliation } from "./Reconciliation";
+import { validateReview } from "@/utils/reconciliation";
 
 let container, root, loaded;
 const click = async (element) => act(async () => element.click());
@@ -39,6 +40,31 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); delete globalThis.IS_REACT_ACT_ENVIRONMENT; });
 
 describe("guided payment review", () => {
+  it("clears a combined sale with implied rounding, including an old unfinished draft", async () => {
+    const ts = loaded.sources[0].date;
+    loaded.sources[0].amount = 140;
+    const deals = [{ id: "a", totalValue: 39.9, name: "Sample card A" }, { id: "b", totalValue: 100, name: "Sample card B" }].map(({ id, totalValue, name }) => ({ id, type: "sale", ts, currency: "EUR", totalValue, itemsOut: [{ name, quantity: 1, unitPrice: totalValue, costBasis: 10 }] }));
+    mocks.getDocs.mockResolvedValue({ docs: deals.map(({ id, ...tx }) => ({ id, data: () => tx })) });
+    loaded.draft = { sourceIds: ["p"], transactionIds: ["a", "b"], amounts: { a: "39.9", b: "100" }, note: "Rounded up" };
+    await render();
+    expect(container.querySelector('[aria-label="Payment amount"]').textContent).toContain("Rounding up: +0.10 EUR");
+    expect(container.textContent).not.toContain("still to allocate");
+    await click(button("Save and next"));
+    const saved = mocks.finalize.mock.calls[0][2];
+    expect(saved.amounts).toEqual({ a: "39.93", b: "100.07" });
+    expect(saved.note).toContain("Rounded up");
+    expect(saved.note).toContain("Implied rounding up: +0.10 EUR");
+    expect(validateReview(saved).total).toBe(140);
+    expect(container.querySelector('[aria-label="Choose payment to review"]').value).toBe("q");
+  });
+  it("keeps explicit custom allocations and offers an automatic fix", async () => {
+    loaded.draft = { sourceIds: ["p"], transactionIds: ["sale"], amounts: { sale: "100" }, amountMode: "manual" };
+    await render(); await click(button("Save and next"));
+    expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]').textContent).toContain("automatic adjustment");
+    await click(button("Apply automatic adjustment")); await click(button("Save and next"));
+    expect(mocks.finalize.mock.calls[0][2].amounts).toEqual({ sale: "110" });
+  });
   it("opens one payment, proposes the statement amount, saves and advances", async () => {
     await render();
     expect(container.querySelector('[aria-label="Review one payment"]').textContent).toContain("110.00 EUR");

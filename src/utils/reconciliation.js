@@ -196,6 +196,47 @@ export function canCorrectAmount(tx) {
     && (!tx.inputCurrency || tx.inputCurrency === tx.currency);
 }
 
+export function allocateReconciliationAmounts(transactions, total, currency) {
+  const entries = transactions.map((tx) => ({ tx, value: transactionConsideration(tx) }));
+  if (entries.some(({ value }) => !value || value.currency !== currency || !Number.isFinite(value.amount))) throw new Error("Selected app transactions must use the review currency.");
+  const amounts = Object.fromEntries(entries.map(({ tx, value }) => [tx.id, String(value.amount)]));
+  const original = entries.reduce((sum, { value }) => sum + cents(value.amount), 0);
+  if (!entries.length || cents(total) === original) return amounts;
+  const adjustable = entries.filter(({ tx, value }) => canCorrectAmount(tx) && value.amount > 0);
+  if (!adjustable.length) throw new Error("This difference affects a purchase, trade, consignment or foreign-currency deal. Update that deal in its original workflow before reconciling.");
+  const weight = adjustable.reduce((sum, { value }) => sum + cents(value.amount), 0);
+  const target = cents(total) - (original - weight);
+  if (!Number.isSafeInteger(target) || target < adjustable.length) throw new Error("The payment does not cover the fixed deal amounts and selected sales. Check the selected deals or add the remaining payment.");
+  // Largest remainders keep the group balanced to the cent, regardless of order.
+  const parts = adjustable.map(({ tx, value }) => {
+    const share = target * cents(value.amount) / weight;
+    return { id: tx.id, amount: Math.max(1, Math.floor(share)), remainder: share - Math.floor(share) };
+  });
+  let remaining = target - parts.reduce((sum, part) => sum + part.amount, 0);
+  parts.sort((a, b) => b.remainder - a.remainder || a.id.localeCompare(b.id));
+  for (let i = 0; remaining > 0; i++, remaining--) parts[i % parts.length].amount++;
+  // Very large discounts can leave tiny sales below one cent. Retain one cent
+  // per selected sale and take the shortfall from the largest allocated sale.
+  while (remaining < 0) {
+    const largest = parts.reduce((a, b) => a.amount >= b.amount ? a : b);
+    largest.amount--; remaining++;
+  }
+  for (const part of parts) amounts[part.id] = String(part.amount / 100);
+  return amounts;
+}
+
+export function reconciliationAdjustment(transactions, total, currency) {
+  const values = transactions.map(transactionConsideration);
+  if (!values.length || !Number.isFinite(total) || total <= 0 || values.some((value) => !value || value.currency !== currency || !Number.isFinite(value.amount) || value.amount <= 0)) return null;
+  const original = values.reduce((sum, value) => sum + cents(value.amount), 0) / 100;
+  const difference = cents(total) - cents(original);
+  if (!difference) return null;
+  const label = Math.abs(difference) <= 100 ? (difference > 0 ? "Rounding up" : "Rounding down") : difference < 0 ? "Discount" : "Sale price adjustment";
+  return { label, amount: difference / 100, original, total: cents(total) / 100,
+    note: `Implied ${label.toLowerCase()}: ${difference > 0 ? "+" : "-"}${(Math.abs(difference) / 100).toFixed(2)} ${currency}. Recorded deal total ${original.toFixed(2)} ${currency}; confirmed payment ${(cents(total) / 100).toFixed(2)} ${currency}.`,
+  };
+}
+
 export function correctedTransaction(tx, signedAmount, now) {
   const original = transactionConsideration(tx);
   if (!original || !Number.isFinite(signedAmount) || Math.sign(signedAmount) !== Math.sign(original.amount)) throw new Error("Invalid transaction amount or direction.");
@@ -250,6 +291,6 @@ export function validateReview({ sources, transactions, amounts, rates = {}, cur
     if (Math.sign(Number(value)) !== Math.sign(total)) throw new Error("Payment and app transaction directions must match.");
     return { before: tx, after: correctedTransaction(tx, cents(value) / 100, Date.now()) };
   });
-  if (changes.reduce((sum, c) => sum + cents(transactionConsideration(c.after).amount), 0) !== total) throw new Error("Final app amounts must equal the selected payments. Explain discounts in the note and adjust the sale amount, or select additional payments.");
+  if (changes.reduce((sum, c) => sum + cents(transactionConsideration(c.after).amount), 0) !== total) throw new Error("The custom amounts do not equal the payment. Apply the automatic adjustment, edit the individual amounts, or include the remaining payment.");
   return { total: total / 100, changes };
 }

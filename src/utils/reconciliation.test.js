@@ -1,10 +1,44 @@
 import { describe, it, expect } from "vitest";
-import { readCSV, parseReconciliationCSV, suggestMatches, transactionConsideration, correctedTransaction, validateReview, identifyTransfers, planAutomaticReconciliation } from "./reconciliation";
+import { readCSV, parseReconciliationCSV, suggestMatches, transactionConsideration, correctedTransaction, validateReview, identifyTransfers, planAutomaticReconciliation, allocateReconciliationAmounts, reconciliationAdjustment } from "./reconciliation";
 
 const ts = Date.parse("2026-06-15T12:00:00Z");
 const sale = (id, amount, name = "Pikachu") => ({ id, type: "sale", currency: "EUR", ts, totalValue: amount, itemsOut: [{ name, quantity: 1, unitPrice: amount, totalPrice: amount, costBasis: 20 }] });
 const source = (id, amount, extra = {}) => ({ id, reference: id, provider: "Wise", kind: "payment", currency: "EUR", date: ts, amount, description: "", ...extra });
 const review = (sources, transactions, amounts) => ({ sources, transactions, amounts, rates: {}, currency: "EUR", note: "Agreed deal price", evidence: "Show deal message; no receipt issued", classification: "cards" });
+
+describe("implied sale adjustments", () => {
+  it("allocates a ten-cent rounding difference across two sales and preserves their costs", () => {
+    const sales = [sale("a", 39.9), sale("b", 100)];
+    const amounts = allocateReconciliationAmounts(sales, 140, "EUR");
+    expect(amounts).toEqual({ a: "39.93", b: "100.07" });
+    const result = validateReview(review([source("p", 140)], sales, amounts));
+    expect(result.total).toBe(140);
+    expect(result.changes.every(({ after }) => after.itemsOut[0].costBasis === 20)).toBe(true);
+    expect(sales.map((s) => s.totalValue)).toEqual([39.9, 100]);
+    expect(reconciliationAdjustment(sales, 140, "EUR")).toMatchObject({ label: "Rounding up", amount: 0.1, original: 139.9 });
+  });
+  it("handles discounts, rounding down and larger price corrections", () => {
+    const sales = [sale("a", 40), sale("b", 100)];
+    expect(allocateReconciliationAmounts(sales, 126, "EUR")).toEqual({ a: "36", b: "90" });
+    expect(reconciliationAdjustment(sales, 126, "EUR").label).toBe("Discount");
+    expect(reconciliationAdjustment(sales, 139.9, "EUR").label).toBe("Rounding down");
+    expect(reconciliationAdjustment(sales, 150, "EUR").label).toBe("Sale price adjustment");
+    expect(reconciliationAdjustment(sales, 140, "EUR")).toBeNull();
+  });
+  it("balances cent remainders independently of selection order, including deep discounts", () => {
+    const sales = [sale("c", 10), sale("a", 10), sale("b", 10)];
+    expect(allocateReconciliationAmounts(sales, 10, "EUR")).toEqual({ a: "3.34", b: "3.33", c: "3.33" });
+    expect(allocateReconciliationAmounts([...sales].reverse(), 10, "EUR")).toEqual(allocateReconciliationAmounts(sales, 10, "EUR"));
+    expect(allocateReconciliationAmounts([sale("a", 0.01), sale("b", 0.01), sale("c", 100)], 0.03, "EUR")).toEqual({ a: "0.01", b: "0.01", c: "0.01" });
+  });
+  it("preserves fixed trade amounts and rejects unsupported corrections and currency mismatches", () => {
+    const trade = { id: "trade", type: "trade", cashDirection: "in", cashAmount: 30, currency: "EUR" };
+    expect(allocateReconciliationAmounts([trade, sale("s", 100)], 120, "EUR")).toEqual({ trade: "30", s: "90" });
+    expect(() => allocateReconciliationAmounts([trade], 29, "EUR")).toThrow("original workflow");
+    expect(() => allocateReconciliationAmounts([trade, sale("s", 100)], 20, "EUR")).toThrow("does not cover");
+    expect(() => allocateReconciliationAmounts([sale("s", 100)], 90, "GBP")).toThrow("review currency");
+  });
+});
 
 describe("automatic reconciliation", () => {
   const payout = (id, net) => source(id, 100, { provider: "SumUp", kind: "excluded", raw: { "Transaction type": "Payout", Status: "Paid", "Payout ID": "SUMUP TEST-BATCH", "Payout date": "2026-06-15", Payout: String(net), Date: "2026-06-14" } });
@@ -92,7 +126,7 @@ describe("review and corrections", () => {
   it("requires amounts to balance and explanation/evidence even for exact matches", () => {
     const input = review([source("p", 190)], [sale("s", 200)], { s: 190 });
     expect(validateReview(input).total).toBe(190);
-    expect(() => validateReview({ ...input, amounts: { s: 200 } })).toThrow("must equal");
+    expect(() => validateReview({ ...input, amounts: { s: 200 } })).toThrow("do not equal");
     expect(() => validateReview({ ...input, evidence: "" })).toThrow("receipt");
     expect(() => validateReview({ ...input, amounts: { s: "" } })).toThrow("every final amount");
   });

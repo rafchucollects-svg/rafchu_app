@@ -6,6 +6,7 @@ import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebas
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { saveItemChanges } from '../src/utils/inventoryStore.js';
 import { importReconciliationSources, finalizeReconciliation, automaticallyReconcile, saveReconciliationDraft, loadReconciliation } from '../src/utils/reconciliationStore.js';
+import { allocateReconciliationAmounts, reconciliationAdjustment } from '../src/utils/reconciliation.js';
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const admin = require('firebase-admin');
 const { syncPublicUser, syncWishlist, syncRating } = require('./publicData');
@@ -20,6 +21,21 @@ const guest = () => env.unauthenticatedContext().firestore();
 const paymentFixture = { id: 'payment-a', reference: 'synthetic-a', provider: 'Wise', date: Date.parse('2026-06-15'), amount: 90, currency: 'EUR', kind: 'payment', raw: {}, description: 'Pikachu' };
 const saleFixture = { id: 'sale-a', type: 'sale', currency: 'EUR', ts: Date.parse('2026-06-15'), totalValue: 100, itemsOut: [{ name: 'Pikachu', quantity: 1, unitPrice: 100, costBasis: 20 }] };
 const reviewFixture = { sources: [paymentFixture], transactions: [saleFixture], amounts: { 'sale-a': 90 }, rates: {}, currency: 'EUR', note: 'Discount agreed', evidence: 'Synthetic show deal reference', classification: 'cards' };
+
+test('a rounded combined payment saves exact totals and retains the adjustment and original values', async () => {
+  const db = alice();
+  const payment = { ...paymentFixture, amount: 140 };
+  const sales = [39.9, 100].map((amount, index) => ({ ...saleFixture, id: `rounding-${index}`, totalValue: amount, itemsOut: [{ name: `Sample card ${index}`, quantity: 1, unitPrice: amount, costBasis: 20 }] }));
+  await importReconciliationSources(db, 'alice', [payment]);
+  for (const sale of sales) await setDoc(doc(db, `transactions/alice/entries/${sale.id}`), sale);
+  await finalizeReconciliation(db, 'alice', { ...reviewFixture, sources: [payment], transactions: sales, amounts: allocateReconciliationAmounts(sales, 140, 'EUR'), note: reconciliationAdjustment(sales, 140, 'EUR').note });
+  const audit = (await loadReconciliation(db, 'alice')).reviews[0];
+  assert.equal(audit.total, 140);
+  assert.match(audit.note, /Implied rounding up: \+0.10 EUR/);
+  assert.deepEqual(audit.changes.map(({ before }) => before.totalValue), [39.9, 100]);
+  assert.deepEqual(audit.changes.map(({ after }) => after.totalValue), [39.93, 100.07]);
+  assert.ok(audit.changes.every(({ after }) => after.itemsOut[0].costBasis === 20));
+});
 
 test('automatic matching persists unchanged amounts and transfers, survives reload and is idempotent', async () => {
   const db = alice();
