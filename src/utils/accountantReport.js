@@ -423,7 +423,7 @@ export function exportAccountantPackagePDF(report, config, filename) {
   const reconciliation = report.reconciliation || { reviews: [], unresolved: [], excludedCount: 0 };
   y = addSection(doc, "Payment reconciliation", `${report.label} · Source amounts keep their currency; groups can span reporting periods.`, config);
   renderTable(doc, y, ["Review / reviewer / date", "Source payments (original)", "App amounts: original -> final", "Classification / evidence / explanation"], reconciliation.reviews.map((review) => [
-    `${review.id}\n${review.reviewer}\n${dateLabel(review.finalizedAt)}`,
+    `${review.resolutionMode === "automatic" ? "Automatic" : "Manual"}\n${review.id}\n${review.reviewer}\n${dateLabel(review.finalizedAt)}`,
     review.sources.map((source) => `${source.provider} ${source.reference}\n${dateLabel(source.date)}: ${sourceAmountLabel(source.amount, source.currency)}`).join("\n"),
     review.changes.map(({ before, after }) => `${before.id} ${transactionLabel(before)}\n${sourceAmountLabel(transactionConsideration(before)?.amount, before.currency || "EUR")} -> ${sourceAmountLabel(transactionConsideration(after)?.amount, after.currency || "EUR")}`).join("\n") || "No card ledger change",
     `${review.classification}: ${sourceAmountLabel(review.total, review.currency)}\nFX: ${Object.entries(review.rates || {}).map(([currency, rate]) => `1 ${currency} = ${rate} ${review.currency}`).join("; ") || "same currency"}\n${review.note}\nEvidence: ${review.evidence}`,

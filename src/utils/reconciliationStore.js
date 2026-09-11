@@ -1,5 +1,5 @@
 import { collection, doc, getDocs, getDoc, runTransaction, setDoc, serverTimestamp } from "firebase/firestore";
-import { validateReview } from "./reconciliation.js";
+import { validateReview, planAutomaticReconciliation } from "./reconciliation.js";
 
 const entries = (db, name, uid) => collection(db, name, uid, "entries");
 const canonical = (value) => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
@@ -18,7 +18,7 @@ export async function loadReconciliation(db, uid) {
   };
 }
 
-export async function importReconciliationSources(db, uid, sources) {
+export async function importReconciliationSources(db, uid, sources, onProgress = () => {}) {
   let added = 0;
   // Small atomic chunks make repeated uploads safe and stay under rule access limits.
   for (let offset = 0; offset < sources.length; offset += 8) {
@@ -32,12 +32,26 @@ export async function importReconciliationSources(db, uid, sources) {
       });
       return count;
     });
+    onProgress({ processed: Math.min(offset + group.length, sources.length), total: sources.length, added });
   }
   return added;
 }
 
 export function saveReconciliationDraft(db, uid, draft) {
   return setDoc(doc(entries(db, "reconciliation_drafts", uid), "current"), { ...draft, updatedAt: serverTimestamp() });
+}
+
+export async function automaticallyReconcile(db, uid, onProgress = () => {}) {
+  const reconciliation = await loadReconciliation(db, uid);
+  const snapshot = await getDocs(entries(db, "transactions", uid));
+  const transactions = snapshot.docs.map((snap) => ({ ...snap.data(), id: snap.id }));
+  const plans = planAutomaticReconciliation({ ...reconciliation, transactions });
+  let completed = 0;
+  for (const plan of plans) {
+    await finalizeReconciliation(db, uid, plan);
+    onProgress({ completed: ++completed, total: plans.length });
+  }
+  return completed;
 }
 
 export async function finalizeReconciliation(db, uid, review) {
@@ -47,10 +61,12 @@ export async function finalizeReconciliation(db, uid, review) {
     const sourceRefs = review.sources.map((source) => doc(entries(db, "reconciliation_sources", uid), source.id));
     const claimRefs = review.sources.map((source) => doc(entries(db, "reconciliation_claims", uid), source.id));
     const txRefs = review.transactions.map((tx) => doc(entries(db, "transactions", uid), tx.id));
-    const [sources, claims, txs] = await Promise.all([
+    const draftRef = doc(entries(db, "reconciliation_drafts", uid), "current");
+    const [sources, claims, txs, savedDraft] = await Promise.all([
       Promise.all(sourceRefs.map((ref) => transaction.get(ref))),
       Promise.all(claimRefs.map((ref) => transaction.get(ref))),
       Promise.all(txRefs.map((ref) => transaction.get(ref))),
+      transaction.get(draftRef),
     ]);
     if (claims.some((claim) => claim.exists())) throw new Error("A payment has already been finalized. Refresh before reviewing again.");
     if (sources.some((snap) => !snap.exists()) || txs.some((snap) => !snap.exists())) throw new Error("A source or app transaction no longer exists. Refresh the page.");
@@ -63,6 +79,7 @@ export async function finalizeReconciliation(db, uid, review) {
       sourceIds: currentSources.map((source) => source.id), transactionIds: currentTransactions.map((tx) => tx.id),
       sources: currentSources, changes, currency: review.currency, rates: review.rates, total,
       classification: review.classification, note: review.note.trim(), evidence: review.evidence.trim(),
+      resolutionMode: review.resolutionMode === "automatic" ? "automatic" : "manual",
     };
     // Preserve complete before/after snapshots, but keep below Firestore's document limit.
     if (new TextEncoder().encode(JSON.stringify(audit)).length > 800000) throw new Error("This group is too large. Reconcile fewer records together.");
@@ -72,6 +89,11 @@ export async function finalizeReconciliation(db, uid, review) {
       const { id: _id, ...data } = after;
       transaction.set(txRefs[index], { ...data, reconciliationId: auditRef.id });
     });
+    // Clear only the matching saved draft in the same commit as the review.
+    // No second write can make a successful save look like it failed.
+    if (savedDraft.exists() && savedDraft.data().sourceIds?.some((id) => review.sources.some((source) => source.id === id))) {
+      transaction.set(draftRef, { sourceIds: [], transactionIds: [], updatedAt: serverTimestamp() });
+    }
     return auditRef.id;
   });
 }

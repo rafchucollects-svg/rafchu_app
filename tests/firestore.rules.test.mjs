@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { saveItemChanges } from '../src/utils/inventoryStore.js';
-import { importReconciliationSources, finalizeReconciliation } from '../src/utils/reconciliationStore.js';
+import { importReconciliationSources, finalizeReconciliation, automaticallyReconcile, saveReconciliationDraft, loadReconciliation } from '../src/utils/reconciliationStore.js';
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const admin = require('firebase-admin');
 const { syncPublicUser, syncWishlist, syncRating } = require('./publicData');
@@ -20,6 +20,33 @@ const guest = () => env.unauthenticatedContext().firestore();
 const paymentFixture = { id: 'payment-a', reference: 'synthetic-a', provider: 'Wise', date: Date.parse('2026-06-15'), amount: 90, currency: 'EUR', kind: 'payment', raw: {}, description: 'Pikachu' };
 const saleFixture = { id: 'sale-a', type: 'sale', currency: 'EUR', ts: Date.parse('2026-06-15'), totalValue: 100, itemsOut: [{ name: 'Pikachu', quantity: 1, unitPrice: 100, costBasis: 20 }] };
 const reviewFixture = { sources: [paymentFixture], transactions: [saleFixture], amounts: { 'sale-a': 90 }, rates: {}, currency: 'EUR', note: 'Discount agreed', evidence: 'Synthetic show deal reference', classification: 'cards' };
+
+test('automatic matching persists unchanged amounts and transfers, survives reload and is idempotent', async () => {
+  const db = alice();
+  await importReconciliationSources(db, 'alice', [{ ...paymentFixture, amount: 100 }, { ...paymentFixture, id: 'transfer', amount: 500, kind: 'transfer' }]);
+  await setDoc(doc(db, 'transactions/alice/entries/sale-a'), saleFixture);
+  assert.equal(await automaticallyReconcile(db, 'alice'), 2);
+  const data = await loadReconciliation(db, 'alice');
+  assert.equal(data.reviews.length, 2);
+  assert.ok(data.reviews.every((r) => r.resolutionMode === 'automatic'));
+  assert.equal(data.reviews.find((r) => r.classification === 'transfer').changes.length, 0);
+  assert.equal((await getDoc(doc(db, 'transactions/alice/entries/sale-a'))).data().totalValue, 100);
+  assert.equal(await automaticallyReconcile(db, 'alice'), 0);
+});
+
+test('saving a review clears its saved draft atomically and preserves unrelated drafts', async () => {
+  const db = alice();
+  await importReconciliationSources(db, 'alice', [paymentFixture]);
+  await setDoc(doc(db, 'transactions/alice/entries/sale-a'), saleFixture);
+  await saveReconciliationDraft(db, 'alice', { sourceIds: ['payment-a'], transactionIds: ['sale-a'], note: 'Progress' });
+  await finalizeReconciliation(db, 'alice', reviewFixture);
+  assert.deepEqual((await loadReconciliation(db, 'alice')).draft.sourceIds, []);
+  const second = { ...paymentFixture, id: 'second', kind: 'transfer' };
+  await importReconciliationSources(db, 'alice', [second]);
+  await saveReconciliationDraft(db, 'alice', { sourceIds: ['different-payment'], note: 'Keep this' });
+  await finalizeReconciliation(db, 'alice', { ...reviewFixture, sources: [second], transactions: [], amounts: {}, classification: 'transfer' });
+  assert.equal((await loadReconciliation(db, 'alice')).draft.note, 'Keep this');
+});
 
 test('reconciliation evidence is private, import is idempotent and finalization preserves immutable before/after values', async () => {
   const db = alice();
