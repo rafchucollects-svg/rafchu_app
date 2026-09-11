@@ -81,6 +81,80 @@ export function transactionLabel(tx) {
   return [...(tx.itemsOut || tx.cards || []), ...(tx.itemsIn || [])].map((item) => item.name).filter(Boolean).join(" + ") || tx.notes || tx.type;
 }
 
+// SumUp exports repeat each sale as a payout row. Payout is the net amount
+// contributed to the bank deposit; Total amount is the original gross sale.
+export function identifyTransfers(sources) {
+  const batches = new Map();
+  const seen = new Set();
+  for (const source of sources) {
+    const raw = source.raw || {};
+    if (source.provider !== "SumUp" || text(raw["Transaction type"]) !== "payout" || text(raw.Status) !== "paid") continue;
+    const amount = Number(raw.Payout);
+    const date = Date.parse(raw["Payout date"]);
+    if (!raw["Payout ID"] || !raw.Payout || !Number.isFinite(amount) || !Number.isFinite(date)) continue;
+    const key = `${source.currency}:${raw["Payout ID"]}`;
+    const identity = `${key}:${source.reference}:${raw.Date}:${cents(amount)}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const batch = batches.get(key) || { currency: source.currency, reference: raw["Payout ID"], date, amount: 0 };
+    batch.amount += cents(amount);
+    batches.set(key, batch);
+  }
+  const transfers = new Map();
+  const deposits = sources.filter((s) => s.provider === "Wise" && s.amount > 0);
+  for (const source of sources) {
+    if (source.kind === "excluded") continue;
+    const description = `${source.description || ""} ${source.raw?.["Payer Name"] || ""} ${source.raw?.["Payment Reference"] || ""}`;
+    if (source.kind === "transfer" || (source.provider === "Wise" && /\bsumup\b|balance transfer|conversion/i.test(description))) {
+      transfers.set(source.id, "Transfer between accounts or currencies, identified by the statement description.");
+      continue;
+    }
+    if (!deposits.includes(source)) continue;
+    const matches = [...batches.values()].filter((batch) => batch.currency === source.currency && batch.amount === cents(source.amount)
+      && source.date >= batch.date - 86400000 && source.date <= batch.date + 3 * 86400000);
+    if (matches.length !== 1) continue;
+    const batch = matches[0];
+    // Ambiguous same-value deposits stay for review; never infer a transfer by size.
+    if (deposits.filter((s) => s.currency === batch.currency && cents(s.amount) === batch.amount
+      && s.date >= batch.date - 86400000 && s.date <= batch.date + 3 * 86400000).length !== 1) continue;
+    transfers.set(source.id, `SumUp payout ${batch.reference}: net payout rows total ${(batch.amount / 100).toFixed(2)} ${batch.currency}, matching this Wise deposit. Money moved between accounts; no new sale.`);
+  }
+  return transfers;
+}
+
+export const statementEvidence = (sources) => sources.map((s) => `${s.provider} statement reference ${s.reference}`).join("; ");
+
+export function planAutomaticReconciliation({ sources, transactions, reviews = [], draft = null }) {
+  const claimed = new Set(reviews.flatMap((r) => r.sourceIds));
+  const reserved = new Set(draft?.sourceIds || []);
+  const reservedDeals = new Set(draft?.transactionIds || []);
+  const transfers = identifyTransfers(sources);
+  const pending = sources.filter((s) => !claimed.has(s.id) && s.kind !== "excluded");
+  const usable = transactions.filter((tx) => !tx.reconciliationId);
+  const candidates = new Map(pending.filter((s) => !transfers.has(s.id)).map((s) => [s.id, usable.filter((tx) => {
+    const amount = transactionConsideration(tx);
+    return amount && amount.currency === s.currency && cents(amount.amount) === cents(s.amount)
+      && s.amount !== 0 && Math.abs(s.date - Number(tx.ts)) <= 3 * 86400000;
+  })]));
+  const plans = [];
+  for (const source of pending) {
+    if (reserved.has(source.id) || !source.amount) continue;
+    const reason = transfers.get(source.id);
+    const exact = candidates.get(source.id) || [];
+    const tx = exact.length === 1 ? exact[0] : null;
+    // One exact deal, one possible source, same currency, no amount correction.
+    const unique = tx && !reservedDeals.has(tx.id) && [...candidates.values()].filter((list) => list.some((candidate) => candidate.id === tx.id)).length === 1;
+    if (!reason && !unique) continue;
+    plans.push({ sourceIds: [source.id], transactionIds: reason ? [] : [tx.id], sources: [source], transactions: reason ? [] : [tx],
+      amounts: reason ? {} : { [tx.id]: transactionConsideration(tx).amount }, rates: {}, currency: source.currency,
+      classification: reason ? "transfer" : "cards", resolutionMode: "automatic",
+      note: reason || "Automatically matched: unique exact amount and currency within three days, with no competing payment or sale. App amounts unchanged.",
+      evidence: `${statementEvidence([source])}. Matching evidence only; receipt status has not been verified.`,
+    });
+  }
+  return plans;
+}
+
 export function suggestMatches(sources, transactions, rates = {}, currency = "EUR") {
   if (!sources.length || sources.some((s) => s.kind !== "payment")) return [];
   const amount = sources.reduce((sum, s) => sum + s.amount * (s.currency === currency ? 1 : Number(rates[s.currency] || 0)), 0);

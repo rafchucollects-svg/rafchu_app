@@ -1,10 +1,40 @@
 import { describe, it, expect } from "vitest";
-import { readCSV, parseReconciliationCSV, suggestMatches, transactionConsideration, correctedTransaction, validateReview } from "./reconciliation";
+import { readCSV, parseReconciliationCSV, suggestMatches, transactionConsideration, correctedTransaction, validateReview, identifyTransfers, planAutomaticReconciliation } from "./reconciliation";
 
 const ts = Date.parse("2026-06-15T12:00:00Z");
 const sale = (id, amount, name = "Pikachu") => ({ id, type: "sale", currency: "EUR", ts, totalValue: amount, itemsOut: [{ name, quantity: 1, unitPrice: amount, totalPrice: amount, costBasis: 20 }] });
 const source = (id, amount, extra = {}) => ({ id, reference: id, provider: "Wise", kind: "payment", currency: "EUR", date: ts, amount, description: "", ...extra });
 const review = (sources, transactions, amounts) => ({ sources, transactions, amounts, rates: {}, currency: "EUR", note: "Agreed deal price", evidence: "Show deal message; no receipt issued", classification: "cards" });
+
+describe("automatic reconciliation", () => {
+  const payout = (id, net) => source(id, 100, { provider: "SumUp", kind: "excluded", raw: { "Transaction type": "Payout", Status: "Paid", "Payout ID": "SUMUP TEST-BATCH", "Payout date": "2026-06-15", Payout: String(net), Date: "2026-06-14" } });
+  it("recognizes a Wise deposit from summed net SumUp payouts, even without SumUp in the payer name", () => {
+    const sources = [payout("a", 98.5), payout("b", 197), source("bank", 295.5, { description: "Received money from Sample Business" })];
+    expect(identifyTransfers(sources).get("bank")).toContain("SUMUP TEST-BATCH");
+    const plans = planAutomaticReconciliation({ sources, transactions: [sale("false-sale", 295.5)] });
+    expect(plans).toHaveLength(1); expect(plans[0]).toMatchObject({ classification: "transfer", transactions: [], resolutionMode: "automatic" });
+    expect(plans[0].note).toContain("no new sale");
+  });
+  it("does not classify by gross payout value, size, wrong currency, or ambiguous deposits", () => {
+    const sources = [payout("a", 98.5), source("gross", 100), source("large", 4000), source("foreign", 98.5, { currency: "GBP" })];
+    expect(identifyTransfers(sources).size).toBe(0);
+    expect(identifyTransfers([payout("a", 98.5), source("b", 98.5), source("c", 98.5)]).size).toBe(0);
+  });
+  it("automatically matches only exact, unique, recent same-currency deals", () => {
+    const sources = [source("p", 100), source("discount", 189), source("foreign", 50, { currency: "USD" })];
+    const plans = planAutomaticReconciliation({ sources, transactions: [sale("exact", 100), sale("price", 190), sale("eur", 50)] });
+    expect(plans).toHaveLength(1); expect(plans[0].transactionIds).toEqual(["exact"]); expect(plans[0].amounts).toEqual({ exact: 100 });
+    expect(planAutomaticReconciliation({ sources: [source("p", 100, { date: ts + 5 * 86400000 })], transactions: [sale("s", 100)] })).toHaveLength(0);
+  });
+  it("leaves competing payments, duplicate deals, existing reviews, and saved drafts for manual handling", () => {
+    expect(planAutomaticReconciliation({ sources: [source("p", 100), source("q", 100)], transactions: [sale("s", 100)] })).toEqual([]);
+    expect(planAutomaticReconciliation({ sources: [source("p", 100)], transactions: [sale("s", 100), sale("t", 100)] })).toEqual([]);
+    const input = { sources: [source("p", 100)], transactions: [sale("s", 100)] };
+    expect(planAutomaticReconciliation({ ...input, reviews: [{ sourceIds: ["p"] }] })).toEqual([]);
+    expect(planAutomaticReconciliation({ ...input, draft: { sourceIds: ["p"] } })).toEqual([]);
+    expect(planAutomaticReconciliation({ ...input, transactions: [{ ...sale("s", 100), reconciliationId: "done" }] })).toEqual([]);
+  });
+});
 
 describe("reconciliation import", () => {
   it("reads quoted commas, escaped quotes and embedded newlines", () => {
