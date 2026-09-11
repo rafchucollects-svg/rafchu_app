@@ -39,4 +39,4 @@ FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 node scripts/seed-reconciliation-emulator
 
 This adds synthetic split payments and a two-card discount example without replacing existing records. Unit tests cover parsing, matching, allocation and review validation. UI tests cover approval gating and conflicts; emulator tests cover privacy, import deduplication, stale records, concurrent finalization and immutable history.
 
-**Release requires the updated Firestore rules as well as the frontend.** The existing Hosting workflows do not deploy Firestore rules. Deploy the reviewed rules before the new Hosting release; otherwise reads/writes to the new collections (including accountant export) will fail. No production migration or imported private business data is included.
+**Release requires the updated Firestore rules as well as the frontend.** The main deployment workflow deploys rules first using the existing project service account; a rules deployment failure stops the Hosting release. Pull-request previews do not deploy production rules. No production migration or imported private business data is included.

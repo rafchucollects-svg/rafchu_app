@@ -25,6 +25,29 @@ jobs:
       - run: npm test && npm --prefix functions test
       - run: npx --yes --package firebase-tools@15.29.0 firebase emulators:exec --only firestore --project demo-rafchu-review 'node --test tests/firestore.rules.test.mjs'
       - run: npm run build
+      - name: Deploy Firestore rules before Hosting
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAFCHU_TCG_APP }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync, unlinkSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { spawnSync } from 'node:child_process';
+          const credentialsPath = join(process.env.RUNNER_TEMP, 'rafchu-rules-deploy.json');
+          const credentials = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          if (credentials.project_id !== 'rafchu-tcg-app') throw new Error('Unexpected Firebase deployment project');
+          writeFileSync(credentialsPath, JSON.stringify(credentials), { mode: 0o600 });
+          try {
+            const result = spawnSync('npx', ['--yes', '--package', 'firebase-tools@15.29.0', 'firebase', 'deploy', '--only', 'firestore:rules', '--project', 'rafchu-tcg-app', '--non-interactive'], {
+              stdio: 'inherit',
+              env: { ...process.env, GOOGLE_APPLICATION_CREDENTIALS: credentialsPath },
+            });
+            if (result.error) throw result.error;
+            process.exitCode = result.status ?? 1;
+          } finally {
+            unlinkSync(credentialsPath);
+          }
+          NODE
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
