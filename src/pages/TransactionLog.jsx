@@ -328,6 +328,8 @@ export function TransactionLog() {
                       <Button
                         size="icon"
                         variant="ghost"
+                        disabled={Boolean(tx.reconciliationId)}
+                        title={tx.reconciliationId ? "Finalized reconciliation — original and final values are in the review history" : "Delete transaction"}
                         onClick={(e) => {
                           e.stopPropagation();
                           handleDeleteTransaction(tx.id);
@@ -406,7 +408,7 @@ export function TransactionLog() {
                           <div>
                             <div className="text-sm font-semibold mb-2 text-green-600 flex items-center justify-between">
                               <span>Cards Acquired:</span>
-                              {editingTx !== tx.id && (
+                              {editingTx !== tx.id && !tx.reconciliationId && (
                                 <Button
                                   size="sm"
                                   variant="outline"
@@ -603,4 +605,3 @@ export function TransactionLog() {
     </div>
   );
 }
-

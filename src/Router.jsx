@@ -37,6 +37,7 @@ const InventoryInsights = lazyPage(() => import("./pages/InventoryInsights"), "I
 const WishlistInsights = lazyPage(() => import("./pages/WishlistInsights"), "WishlistInsights");
 const DealCalculator = lazyPage(() => import("./pages/BuyCalculator"), "DealCalculator");
 const TransactionLog = lazyPage(() => import("./pages/TransactionLog"), "TransactionLog");
+const Reconciliation = lazyPage(() => import("./pages/Reconciliation"), "Reconciliation");
 const TransactionSummary = lazyPage(() => import("./pages/TransactionSummary"), "TransactionSummary");
 const TaxReporting = lazyPage(() => import("./pages/TaxReporting"), "TaxReporting");
 const ExpenseTracker = lazyPage(() => import("./pages/ExpenseTracker"), "ExpenseTracker");
@@ -215,6 +216,10 @@ export function createAppRouter(authHandlers) {
             {
               path: "tax-reporting",
               element: <Route><VendorAccessGuard><TaxReporting /></VendorAccessGuard></Route>,
+            },
+            {
+              path: "reconciliation",
+              element: <Route><VendorAccessGuard><Reconciliation /></VendorAccessGuard></Route>,
             },
             {
               path: "expenses",

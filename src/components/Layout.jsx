@@ -51,6 +51,7 @@ const vendorNavigation = [
   { label: "Transaction summary", to: "/vendor/transaction-summary", icon: FileText },
   { label: "Expenses", to: "/vendor/expenses", icon: Receipt },
   { label: "Tax reporting", to: "/vendor/tax-reporting", icon: FileText },
+  { label: "Reconciliation", to: "/vendor/reconciliation", icon: Receipt },
   { label: "Story sale", to: "/vendor/story-sale", icon: Image },
 ];
 
@@ -157,8 +158,8 @@ export function Layout({ onGoogleLogin, onEmailSignUp, onEmailLogin, onPasswordR
       {hasVendorAccess && <>
         {renderNavGroup("Inventory", vendorNavigation.slice(0,3))}
         {renderNavGroup("Deals", vendorNavigation.slice(3,6))}
-        {renderNavGroup("Accounting", vendorNavigation.slice(6,8))}
-        {renderNavGroup("Share", vendorNavigation.slice(8))}
+        {renderNavGroup("Accounting", vendorNavigation.slice(6,9))}
+        {renderNavGroup("Share", vendorNavigation.slice(9))}
       </>}
 
       {!hasVendorAccess && !vendorCtaDismissed && (

@@ -158,6 +158,37 @@ service cloud.firestore {
 
     // Transaction Log - subcollection for vendor transaction history
     match /transactions/{userId}/entries/{entryId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && !('reconciliationId' in request.resource.data);
+      allow update: if isOwner(userId) && !('reconciliationId' in resource.data) && (
+        !('reconciliationId' in request.resource.data) ||
+        entryId in getAfter(/databases/$(database)/documents/reconciliations/$(userId)/entries/$(request.resource.data.reconciliationId)).data.transactionIds
+      );
+      allow delete: if isOwner(userId) && !('reconciliationId' in resource.data);
+    }
+
+    // Owner-private source evidence and append-only review history.
+    match /reconciliation_sources/{userId}/entries/{entryId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && request.resource.data.id == entryId
+        && request.resource.data.importedAt == request.time;
+    }
+    match /reconciliations/{userId}/entries/{entryId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && request.resource.data.reviewer == userId
+        && request.resource.data.status == 'finalized'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.sourceIds.size() > 0
+        && request.resource.data.sourceIds.size() <= 8
+        && request.resource.data.transactionIds.size() <= 8;
+    }
+    match /reconciliation_claims/{userId}/entries/{entryId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && request.resource.data.createdAt == request.time
+        && entryId in getAfter(/databases/$(database)/documents/reconciliations/$(userId)/entries/$(request.resource.data.reconciliationId)).data.sourceIds;
+    }
+    match /reconciliation_drafts/{userId}/entries/{entryId} {
       allow read, write: if isOwner(userId);
     }
 
