@@ -4,6 +4,19 @@ import { buildAccountantReportData } from "./accountantReport";
 const metrics = (item) => ({ cmLowest: item.market || 0, suggested: item.market || 0 });
 
 describe("buildAccountantReportData", () => {
+  it("reports reviews by source date, preserves original currencies and keeps unresolved movements outside revenue", () => {
+    const source = { id: "p", date: Date.parse("2026-06-01"), amount: 100, currency: "GBP", kind: "payment" };
+    const report = buildAccountantReportData({ year: 2026, computeItemMetrics: metrics, reconciliation: {
+      sources: [source, { ...source, id: "unresolved" }, { ...source, id: "payout", kind: "excluded" }, { ...source, id: "old", date: Date.parse("2025-01-01") }],
+      reviews: [{ id: "r", finalizedAt: Date.parse("2027-01-01"), sourceIds: ["p"], sources: [source], changes: [] }],
+    } });
+    expect(report.reconciliation.reviews).toHaveLength(1);
+    expect(report.reconciliation.unresolved.map((s) => s.id)).toEqual(["unresolved"]);
+    expect(report.reconciliation.unresolved[0].currency).toBe("GBP");
+    expect(report.reconciliation.excludedCount).toBe(1);
+    expect(report.profitLoss.revenue).toBe(0);
+    expect(report.warnings.some((warning) => warning.includes("still need reconciliation"))).toBe(true);
+  });
   it("combines trades, expenses, purchases, COGS, and inventory for the fiscal year", () => {
     const report = buildAccountantReportData({
       year: 2026,

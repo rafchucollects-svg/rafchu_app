@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { loadReconciliation } from "@/utils/reconciliationStore";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -129,7 +130,9 @@ export function TaxReporting() {
       const transactions = await prepareTransactionsForTaxEUR(
         transactionSnapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() })),
       );
+      const reconciliation = await loadReconciliation(db, user.uid);
       const report = buildAccountantReportData({
+        reconciliation,
         year: accountantYear,
         fiscalYearStart: tax.taxConfig?.fiscalYearStart || 1,
         transactions,
@@ -202,7 +205,7 @@ export function TaxReporting() {
               <h2 className="font-bold text-emerald-950">Accountant Export</h2>
             </div>
             <p className="mt-1 text-sm text-emerald-900/75">
-              One PDF with P&amp;L, expenses, per diems, purchase diary, margin tax, COGS, inventory, and shareholder records.
+              One PDF with P&amp;L, expenses, per diems, purchase diary, margin tax, COGS, inventory, shareholder records, and approved or unresolved payment reconciliations.
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">

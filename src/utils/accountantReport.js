@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import { transactionConsideration, transactionLabel } from "./reconciliation";
 import {
   calculateCOGS,
   calculateMarginTax,
@@ -25,6 +26,8 @@ function asMoney(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+const sourceAmountLabel = (amount, currency) => `${Number(amount).toFixed(2)} ${currency}`;
 
 function getTransactionRevenue(transaction) {
   if (transaction.type !== "sale" && transaction.type !== "sell") return 0;
@@ -75,8 +78,16 @@ export function buildAccountantReportData({
   taxFreeBenefits = [],
   computeItemMetrics,
   currency = "EUR",
+  reconciliation = { sources: [], reviews: [] },
 }) {
   const period = getAnnualRange(year, fiscalYearStart);
+  const reviewedSourceIds = new Set(reconciliation.reviews.flatMap((review) => review.sourceIds));
+  const periodSources = reconciliation.sources.filter((source) => isWithinPeriod(source.date, period.start, period.end));
+  const reconciliationReport = {
+    reviews: reconciliation.reviews.filter((review) => review.sources.some((source) => isWithinPeriod(source.date, period.start, period.end))),
+    unresolved: periodSources.filter((source) => source.kind !== "excluded" && !reviewedSourceIds.has(source.id)),
+    excludedCount: periodSources.filter((source) => source.kind === "excluded").length,
+  };
   const periodTransactions = transactions.filter((transaction) =>
     isWithinPeriod(transaction.ts, period.start, period.end)
   );
@@ -173,6 +184,7 @@ export function buildAccountantReportData({
   const perDiems = periodExpenses.filter((expense) => expense.category === "Per Diem");
 
   const warnings = [];
+  if (reconciliationReport.unresolved.length) warnings.push(`${reconciliationReport.unresolved.length} imported payment movement(s) still need reconciliation; see the unresolved appendix.`);
   const incompleteTransactions = periodTransactions.filter(
     (transaction) => transaction.taxRecord?.status && transaction.taxRecord.status !== "complete"
   ).length;
@@ -190,6 +202,7 @@ export function buildAccountantReportData({
 
   return {
     year,
+    reconciliation: reconciliationReport,
     label: `FY ${year}`,
     period,
     transactions: periodTransactions,
@@ -406,6 +419,20 @@ export function exportAccountantPackagePDF(report, config, filename) {
   renderTable(doc, nextY + 3, ["Date", "Type", "Description", "EUR"], report.taxFreeBenefits.map((benefit) => [
     dateLabel(benefit.date), benefit.benefitType || "", benefit.description || "", money(benefit.amount),
   ]), { columnStyles: { 3: { halign: "right" } } });
+
+  const reconciliation = report.reconciliation || { reviews: [], unresolved: [], excludedCount: 0 };
+  y = addSection(doc, "Payment reconciliation", `${report.label} · Source amounts keep their currency; groups can span reporting periods.`, config);
+  renderTable(doc, y, ["Review / reviewer / date", "Source payments (original)", "App amounts: original -> final", "Classification / evidence / explanation"], reconciliation.reviews.map((review) => [
+    `${review.id}\n${review.reviewer}\n${dateLabel(review.finalizedAt)}`,
+    review.sources.map((source) => `${source.provider} ${source.reference}\n${dateLabel(source.date)}: ${sourceAmountLabel(source.amount, source.currency)}`).join("\n"),
+    review.changes.map(({ before, after }) => `${before.id} ${transactionLabel(before)}\n${sourceAmountLabel(transactionConsideration(before)?.amount, before.currency || "EUR")} -> ${sourceAmountLabel(transactionConsideration(after)?.amount, after.currency || "EUR")}`).join("\n") || "No card ledger change",
+    `${review.classification}: ${sourceAmountLabel(review.total, review.currency)}\nFX: ${Object.entries(review.rates || {}).map(([currency, rate]) => `1 ${currency} = ${rate} ${review.currency}`).join("; ") || "same currency"}\n${review.note}\nEvidence: ${review.evidence}`,
+  ]));
+  y = addSection(doc, "Unresolved payment movements", `${report.label} · ${reconciliation.excludedCount} SumUp payout / unsuccessful rows excluded. Classifications do not post expenses or other income.`, config);
+  renderTable(doc, y, ["Date", "Provider / reference", "Description", "Original amount", "Review state"], reconciliation.unresolved.map((source) => [
+    dateLabel(source.date), `${source.provider}\n${source.reference}`, source.description,
+    sourceAmountLabel(source.amount, source.currency), source.kind === "transfer" ? "Transfer / payout classification needed" : "Unresolved - not automatically treated as revenue",
+  ]));
 
   addFooters(doc);
   doc.save(filename || `accountant_package_${report.year}.pdf`);

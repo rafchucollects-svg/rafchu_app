@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { saveItemChanges } from '../src/utils/inventoryStore.js';
+import { importReconciliationSources, finalizeReconciliation } from '../src/utils/reconciliationStore.js';
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const admin = require('firebase-admin');
 const { syncPublicUser, syncWishlist, syncRating } = require('./publicData');
@@ -15,6 +16,51 @@ let env, server;
 const alice = () => env.authenticatedContext('alice').firestore();
 const bob = () => env.authenticatedContext('bob').firestore();
 const guest = () => env.unauthenticatedContext().firestore();
+
+const paymentFixture = { id: 'payment-a', reference: 'synthetic-a', provider: 'Wise', date: Date.parse('2026-06-15'), amount: 90, currency: 'EUR', kind: 'payment', raw: {}, description: 'Pikachu' };
+const saleFixture = { id: 'sale-a', type: 'sale', currency: 'EUR', ts: Date.parse('2026-06-15'), totalValue: 100, itemsOut: [{ name: 'Pikachu', quantity: 1, unitPrice: 100, costBasis: 20 }] };
+const reviewFixture = { sources: [paymentFixture], transactions: [saleFixture], amounts: { 'sale-a': 90 }, rates: {}, currency: 'EUR', note: 'Discount agreed', evidence: 'Synthetic show deal reference', classification: 'cards' };
+
+test('reconciliation evidence is private, import is idempotent and finalization preserves immutable before/after values', async () => {
+  const db = alice();
+  assert.equal(await importReconciliationSources(db, 'alice', [paymentFixture]), 1);
+  assert.equal(await importReconciliationSources(db, 'alice', [paymentFixture]), 0);
+  await setDoc(doc(db, 'transactions/alice/entries/sale-a'), saleFixture);
+  await assertFails(getDoc(doc(bob(), 'reconciliation_sources/alice/entries/payment-a')));
+  const reviewId = await finalizeReconciliation(db, 'alice', reviewFixture);
+  const auditRef = doc(db, `reconciliations/alice/entries/${reviewId}`);
+  const audit = (await getDoc(auditRef)).data();
+  assert.equal(audit.changes[0].before.totalValue, 100);
+  assert.equal(audit.changes[0].after.totalValue, 90);
+  assert.equal((await getDoc(doc(db, 'transactions/alice/entries/sale-a'))).data().totalValue, 90);
+  await assertFails(updateDoc(auditRef, { note: 'Changed history' }));
+  await assertFails(deleteDoc(auditRef));
+  await assertFails(updateDoc(doc(db, 'reconciliation_sources/alice/entries/payment-a'), { amount: 80 }));
+  await assertFails(deleteDoc(doc(db, 'reconciliation_claims/alice/entries/payment-a')));
+  await assertFails(updateDoc(doc(db, 'transactions/alice/entries/sale-a'), { totalValue: 80 }));
+  await assertFails(deleteDoc(doc(db, 'transactions/alice/entries/sale-a')));
+  await assert.rejects(finalizeReconciliation(db, 'alice', reviewFixture), /already been finalized/);
+});
+
+test('reconciliation detects stale app edits and competing reviewers claim a payment only once', async () => {
+  const db = alice();
+  await importReconciliationSources(db, 'alice', [paymentFixture]);
+  await setDoc(doc(db, 'transactions/alice/entries/sale-a'), { ...saleFixture, notes: 'Changed in another tab' });
+  await assert.rejects(finalizeReconciliation(db, 'alice', reviewFixture), /changed while/);
+  assert.equal((await getDoc(doc(db, 'reconciliation_claims/alice/entries/payment-a'))).exists(), false);
+  await setDoc(doc(db, 'transactions/alice/entries/sale-a'), saleFixture);
+  const results = await Promise.allSettled([finalizeReconciliation(db, 'alice', reviewFixture), finalizeReconciliation(db, 'alice', reviewFixture)]);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+});
+
+test('reconciliation links cannot point to absent audit records', async () => {
+  const db = alice();
+  await setDoc(doc(db, 'transactions/alice/entries/sale-a'), saleFixture);
+  await assertFails(updateDoc(doc(db, 'transactions/alice/entries/sale-a'), { reconciliationId: 'absent' }));
+  await assertFails(setDoc(doc(db, 'reconciliation_claims/alice/entries/payment-a'), { reconciliationId: 'absent', createdAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(bob(), 'reconciliation_drafts/alice/entries/current'), { note: 'intrusion' }));
+});
 globalThis.window = new EventTarget();
 before(async () => {
   env = await initializeTestEnvironment({ projectId, firestore: { rules: readFileSync('firestore.rules','utf8'), host: '127.0.0.1', port: 8080 } });
