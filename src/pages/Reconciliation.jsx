@@ -4,7 +4,7 @@ import { collection, getDocs } from "firebase/firestore";
 import { CheckCircle2, ArrowRight, ArrowLeftRight, Upload, Search } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { Button } from "@/components/ui/button";
-import { parseReconciliationCSV, suggestMatches, transactionConsideration, transactionLabel, canCorrectAmount, validateReview, identifyTransfers, statementEvidence } from "@/utils/reconciliation";
+import { parseReconciliationCSV, suggestMatches, transactionConsideration, transactionLabel, canCorrectAmount, validateReview, identifyTransfers, statementEvidence, allocateReconciliationAmounts, reconciliationAdjustment } from "@/utils/reconciliation";
 import { loadReconciliation, importReconciliationSources, saveReconciliationDraft, finalizeReconciliation, automaticallyReconcile } from "@/utils/reconciliationStore";
 
 const money = (amount, currency) => `${Number(amount).toFixed(2)} ${currency}`;
@@ -12,7 +12,7 @@ const day = (value) => new Date(value).toLocaleDateString(undefined, { day: "num
 const fieldClass = "w-full rounded-lg border border-border bg-background p-2 text-sm";
 const panelClass = "rounded-2xl border border-border bg-card p-5 sm:p-6";
 const checkClass = "h-4 w-4 shrink-0 appearance-auto accent-amber-700";
-const emptyDraft = { sourceIds: [], transactionIds: [], amounts: {}, rates: {}, currency: "EUR", note: "", evidence: "", classification: "cards" };
+const emptyDraft = { sourceIds: [], transactionIds: [], amounts: {}, amountMode: "automatic", rates: {}, currency: "EUR", note: "", evidence: "", classification: "cards" };
 
 function PaymentReview({ source, pending, transactions: allTransactions, transfers, restoredDraft, onSave, onLater, busy }) {
   const [draft, setDraft] = useState(() => ({ ...emptyDraft, sourceIds: [source.id], currency: source.currency,
@@ -28,33 +28,39 @@ function PaymentReview({ source, pending, transactions: allTransactions, transfe
   const transactions = allTransactions.filter((tx) => draft.transactionIds.includes(tx.id));
   const hasRates = sources.every((s) => s.currency === draft.currency || Number(draft.rates[s.currency]) > 0);
   const total = sources.reduce((sum, s) => sum + Math.round(s.amount * (s.currency === draft.currency ? 1 : Number(draft.rates[s.currency] || 0)) * 100), 0) / 100;
-  const finalTotal = transactions.reduce((sum, tx) => sum + Math.round(Number(draft.amounts[tx.id] || 0) * 100), 0) / 100;
+  let amounts = draft.amounts, allocationError = "";
+  if (draft.amountMode !== "manual" && hasRates && draft.classification === "cards") {
+    try { amounts = allocateReconciliationAmounts(transactions, total, draft.currency); }
+    catch (err) { allocationError = err.message; }
+  }
+  const finalTotal = transactions.reduce((sum, tx) => sum + Math.round(Number(amounts[tx.id] || 0) * 100), 0) / 100;
+  const adjustment = hasRates ? reconciliationAdjustment(transactions, total, draft.currency) : null;
   const effectiveSources = sources.map((s) => transfers.has(s.id) ? { ...s, kind: "transfer" } : s);
   const suggestions = useMemo(() => suggestMatches(effectiveSources, allTransactions, draft.rates, draft.currency), [effectiveSources, allTransactions, draft.rates, draft.currency]);
   const set = (key, value) => { setError(""); setDraftMessage(""); setDraft((d) => ({ ...d, [key]: value })); };
   const choose = (ids) => {
     const selected = allTransactions.filter((tx) => ids.includes(tx.id));
-    const single = selected.length === 1 && hasRates && canCorrectAmount(selected[0]) && transactionConsideration(selected[0]).currency === draft.currency;
-    setDraft((d) => ({ ...d, transactionIds: ids, amounts: Object.fromEntries(selected.map((tx) => [tx.id, String(single ? total : transactionConsideration(tx).amount)])) }));
+    setDraft((d) => ({ ...d, transactionIds: ids, amountMode: "automatic", amounts: Object.fromEntries(selected.map((tx) => [tx.id, String(transactionConsideration(tx).amount)])) }));
     setError(""); setDraftMessage("");
   };
-  const review = { ...draft, sources, transactions, resolutionMode: "manual",
-    note: draft.note.trim() || (draft.classification === "cards" ? "User confirmed the selected card deal(s) against the statement payment(s)." : `User classified this movement as ${draft.classification}.`),
+  const review = { ...draft, amounts, sources, transactions, resolutionMode: "manual",
+    note: [draft.note.trim() || (draft.classification === "cards" ? "User confirmed the selected card deal(s) against the statement payment(s)." : `User classified this movement as ${draft.classification}.`), draft.classification === "cards" ? adjustment?.note : ""].filter(Boolean).join(" "),
     evidence: draft.evidence.trim() || `${statementEvidence(sources)}. No separate receipt was attached in this review.`,
   };
   let validation = "";
   try {
     if (sources.length !== draft.sourceIds.length || transactions.length !== draft.transactionIds.length) throw new Error("A selected record is no longer available. Refresh and choose it again.");
     if (draft.classification === "cards" && effectiveSources.some((s) => s.kind === "transfer")) throw new Error("This is an account transfer. Choose Transfer / payout to clear it without creating a sale.");
+    if (allocationError) throw new Error(allocationError);
     validateReview(review);
   } catch (err) { validation = err.message; }
   const save = async (asDraft = false) => {
     setError(""); setDraftMessage("");
     if (!asDraft && validation) { setError(validation); return; }
-    try { await onSave(asDraft ? draft : review, asDraft); if (asDraft) setDraftMessage("Progress saved. This payment still needs review."); }
+    try { await onSave(asDraft ? { ...draft, amounts } : review, asDraft); if (asDraft) setDraftMessage("Progress saved. This payment still needs review."); }
     catch (err) { setError(err.message); }
   };
-  const changed = transactions.some((tx) => Math.round(transactionConsideration(tx).amount * 100) !== Math.round(Number(draft.amounts[tx.id]) * 100));
+  const changed = transactions.some((tx) => Math.round(transactionConsideration(tx).amount * 100) !== Math.round(Number(amounts[tx.id]) * 100));
   return <section className={panelClass} aria-label="Review one payment">
     <div className="flex flex-wrap justify-between gap-3 border-b border-border pb-5">
       <div><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Payment to review</p><h2 className="mt-2 text-3xl font-bold tabular-nums">{money(source.amount, source.currency)}</h2><p className="mt-1 text-sm text-muted-foreground">{source.amount > 0 ? "Received" : "Paid"} · {source.provider} · {day(source.date)}</p></div>
@@ -90,10 +96,16 @@ function PaymentReview({ source, pending, transactions: allTransactions, transfe
           <label className="mt-3 block text-sm">App deal currency<input aria-label="Review currency" className={fieldClass} value={draft.currency} maxLength={3} onChange={(e) => setDraft((d) => ({ ...d, currency: e.target.value.toUpperCase(), transactionIds: [], amounts: {} }))} /></label>
           {[...new Set(sources.map((s) => s.currency))].filter((c) => c !== draft.currency).map((c) => <label key={c} className="mt-3 block text-sm">Verified rate: 1 {c} in {draft.currency}<input type="number" step="any" min="0" className={fieldClass} value={draft.rates[c] || ""} onChange={(e) => set("rates", { ...draft.rates, [c]: e.target.value })} /></label>)}
         </details>
-        {transactions.length > 0 && <div className="rounded-xl bg-muted p-4 space-y-3"><h3 className="font-semibold">Confirm the amount</h3>
-          {transactions.map((tx) => <label className="block text-sm" key={tx.id}>{transactionLabel(tx)}<span className="block text-xs text-muted-foreground">Recorded: {money(transactionConsideration(tx).amount, draft.currency)}</span><input aria-label={`Final amount for ${transactionLabel(tx)}`} type="number" step="0.01" className={`${fieldClass} mt-1 max-w-xs`} value={draft.amounts[tx.id] ?? ""} disabled={!canCorrectAmount(tx)} onChange={(e) => set("amounts", { ...draft.amounts, [tx.id]: e.target.value })} />{!canCorrectAmount(tx) && <span className="block text-xs">Change this amount in the original deal workflow to keep inventory costs and trade values consistent.</span>}</label>)}
-          <p className="text-sm">Statement: <strong>{hasRates ? money(total, draft.currency) : "Exchange rate needed"}</strong> · Selected deals: <strong>{money(finalTotal, draft.currency)}</strong></p>
-          {hasRates && Math.abs(total - finalTotal) > 0.005 && <p className="text-sm font-medium text-amber-800">{money(total - finalTotal, draft.currency)} still to allocate. Adjust the amount or add the remaining deal/payment.</p>}
+        {transactions.length > 0 && <div className="rounded-xl bg-muted p-4 space-y-3" aria-label="Payment amount"><h3 className="font-semibold">Payment amount</h3>
+          <p className="text-sm">Recorded deals: <strong>{money(transactions.reduce((sum, tx) => sum + Math.round(transactionConsideration(tx).amount * 100), 0) / 100, draft.currency)}</strong> · Statement: <strong>{hasRates ? money(total, draft.currency) : "Exchange rate needed"}</strong></p>
+          {adjustment && !allocationError && <p className="text-sm font-medium">{adjustment.label}: {adjustment.amount > 0 ? "+" : "−"}{money(Math.abs(adjustment.amount), draft.currency)}{draft.amountMode !== "manual" ? " · Applied automatically across the selected sales." : " · Using your custom allocation."}</p>}
+          {transactions.map((tx) => <p className="text-sm" key={tx.id}>{transactionLabel(tx)}<span className="block text-xs text-muted-foreground">{money(transactionConsideration(tx).amount, draft.currency)} → {money(amounts[tx.id], draft.currency)}</span></p>)}
+          <p className="text-sm">Amount to save: <strong>{money(finalTotal, draft.currency)}</strong></p>
+          {hasRates && !allocationError && Math.abs(total - finalTotal) > 0.005 && <p className="text-sm font-medium text-amber-800">Your custom allocation differs from the payment by {money(total - finalTotal, draft.currency)}. Use the automatic adjustment below or edit your amounts.</p>}
+          <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-sm font-semibold">Adjust individual amounts (optional)</summary>
+            {transactions.map((tx) => <label className="mt-3 block text-sm" key={tx.id}>{transactionLabel(tx)}<input aria-label={`Final amount for ${transactionLabel(tx)}`} type="number" step="0.01" className={`${fieldClass} mt-1 max-w-xs`} value={amounts[tx.id] ?? ""} disabled={!canCorrectAmount(tx)} onChange={(e) => { setError(""); setDraftMessage(""); setDraft((d) => ({ ...d, amountMode: "manual", amounts: { ...amounts, [tx.id]: e.target.value } })); }} />{!canCorrectAmount(tx) && <span className="block text-xs">Change this amount in the original deal workflow to keep inventory costs and trade values consistent.</span>}</label>)}
+            <Button className="mt-3" variant="outline" size="sm" onClick={() => set("amountMode", "automatic")}>Apply automatic adjustment</Button>
+          </details>
           {changed && <p className="text-sm font-medium">Saving will update the selected sale amount(s) shown above. The original values are kept in the accountant report.</p>}
         </div>}
       </>}
