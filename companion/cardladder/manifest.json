@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Rafchu CardLadder Companion",
+  "version": "1.1.1",
+  "description": "Read your CardLadder Inventory and calculate the highest matching sale in its two-week window.",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://app.cardladder.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://app.cardladder.com/*"
+      ],
+      "js": [
+        "page.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://rafchu-tcg-app.firebaseapp.com/*",
+        "https://rafchu-tcg-app.web.app/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

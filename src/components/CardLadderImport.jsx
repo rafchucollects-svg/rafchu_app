@@ -1,4 +1,6 @@
 import { CLOUD_FUNCTIONS_BASE } from "@/utils/functionEndpoint";
+import { CardLadderSyncPanel } from "@/components/CardLadderSyncPanel";
+import { preserveCardLadderSalesPrice } from "@/utils/cardLadderSales";
 import { useState, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -1016,7 +1018,7 @@ export function CardLadderImport({ onClose, collectionName }) {
         // so a later Card Ladder refresh must never replace it. The original
         // Card Ladder Investment remains refreshed inside cardladderData.
         const withEditedPrice = preserveEditedCardLadderPurchasePrice(merged, oldCard, currency);
-        return preserveDealAcquisitionData(withEditedPrice, dealCard, currency);
+        return preserveCardLadderSalesPrice(preserveDealAcquisitionData(withEditedPrice, dealCard, currency), oldCard || dealCard);
       });
 
       const remainingNonCardLadder = nonCardLadder.filter(
@@ -1089,6 +1091,8 @@ export function CardLadderImport({ onClose, collectionName }) {
               <X className="h-5 w-5" />
             </Button>
           </div>
+
+          {collectionName === "collections" && <CardLadderSyncPanel />}
 
           {/* Info box */}
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">

@@ -77,6 +77,8 @@ export function CardBadges({ item, size = 'sm' }) {
     });
   }
 
+  if (item.cardladderPricing?.method === 'cardladder-value') badges.push({ key: 'cardladder-value', label: 'CL Value', color: 'bg-blue-100 text-blue-700 border-blue-200', tooltip: 'Manually selected CardLadder estimate; no qualifying sales in the captured 14-day window' });
+
   if (badges.length === 0) return null;
 
   return (
@@ -153,10 +155,14 @@ export function GradedCardInfo({ item, formatPrice }) {
         </div>
         {item.gradedPrice && (
           <div className="col-span-2">
-            <span className="text-gray-600">Graded Value:</span>
+            <span className="text-gray-600">{item.cardladderPricing?.method === 'highest-sale-14d' ? '14-day high:' : item.cardladderPricing?.method === 'cardladder-value' ? 'CardLadder Value:' : 'Graded Value:'}</span>
             <span className="ml-1 font-medium text-green-600">
               {formatPrice(item.gradedPrice)}
             </span>
+            {item.cardladderPricing?.method === 'highest-sale-14d' && <div className="mt-1 text-gray-600">
+              {item.cardladderPricing.startDate} – {item.cardladderPricing.endDate} · {item.cardladderPricing.saleCount} matching sales
+              <a className="ml-1 underline" href={item.cardladderPricing.highSale.url} target="_blank" rel="noopener noreferrer">Sale evidence</a>
+            </div>}
           </div>
         )}
       </div>
@@ -187,7 +193,6 @@ export function VariantInfo({ item }) {
     </div>
   );
 }
-
 
 
 

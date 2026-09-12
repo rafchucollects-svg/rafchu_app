@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Rafchu Cardmarket Companion",
+  "version": "0.2.3",
+  "description": "Capture exact English/Japanese variant offers for manual review in Rafchu.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.cardmarket.com/en/Pokemon/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.cardmarket.com/en/Pokemon/*"
+      ],
+      "js": [
+        "page.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://rafchu-tcg-app.firebaseapp.com/*",
+        "https://rafchu-tcg-app.web.app/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

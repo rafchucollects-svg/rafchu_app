@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CardLadder capture check</title>
+<style>body{font:15px system-ui;margin:32px auto;max-width:1050px;padding:0 24px;color:#17372f;background:#f7faf8}button{padding:12px 18px;margin:8px 8px 8px 0;border:1px solid #9ab7aa;border-radius:8px;background:white;color:inherit;cursor:pointer}button:disabled{opacity:.45}#status{padding:16px;background:#e3eee7;border-radius:10px}table{border-collapse:collapse;width:100%;background:white}td,th{padding:10px;text-align:left;border-bottom:1px solid #dce5df}td small{display:block;color:#577269}#error{color:#a32020;white-space:pre-wrap}pre{white-space:pre-wrap;font-size:12px}a{color:#146850}</style></head>
+<body><h1>CardLadder capture check</h1><p>This page reads the companion report. It cannot apply inventory prices.</p>
+<p id="status" role="status">Connecting to the installed companion…</p>
+<button id="start" disabled>Capture Inventory</button><button id="stop" disabled>Stop capture</button><button id="report" disabled>Read latest report</button>
+<p id="error" role="alert"></p><p id="summary"></p><table><thead><tr><th>Card</th><th>Grade</th><th>Capture</th><th>Eligible sales</th><th>14-day high (capture currency)</th></tr></thead><tbody id="rows"></tbody></table>
+<details><summary>Capture metadata</summary><pre id="metadata"></pre></details>
+<script type="module" src="./capture.js"></script></body></html>

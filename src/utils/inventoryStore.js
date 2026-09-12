@@ -1,6 +1,14 @@
 import { doc, runTransaction, serverTimestamp } from "firebase/firestore";
 
-const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// Firestore maps and locally imported cards can have different key orders.
+// Compare their values consistently, including nested maps, while preserving
+// array order and the existing JSON handling of Firestore value types.
+const serialize = value => JSON.stringify(value, (_key, nested) =>
+  nested && typeof nested === "object" && !Array.isArray(nested)
+    ? Object.fromEntries(Object.keys(nested).sort().map(key => [key, nested[key]]))
+    : nested
+);
+const equal = (a, b) => serialize(a) === serialize(b);
 
 // Apply only the user's edits to the latest version. Never replace unrelated
 // changes, resurrect deleted cards, or silently overwrite a conflicting edit.

@@ -25,6 +25,36 @@ import {
   CONDITION_MULTIPLIER,
 } from "./cardHelpers";
 import { rankByRelevance } from "./searchHelpers";
+import { applyCardmarketCaptures, createCardmarketBinding } from './cardmarketSync';
+
+describe('accepted Cardmarket offers in inventory pricing', () => {
+  function pricedItem() {
+    const original = { entryId: 'offer-test', name: 'Jolteon', set: 'EX Unseen Forces', number: '8', language: 'English', condition: 'LP', isReverseHolo: true };
+    const binding = createCardmarketBinding(original, { productUrl: 'https://www.cardmarket.com/en/Pokemon/Products/Singles/EX-Unseen-Forces/Jolteon-UF8', language: 'English', condition: 'EX', finish: 'reverse', firstEdition: false, confirmed: true });
+    const item = { ...original, cardmarketBinding: binding };
+    const offer = { offerId: 'articleRow1001', seller: 'ExampleSeller', sellerType: 'Professional', price: 100, currency: 'EUR', ...binding, signed: false, altered: false };
+    const capture = { ...binding, filters: binding, entryId: item.entryId, source: 'cardmarket-browser', capturedAt: new Date().toISOString(), currency: 'EUR', complete: true, offers: [offer] };
+    return applyCardmarketCaptures([item], [capture], [{ entryId: item.entryId, method: 'selected-offer', offerId: offer.offerId, replaceManual: false }]).items[0];
+  }
+  it('uses the exact-condition offer without discounting it again and converts its EUR currency', () => {
+    const item = pricedItem();
+    expect(computeMarketValues(item, { targetCurrency: 'EUR', condition: 'LP' })).toMatchObject({ preferredMarket: 100, sellerAsk: 100, preferredSource: 'Cardmarket chosen offer' });
+    expect(computeItemMetrics(item, 'EUR').suggested).toBe(100);
+    expect(computeItemMetrics(item, 'USD').suggested).toBe(convertCurrency(100, 'USD', 'EUR'));
+  });
+  it('preserves manual selling prices while exposing the separate chosen market offer', () => {
+    const item = { ...pricedItem(), overridePrice: 140, overridePriceCurrency: 'EUR' };
+    expect(computeItemMetrics(item, 'EUR').suggested).toBe(140);
+    expect(computeMarketValues(item, { targetCurrency: 'EUR', condition: 'LP' })).toMatchObject({ preferredMarket: 100, sellerAsk: 140 });
+  });
+  it('invalidates an accepted estimate when the confirmed condition or inventory variant changes', () => {
+    const item = pricedItem();
+    for (const changed of [{ ...item, isReverseHolo: false }, { ...item, cardmarketBinding: { ...item.cardmarketBinding, condition: 'NM' } }]) {
+      expect(computeMarketValues(changed, { targetCurrency: 'EUR', condition: 'LP' }).preferredSource).not.toBe('Cardmarket chosen offer');
+      expect(computeItemMetrics(changed, 'EUR').suggested).not.toBe(100);
+    }
+  });
+});
 
 // ==============================
 // Condition Helpers
