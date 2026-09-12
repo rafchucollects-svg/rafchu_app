@@ -7,7 +7,7 @@ const numberKey = value => normalize(String(value || '').split('/')[0]).replace(
 const setKey = value => {
   const key = normalize(value);
   const aliased = ({ 'japanese expedition': 'base expansion pack', expedition: 'expedition base set' })[key] || key;
-  return aliased.replace(/^(?:ex|sword shield|sun moon|scarlet violet|xy) (?=\S)/, '');
+  return aliased.replace(/^(?:ex|black white|sword shield|sun moon|scarlet violet|xy) (?=\S)/, '');
 };
 export const sameCardmarketSet = (left, right) => Boolean(setKey(left)) && setKey(left) === setKey(right);
 const base = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/';
@@ -22,11 +22,15 @@ export const CARDMARKET_KNOWN_PRODUCTS = [
   ['Shining Gyarados', 'Neo Revelation', '65', 'Neo-Revelation/Shining-Gyarados-NR65'],
   ['Shining Steelix', 'Neo Destiny', '112', 'Neo-Destiny/Shining-Steelix-NDE112'],
   ['Charizard', 'Base Expansion Pack', '103', 'Base-Expansion-Pack/Charizard-V2-EC1103', 'Japanese'],
+  ['Eevee', 'BW Black Star Promos', 'BW97', 'BW-Black-Star-Promos/Eevee-V2-BWBW97'],
 ].map(([name, set, number, path, language = 'English']) => ({ name, set, number, productUrl: base + path, language, source: 'catalogue' }));
 
 export function cardmarketSearchUrl(item) {
   const url = new URL('https://www.cardmarket.com/en/Pokemon/Products/Search');
-  url.searchParams.set('searchString', `${cardmarketSearchName(item.name)} ${String(item.number || '').split('/')[0]}`.trim());
+  // Cardmarket search does not find compact promo references such as BW97.
+  // Broaden the query to the numeric part; ranking still checks the full identity.
+  const searchNumber = String(item.number || '').split('/')[0].replace(/^[a-z]+(?=\d)/i, '');
+  url.searchParams.set('searchString', `${cardmarketSearchName(item.name)} ${searchNumber}`.trim());
   return url.href;
 }
 

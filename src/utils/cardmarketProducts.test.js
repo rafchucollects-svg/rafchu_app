@@ -21,6 +21,15 @@ describe('Cardmarket product suggestions', () => {
     const old = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Base-Set/Blastoise-BS2';
     expect(suggestCardmarketProducts({...card,links:{cardmarket:old}}).map(row=>row.productUrl)).toEqual([url,old]);
   });
+  it('finds untagged BW97 promos despite the inventory series prefix and compact promo number', () => {
+    const eevee = { name: 'Eevee', set: 'Black & White BW Black Star Promos', number: 'BW97', language: 'English' };
+    const productUrl = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/BW-Black-Star-Promos/Eevee-V2-BWBW97';
+    const candidate = { name: 'Eevee', set: 'BW Black Star Promos', code: 'BW', number: '97', productUrl };
+    expect(new URL(cardmarketSearchUrl(eevee)).searchParams.get('searchString')).toBe('Eevee 97');
+    expect(rankCardmarketProducts(eevee, [candidate])).toHaveLength(1);
+    expect(rankCardmarketProducts(eevee, [{ ...candidate, number: '94' }, { ...candidate, set: 'BW Promos' }])).toEqual([]);
+    expect(suggestCardmarketProducts(eevee)[0].productUrl).toBe(productUrl);
+  });
 });
 function searchFixture() {
   document.body.innerHTML = `<main><h1>Search Results</h1><form id="SearchResultForm"><select name="idExpansion"><option value="0">All</option><option value="1536">Expedition Base Set</option><option value="5021">Base Expansion Pack</option></select><select name="idCategory"><option value="0">All</option><option value="51">Singles</option></select></form><a class="galleryBox" href="${url}"><h2><span class="expansion-symbol" aria-label="Expedition Base Set"></span>Blastoise (EX 4)</h2></a></main>`;
@@ -40,6 +49,14 @@ it('reads gallery results and only follows actual search pagination links', () =
   expect(readCardmarketProducts(document,search,card).nextUrl).toContain('site=2');
   document.querySelector('[aria-label="Next page"]').href = 'https://evil.example/';
   expect(readCardmarketProducts(document,search,card).nextUrl).toBeNull();
+});
+it('refines BW promo searches to the exact expansion while retaining full-number checks', () => {
+  searchFixture();
+  document.querySelector('[name="idExpansion"]').insertAdjacentHTML('beforeend', '<option value="999">BW Black Star Promos</option><option value="998">BW Promos</option>');
+  const eevee = { name: 'Eevee', set: 'Black & White BW Black Star Promos', number: 'BW97', language: 'English' };
+  const result = readCardmarketProducts(document, cardmarketSearchUrl(eevee), eevee);
+  expect(new URL(result.nextUrl).searchParams.get('idExpansion')).toBe('999');
+  expect(new URL(result.nextUrl).searchParams.get('searchString')).toBe('Eevee 97');
 });
 it('handles search redirects to one product and never treats a verification screen as a match', () => {
   document.body.innerHTML = '<h1>Blastoise (EX 4) Expedition Base Set - Singles</h1><form id="FilterForm"></form>';

@@ -9,7 +9,7 @@ import { createCardmarketBinding } from '../utils/cardmarketSync';
 
 let host, root, status, report;
 const makeCard = name => {
-  const card = { entryId: name, name, set: 'Expedition Base Set', number: '4', language: 'English', condition: 'LP', isReverseHolo: true, isUnlimited: true };
+  const card = { entryId: name, name, set: 'Expedition Base Set', number: '4', language: 'English', condition: 'LP', isReverseHolo: true, isUnlimited: true, overridePrice: 120 };
   return { ...card, cardmarketBinding: createCardmarketBinding(card, { productUrl: `https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/${name}-EX4`, language: 'English', condition: 'EX', finish: 'reverse', firstEdition: false, confirmed: true }) };
 };
 const captured = card => ({ entryId: card.entryId, inventoryKey: card.cardmarketBinding.inventoryKey, productUrl: card.cardmarketBinding.productUrl, source: 'cardmarket-browser', currency: 'EUR', complete: true, capturedAt: new Date().toISOString(), filters: card.cardmarketBinding, offers: [{ offerId: 'articleRow100', seller: 'Test seller', sellerType: 'Professional', price: 100, currency: 'EUR', condition: 'EX', language: 'English', finish: 'reverse', firstEdition: false, signed: false, altered: false, url: card.cardmarketBinding.productUrl }] });
@@ -90,4 +90,51 @@ it('shows failed saves beside the button and preserves the chosen offer for retr
   expect(footer.querySelector('[role="alert"]').textContent).toBe('Permission denied. Please sign in again.');
   expect(host.querySelector('input[type="radio"]').checked).toBe(true);
   expect(button('Save 1 market estimate').disabled).toBe(false);
+});
+
+const eevee = entryId => ({ entryId, name: 'Eevee', set: 'Black & White BW Black Star Promos', number: 'BW97', language: 'English', condition: 'NM', overridePrice: 450 });
+const linkEevee = card => ({ ...card, cardmarketBinding: createCardmarketBinding(card, { productUrl: 'https://www.cardmarket.com/en/Pokemon/Products/Singles/BW-Black-Star-Promos/Eevee-V2-BWBW97', language: 'English', condition: 'NM', finish: 'non-reverse', firstEdition: false, confirmed: true }) });
+const manualFilter = () => [...host.querySelectorAll('label')].find(label => label.textContent === 'Show manually priced singles only').querySelector('input');
+const idle = () => { status = { ...status, hasCaptureJob: false, canResume: false, status: { state: 'complete', message: '' } }; };
+
+it('shows both ordinary Eevee promos by default and requests matches only for unmatched manual singles', async () => {
+  idle();
+  mocks.app.collectionItems = [makeCard('Blastoise'), eevee('eevee-a'), { ...eevee('eevee-b'), overridePrice: undefined, manualPrice: '450' },
+    { ...makeCard('Suggested'), overridePrice: null }, { ...eevee('graded'), grade: '9' }, { ...eevee('sealed'), isSealed: true }];
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(manualFilter().checked).toBe(true);
+  expect([...host.querySelectorAll('article h3')].map(el => el.textContent)).toEqual(['Blastoise #4', 'Eevee #BW97', 'Eevee #BW97']);
+  expect(host.textContent).toContain('3 manually priced ungraded singles · 1 linked · 2 need a product match');
+  expect(host.textContent).not.toContain('Show cards with variant tags only');
+  await act(async () => button('Suggest product links').click());
+  expect(mocks.request).toHaveBeenCalledWith('suggest', [expect.objectContaining({ entryId: 'eevee-a', number: 'BW97' }), expect.objectContaining({ entryId: 'eevee-b', number: 'BW97' })]);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('captures all linked manual singles including both Eevee entries with non-reverse filters', async () => {
+  idle();
+  const cards = [makeCard('Blastoise'), linkEevee(eevee('eevee-a')), linkEevee({ ...eevee('eevee-b'), overridePrice: undefined, manualPrice: '450' })];
+  mocks.app.collectionItems = [...cards, { ...makeCard('Suggested'), overridePrice: null }, { ...makeCard('Graded'), gradingCompany: 'PSA' }];
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  await act(async () => button('Capture 3 linked cards').click());
+  expect(mocks.request).toHaveBeenCalledWith('start', cards.map(card => ({ entryId: card.entryId, name: card.name, binding: card.cardmarketBinding })));
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('keeps capture and price choices within the visible manual-price scope', async () => {
+  idle();
+  const manual = makeCard('Blastoise');
+  const suggested = { ...makeCard('Suggested'), overridePrice: null };
+  mocks.app.collectionItems = [manual, suggested];
+  report = { runId: 'test', captures: [captured(manual), captured(suggested)] };
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  act(() => manualFilter().click());
+  expect(button('Capture 2 linked cards')).toBeDefined();
+  act(() => host.querySelectorAll('input[type="radio"]')[1].click());
+  expect(button('Save 1 market estimate').disabled).toBe(false);
+  act(() => manualFilter().click());
+  expect(button('Capture 1 linked card')).toBeDefined();
+  expect(button('Save 0 market estimates').disabled).toBe(true);
+  await act(async () => button('Capture 1 linked card').click());
+  expect(mocks.request).toHaveBeenCalledWith('start', [{ entryId: manual.entryId, name: manual.name, binding: manual.cardmarketBinding }]);
 });

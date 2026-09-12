@@ -5,6 +5,7 @@ import { CardmarketPhoto } from '@/components/CardmarketPhoto';
 import { cardmarketRequest, saveCardmarketBinding, saveCardmarketOffers } from '@/utils/cardmarketCompanion';
 import { CARDMARKET_CONDITIONS, cardmarketInventoryKey, cardmarketTarget, safeCardmarketProduct, summarizeCardmarketOffers } from '@/utils/cardmarketSync';
 import { cardmarketSearchUrl, suggestCardmarketProducts } from '@/utils/cardmarketProducts';
+import { cardmarketInventoryScope } from '@/utils/cardmarketInventory';
 import { formatCurrency, convertCurrency } from '@/utils/cardHelpers';
 
 const eur = value => value == null ? '—' : formatCurrency(value, 'EUR');
@@ -61,7 +62,7 @@ export function CardmarketSyncPanel({ onClose }) {
   const [excluded, setExcluded] = useState({});
   const [replaceManual, setReplaceManual] = useState(false);
   const [professionalOnly, setProfessionalOnly] = useState(false);
-  const [onlyTagged, setOnlyTagged] = useState(true);
+  const [manualOnly, setManualOnly] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -95,9 +96,9 @@ export function CardmarketSyncPanel({ onClose }) {
     void refresh(); const timer = setInterval(refresh, 3000);
     return () => { alive = false; clearInterval(timer); };
   }, []);
-  const items = useMemo(() => collectionItems.filter(item => !item.isGraded && !(item.gradingCompany && item.grade)), [collectionItems]);
+  const items = useMemo(() => cardmarketInventoryScope(collectionItems, manualOnly), [collectionItems, manualOnly]);
   const linked = items.filter(item => item.cardmarketBinding?.inventoryKey === cardmarketInventoryKey(item));
-  const displayed = items.filter(item => !onlyTagged || item.isReverseHolo || item.isFirstEdition || item.isUnlimited || item.isStampedPromo || item.isPokeBall || item.isMasterBall || item.isSealed || item.isAutographed);
+  const unlinked = items.filter(item => !linked.includes(item));
   const summaries = useMemo(() => Object.fromEntries(items.map(item => { try { return [item.entryId, summarizeCardmarketOffers(item, report?.captures?.find(row => row.entryId === item.entryId))]; } catch (err) { return [item.entryId, { status: 'error', reason: err.message, offers: [] }]; } })), [items, report]);
   const choices = items.filter(item => selected[item.entryId] && !excluded[item.entryId] && summaries[item.entryId].offers.some(offer => offer.offerId === selected[item.entryId] && (!professionalOnly || ['Professional', 'Powerseller'].includes(offer.sellerType)))).map(item => ({ entryId: item.entryId, method: 'selected-offer', offerId: selected[item.entryId], replaceManual }));
   const action = async callback => { setBusy(true); setError(''); setMessage(''); try { await callback(); } catch (err) { setError(err.message); } finally { setBusy(false); } };
@@ -117,21 +118,25 @@ export function CardmarketSyncPanel({ onClose }) {
   };
   const capturePending = status?.hasCaptureJob;
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3"><section aria-label="Cardmarket variant sync" className="max-h-[95vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
-    <div className="flex items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">Cardmarket · exact variant offers</h2><p className="mt-1 text-sm text-slate-600">Match once, capture current offers, then choose the price to apply. EUR asking prices per card, excluding shipping.</p></div><Button variant="ghost" onClick={onClose}>Close</Button></div>
+    <div className="flex items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">Cardmarket · ungraded singles</h2><p className="mt-1 text-sm text-slate-600">Match once, capture current offers, then choose the price to apply. EUR asking prices per card, excluding shipping.</p></div><Button variant="ghost" onClick={onClose}>Close</Button></div>
+    <p className="mt-3 text-sm text-slate-700">{items.length} {manualOnly ? 'manually priced ' : ''}ungraded {items.length === 1 ? 'single' : 'singles'} · {linked.length} linked · {unlinked.length} {unlinked.length === 1 ? 'needs' : 'need'} a product match</p>
+    {unlinked.length > 0 && <p className="mt-1 text-xs text-slate-600">Review and save each missing product match below to include it in capture. Ordinary cards and promos are included without variant tags.</p>}
     <p className={`mt-3 text-sm ${status?.status?.state === 'paused' ? 'rounded-lg bg-amber-50 p-3 text-amber-950' : ''}`} role="status">{status?.status?.state === 'paused' && <strong className="mb-1 block">Capture paused</strong>}{status?.status?.message || (status?.installed ? `Companion ${status.version} connected.` : 'Load the Cardmarket companion and refresh Rafchu to capture offers.')}</p>
     {status?.installed && !status?.capabilities?.includes('resumable-capture') && <p className="mt-2 rounded-lg bg-blue-50 p-3 text-sm text-blue-900">Capture recovery is available in companion 0.2.2. Update or reload the Cardmarket companion in Chrome’s Extensions page, then refresh Rafchu.</p>}
     {status?.installed && !status?.capabilities?.includes('seller-photo-cache') && <p className="mt-2 rounded-lg bg-blue-50 p-3 text-sm text-blue-900">Seller-photo previews are available in companion 0.3.0. Update the companion, refresh Rafchu, and capture linked cards again. Photos stay in this browser.</p>}
-    <div className="mt-3 flex flex-wrap gap-2"><Button variant="outline" disabled={busy || !status?.installed || !status?.capabilities?.includes('product-suggestions') || !displayed.length || capturePending || status?.status?.state === 'running'} onClick={() => action(async () => { await cardmarketRequest('suggest', displayed.map(item => ({ entryId: item.entryId, name: item.name, set: cardmarketTarget(item).set, number: item.number, language: cardmarketTarget(item).language, inventoryKey: cardmarketInventoryKey(item) }))); setMessage('Finding product suggestions. Your edited URLs and saved matches will be kept.'); })}>Suggest product links</Button><Button disabled={busy || !status?.installed || !linked.length || capturePending || status?.status?.state === 'running'} onClick={() => action(async () => { await cardmarketRequest('start', linked.map(item => ({ entryId: item.entryId, name: item.name, binding: item.cardmarketBinding }))); setMessage('Capture started. Leave the Cardmarket reader tab open.'); })}>Capture {linked.length} linked {linked.length === 1 ? 'card' : 'cards'}</Button>
+    {status?.installed && !status?.capabilities?.includes('promo-product-lookup') && <p className="mt-2 rounded-lg bg-blue-50 p-3 text-sm text-blue-900">Promo product lookup is improved in companion 0.3.2. Update the companion and refresh Rafchu to find cards such as Eevee BW97.</p>}
+    <div className="mt-3 flex flex-wrap gap-2"><Button variant="outline" disabled={busy || !status?.installed || !status?.capabilities?.includes('product-suggestions') || !unlinked.length || capturePending || status?.status?.state === 'running'} onClick={() => action(async () => { await cardmarketRequest('suggest', unlinked.map(item => ({ entryId: item.entryId, name: item.name, set: cardmarketTarget(item).set, number: item.number, language: cardmarketTarget(item).language, inventoryKey: cardmarketInventoryKey(item) }))); setMessage('Finding product suggestions for unmatched cards. Your edited URLs and saved matches will be kept.'); })}>Suggest product links</Button><Button disabled={busy || !status?.installed || !linked.length || capturePending || status?.status?.state === 'running'} onClick={() => action(async () => { await cardmarketRequest('start', linked.map(item => ({ entryId: item.entryId, name: item.name, binding: item.cardmarketBinding }))); setMessage('Capture started. Leave the Cardmarket reader tab open.'); })}>Capture {linked.length} linked {linked.length === 1 ? 'card' : 'cards'}</Button>
       <Button variant="outline" disabled={busy || !status?.runId} onClick={() => action(async () => { const next = await cardmarketRequest('report'); if (!next?.captures) throw new Error('No report yet.'); setReport(next); setSelected({}); setExcluded({}); })}>Review latest offers</Button>
       {capturePending && <Button variant="outline" disabled={busy} onClick={() => action(() => cardmarketRequest('open-reader'))}>Open Cardmarket reader</Button>}
       {status?.canResume && <Button disabled={busy} onClick={() => action(async () => { await cardmarketRequest('resume'); setMessage('Resuming at the unfinished card. Completed offers are kept.'); })}>Resume capture</Button>}
       {(capturePending || status?.status?.state === 'running') && <Button variant="outline" onClick={() => action(() => cardmarketRequest('cancel'))}>Stop capture</Button>}
     </div>
-    <details className="mt-3 text-sm"><summary className="cursor-pointer underline">Companion setup</summary><p className="mt-2"><a href="/cardmarket-companion.zip" download className="text-blue-800 underline">Download Cardmarket companion</a>, unzip it, and choose that folder with Load unpacked in Chrome’s Extensions page. Then refresh Rafchu. Version 0.3.0 captures public offers and local seller-photo previews. Chrome’s page-capture permission saves images from the Cardmarket reader; page archives are discarded after extracting the requested photos. It never buys cards or changes listings.</p></details>
-    <label className="mt-4 flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 appearance-auto accent-blue-700" checked={onlyTagged} onChange={e => setOnlyTagged(e.target.checked)} />Show cards with variant tags only ({displayed.length} shown)</label>
+    <details className="mt-3 text-sm"><summary className="cursor-pointer underline">Companion setup</summary><p className="mt-2"><a href="/cardmarket-companion.zip" download className="text-blue-800 underline">Download Cardmarket companion</a>, unzip it, and choose that folder with Load unpacked in Chrome’s Extensions page. Then refresh Rafchu. {status?.installed && <>Connected version: {status.version}. </>}The latest companion captures public offers and local seller-photo previews, including product lookup for BW promos. Chrome’s page-capture permission saves images from the Cardmarket reader; page archives are discarded after extracting the requested photos. It never buys cards or changes listings.</p></details>
+    <label className="mt-4 flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 appearance-auto accent-blue-700" checked={manualOnly} disabled={busy} onChange={e => setManualOnly(e.target.checked)} />Show manually priced singles only</label>
+    {items.length === 0 && <p className="mt-3 text-sm text-slate-600">{manualOnly ? 'No manually priced ungraded singles. Uncheck the filter to include singles without a manual price.' : 'No ungraded singles in your inventory.'}</p>}
     <label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 appearance-auto accent-blue-700" checked={professionalOnly} onChange={e => setProfessionalOnly(e.target.checked)} />Show Professional and Powerseller offers only</label>
     {error && <p className="mt-3 text-sm text-red-700" role="alert">{error}</p>}{message && <p className="mt-3 text-sm text-blue-800" role="status">{message}</p>}
-    <div className="mt-4 space-y-4">{displayed.map(item => {
+    <div className="mt-4 space-y-4">{items.map(item => {
       const target = cardmarketTarget(item); const summary = summaries[item.entryId]; const id = item.entryId;
       const capture = report?.captures?.find(row => row.entryId === id);
       const referenceImage = capture?.inventoryKey === cardmarketInventoryKey(item) && safeCardmarketProduct(capture.productUrl) === item.cardmarketBinding?.productUrl ? capture.productImageUrl : null;
