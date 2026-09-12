@@ -1,10 +1,18 @@
 import { readCardmarketPage } from './dom.js';
 import { readCardmarketProducts } from './products.js';
+import { prepareCardmarketPhotos, clearCardmarketPhotos } from './photoReader.js';
+import { sameCapturePage } from './capture.js';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let reading = false;
 let cancelled = false;
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message.channel !== 'rafchu-cardmarket-reader') return;
+  if (message.action === 'clear-photos') { clearCardmarketPhotos(); respond({ ok: true }); return; }
+  if (message.action === 'prepare-photos') {
+    if (!sameCapturePage(location.href, message.filteredUrl) || !Array.isArray(message.sources)) { respond({ ok: false }); return; }
+    prepareCardmarketPhotos(document, message.sources, () => cancelled).then(data => respond({ ok: true, data }), () => respond({ ok: false }));
+    return true;
+  }
   if (message.action === 'cancel') { cancelled = true; respond({ ok: true }); return; }
   if (message.action === 'ping') {
     // A verification document can finish loading before the actual product arrives.

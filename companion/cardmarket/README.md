@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.2.3
+# Rafchu Cardmarket Companion 0.3.0
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -22,7 +22,7 @@ You can also use Review latest offers to reopen them. Choose an individual offer
 leave Include checked. Professional/Powerseller/Private labels and country are
 shown. The product reference image is shown with a warning that the pictured
 variant may differ. Seller-provided scans appear beside their offers and can be
-opened full size. Image URLs stay with the pricing evidence; existing inventory
+enlarged inside Rafchu. Image URLs stay with the pricing evidence; existing inventory
 images are preserved. A Professional and Powerseller only display filter is available.
 
 Manual selling prices remain unless the user checks the explicit replacement
@@ -43,3 +43,27 @@ and are held for review in this pilot.
 
 
 Security update: release builds only expose the bridge to the two Rafchu HTTPS origins. Localhost is no longer trusted automatically: an unrelated local development server must not be able to read your capture reports. If maintaining a local development build, add only its exact origin to the background allowlist and its host to a separate development manifest. Never distribute that development manifest. Reload the extension after installing this update.
+
+
+## Seller photos in 0.3.0
+
+After updating the companion, refresh Rafchu and the Cardmarket reader, then
+capture the linked cards again. Earlier reports contain links only.
+
+Chrome’s `pageCapture` permission saves already-loaded images from the confirmed
+Cardmarket reader. The companion temporarily loads the exact seller scan previews
+on that page and reads their raster resources from Chrome’s MHTML result. The
+page archive, HTML and unrelated resources are discarded. No headers are forged,
+no login/verification is bypassed, and no external image proxy is used.
+
+JPEG previews are stored in a separate local cache for the capture, capped at
+2 MB total and 120 KB per encoded preview, with up to 40 new previews per product.
+The cache is replaced on a new run and is only returned for the matching report
+for 24 hours. Prices remain usable if a photo cannot load or the cache is full.
+Photos are never included in an inventory/Firestore save and are not synced to
+other devices. Original listing links remain available.
+
+The price action says **Save market estimates** by default. To change manual
+selling prices too, select **Also replace my manual selling prices**; the button
+then says **Update selling prices**. Saving, success and failure feedback appears
+next to that button. Failed saves keep the selected offers available for retry.

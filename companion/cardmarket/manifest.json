@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Rafchu Cardmarket Companion",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Capture exact English/Japanese variant offers for manual review in Rafchu.",
   "permissions": [
-    "storage"
+    "storage",
+    "pageCapture"
   ],
   "host_permissions": [
     "https://www.cardmarket.com/en/Pokemon/*"
