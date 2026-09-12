@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.1
+# Rafchu Cardmarket Companion 0.3.2
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -8,10 +8,17 @@ This separate pilot preserves the working CardLadder companion installation.
 It reads public Cardmarket Pokémon product pages. No cookies, credentials,
 private APIs, purchases, seller messages, or Cardmarket inventory writes.
 
-In Rafchu Inventory, open Cardmarket Sync. Verified catalogue links and existing
+In Rafchu Inventory, open Cardmarket Sync. All manually priced ungraded singles
+are shown by default, including ordinary cards and BW promos without variant tags.
+Graded and sealed entries are excluded. Uncheck Show manually priced singles only
+to include other ungraded singles. The summary shows linked cards and cards that
+still need a product match; capture and price application use the displayed scope.
+Verified catalogue links and existing
 inventory links are suggested automatically. Click Suggest product links to search
-Cardmarket for additional cards; the companion selects the matching expansion and
-checks names and collector numbers, including Japanese expansion aliases.
+Cardmarket for unmatched cards; the companion selects the matching expansion and
+checks names and full collector numbers, including Japanese expansion aliases and
+Black & White BW promo names. Compact promo numbers such as BW97 use the numeric
+part for searching, while exact matching still checks the full promo number.
 Review the suggested URL or replace it. Your edited URLs and saved matches take
 precedence over later suggestions. Finding a link never confirms or saves a match.
 Confirm the product and its exact
