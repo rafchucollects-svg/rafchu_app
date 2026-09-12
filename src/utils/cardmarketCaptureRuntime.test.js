@@ -85,3 +85,17 @@ it('times out an unreadable page into a resumable pause instead of an indefinite
   expect(stored.status.message).toContain('Resume capture');
   expect(api.tabs.remove).not.toHaveBeenCalled();
 });
+
+it('keeps cached image bytes separate from offers and preserves completed prices if photo capture fails', async () => {
+  api.storage.local.get = vi.fn(async () => structuredClone(stored));
+  const capturePhotos = vi.fn(async () => ({ photos: { 'https://marketplace-article-scans.s3.cardmarket.com/1001/1001.jpg': 'data:image/jpeg;base64,aGVsbG8=' } }));
+  await finish(createCaptureRunner(api, capturePhotos).run([task('Blastoise')]));
+  expect(stored.status.state).toBe('complete');
+  expect(stored.photoCache.runId).toBe(stored.report.runId);
+  expect(JSON.stringify(stored.report)).not.toContain('data:image/');
+  capturePhotos.mockRejectedValue(new Error('Photo unavailable'));
+  await finish(createCaptureRunner(api, capturePhotos).run([task('Charizard')]));
+  expect(stored.status.state).toBe('complete');
+  expect(stored.report.captures[0].photoWarning).toContain('Original listing links');
+  expect(stored.report.captures[0].offers[0].price).toBe(100);
+});

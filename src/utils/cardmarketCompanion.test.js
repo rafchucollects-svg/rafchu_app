@@ -18,9 +18,11 @@ it('applies only the selected offer and refuses stale identity before a transact
   const bound = { ...card, quantity: 2, cardmarketBinding: createCardmarketBinding(card, choice) };
   const offer = { offerId: 'articleRow100', seller: 'Seller', sellerType: 'Professional', price: 100, currency: 'EUR', ...choice, signed: false, altered: false };
   const report = { schemaVersion: 1, source: 'cardmarket-browser', runId: 'test', captures: [{ source: 'cardmarket-browser', entryId: card.entryId, inventoryKey: cardmarketInventoryKey(card), currency: 'EUR', capturedAt: new Date().toISOString(), productUrl: choice.productUrl, filters: choice, complete: true, offers: [offer] }] };
+  report.photos = { 'https://marketplace-article-scans.s3.cardmarket.com/100/100.jpg': 'data:image/jpeg;base64,aGVsbG8=' };
   tx.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [bound] }) });
   await saveCardmarketOffers({}, 'user', report, [{ entryId: card.entryId, method: 'selected-offer', offerId: 'articleRow100', replaceManual: false }]);
   expect(tx.update.mock.calls[0][1].items[0]).toMatchObject({ quantity: 2, cardmarketPricing: { price: 100, selectedOffer: { sellerType: 'Professional' } } });
+  expect(JSON.stringify(tx.update.mock.calls[0][1])).not.toContain('data:image/');
   tx.update.mockClear();
   tx.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [{ ...bound, condition: 'NM' }] }) });
   await expect(saveCardmarketOffers({}, 'user', report, [{ entryId: card.entryId, method: 'selected-offer', offerId: 'articleRow100', replaceManual: true }])).rejects.toThrow(/Link/);

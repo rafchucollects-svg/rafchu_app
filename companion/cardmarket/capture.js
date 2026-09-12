@@ -18,13 +18,19 @@ export function sameCapturePage(actual, expected) {
   return filterNames.every(key => left.getAll(key).length === 1 && left.get(key) === right.get(key));
 }
 
-export function createCaptureRunner(api) {
+export function createCaptureRunner(api, capturePhotos) {
   let active = false, cancelled = false, readerId = null;
   async function run(tasks, previous) {
     active = true; cancelled = false;
     const job = previous || { tasks, nextIndex: 0, tabId: null, ownsTab: false, report: { schemaVersion: 1, source: 'cardmarket-browser', runId: crypto.randomUUID(), captures: [] } };
+    let photoCache = { runId: job.report.runId, images: {} };
     const save = status => api.storage.local.set({ captureJob: job, report: job.report, status: { ...status, completed: job.report.captures.length, total: job.tasks.length } });
     try {
+      if (capturePhotos) {
+        const savedPhotos = previous ? (await api.storage.local.get('photoCache')).photoCache : null;
+        if (savedPhotos?.runId === job.report.runId) photoCache = savedPhotos;
+        else await api.storage.local.set({ photoCache });
+      }
       await save({ state: 'running', message: `Reading ${job.tasks.length} confirmed products…` });
       for (; job.nextIndex < job.tasks.length;) {
         if (cancelled) throw new Error('Capture stopped.');
@@ -59,6 +65,17 @@ export function createCaptureRunner(api) {
         if (!result?.ok) throw new Error(result?.error || 'Cardmarket capture failed.');
         if (cancelled) throw new Error('Capture stopped.');
         if (!result.data?.complete || !sameCapturePage(result.data.filteredUrl, url)) throw new Error('The page or filters changed during capture. Restore the confirmed filters in the reader, then resume.');
+        if (capturePhotos) {
+          await save({ state: 'running', message: `${label} · Saving seller-photo previews in this browser…` });
+          try {
+            const cached = await capturePhotos(api, tab.id, result.data, photoCache.images, () => cancelled);
+            const nextCache = { runId: job.report.runId, updatedAt: new Date().toISOString(), images: cached.photos };
+            await api.storage.local.set({ photoCache: nextCache });
+            photoCache = nextCache;
+            if (cached.warning) result.data.photoWarning = cached.warning;
+          } catch { result.data.photoWarning = 'Could not save local photo previews. Original listing links are still available.'; }
+        }
+        if (cancelled) throw new Error('Capture stopped.');
         job.report.captures.push({ ...result.data, entryId: task.entryId, inventoryKey: task.binding.inventoryKey });
         job.nextIndex++;
         await save({ state: 'running', message: `Captured ${job.report.captures.length}/${job.tasks.length} products. You can review completed offers now.` });
