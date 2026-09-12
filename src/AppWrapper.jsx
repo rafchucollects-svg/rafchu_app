@@ -1,4 +1,5 @@
 import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
+import { CardLadderAutoSync } from "@/components/CardLadderAutoSync";
 import { getStorage, connectStorageEmulator } from "firebase/storage";
 import { useMemo, useEffect } from "react";
 import { initializeApp } from "firebase/app";
@@ -210,6 +211,7 @@ export function AppWrapper() {
   return (
     <ErrorBoundary>
       <AppProvider auth={auth} db={db} authHandlers={authHandlers}>
+        <CardLadderAutoSync />
         <TaxProvider>
           <ExpenseProvider>
             <AppRouter 

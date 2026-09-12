@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run build:companion && npm run build:cardmarket && vite build",
+    "build:companion": "node scripts/build-cardladder-companion.mjs",
     "lint": "eslint src functions/*.js tests/*.mjs scripts/*.js vite.config.js eslint.config.js",
     "preview": "vite preview",
     "emulators": "npm exec --yes --package firebase-tools@15.29.0 -- firebase emulators:start --only auth,firestore,functions,storage --project demo-rafchu-review",
@@ -14,7 +15,8 @@
     "seed": "node scripts/seed-emulator-data.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:rules": "npm exec --yes --package firebase-tools@15.29.0 -- firebase emulators:exec --only firestore --project demo-rafchu-review \"node --test tests/firestore.rules.test.mjs\""
+    "test:rules": "npm exec --yes --package firebase-tools@15.29.0 -- firebase emulators:exec --only firestore --project demo-rafchu-review \"node --test tests/firestore.rules.test.mjs\"",
+    "build:cardmarket": "node scripts/build-cardmarket-companion.mjs"
   },
   "dependencies": {
     "@dataconnect/generated": "file:src/dataconnect-generated",
@@ -35,6 +37,7 @@
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
+    "esbuild": "^0.28.2",
     "eslint": "^9.36.0",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^5.2.0",

@@ -1,0 +1,13 @@
+import { build } from 'esbuild';
+import { mkdir, copyFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+const root = fileURLToPath(new URL('../', import.meta.url));
+const source = path.join(root, 'companion/cardmarket');
+const destination = path.join(root, 'public/cardmarket-companion');
+await mkdir(destination, { recursive: true });
+await build({ entryPoints: ['background', 'page', 'bridge'].map(name => path.join(source, `${name}.js`)), outdir: destination, bundle: true, format: 'iife', target: 'chrome120' });
+for (const file of ['manifest.json', 'README.md']) await copyFile(path.join(source, file), path.join(destination, file));
+execFileSync('zip', ['-q', '-r', '../cardmarket-companion.zip', '.', '-i', '*.js', '*.json', '*.md'], { cwd: destination });
+console.log(`Cardmarket companion ready: ${destination}`);

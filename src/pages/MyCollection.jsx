@@ -321,7 +321,7 @@ export function MyCollection() {
       triggerQuickAddFeedback("Card removed from collection");
     } catch (error) {
       console.error("Failed to delete card", error);
-      toast.error("Failed to delete card. Please try again.");
+      toast.error(error.message || "Failed to delete card. Please try again.");
     }
   };
 

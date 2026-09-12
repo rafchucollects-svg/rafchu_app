@@ -24,6 +24,7 @@ import { CashManager } from "@/components/CashManager";
 import { TransactionDetailsFields } from "@/components/TransactionDetailsFields";
 import { createEmptyTransactionDetails } from "@/utils/transactionHelpers";
 import { needsImage } from "@/utils/imageHelpers";
+import { CardmarketSyncPanel } from "@/components/CardmarketSyncPanel";
 import { CardLadderImport } from "@/components/CardLadderImport";
 import { CardImageReplacer } from "@/components/CardImageReplacer";
 import { apiFetchGradedPrices, apiFetchMarketPrices } from "@/utils/apiHelpers";
@@ -121,6 +122,7 @@ export function MyInventory() {
   const [cardForImageUpload, setCardForImageUpload] = useState(null);
   
   // CardLadder import modal state
+  const [showCardmarketSync, setShowCardmarketSync] = useState(false);
   const [showCardLadderImport, setShowCardLadderImport] = useState(false);
   
   // Image replacer modal state
@@ -427,7 +429,7 @@ export function MyInventory() {
       triggerQuickAddFeedback("Card removed from inventory");
     } catch (error) {
       console.error("Failed to delete card", error);
-      toast.error("Failed to delete card. Please try again.");
+      toast.error(error.message || "Failed to delete card. Please try again.");
     }
   };
 
@@ -1230,7 +1232,7 @@ export function MyInventory() {
       triggerQuickAddFeedback(`${selectedCards.size} card(s) deleted`);
     } catch (error) {
       console.error("Failed to delete cards", error);
-      toast.error("Failed to delete cards");
+      toast.error(error.message || "Failed to delete cards");
     }
   };
 
@@ -1922,6 +1924,7 @@ export function MyInventory() {
               </div>
             )}
             <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setShowCardmarketSync(true)}>Cardmarket Sync</Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -3653,6 +3656,8 @@ export function MyInventory() {
           setCardForImageUpload(null);
         }}
       />
+
+      {showCardmarketSync && <CardmarketSyncPanel onClose={() => setShowCardmarketSync(false)} />}
 
       {/* CardLadder Import Modal */}
       {showCardLadderImport && (

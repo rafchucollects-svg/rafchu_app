@@ -3,6 +3,7 @@
  * Extracted from App.jsx for reusability
  */
 
+import { acceptedCardmarketPrice } from "./cardmarketSync";
 import { doc, setDoc, collection as fsCollection } from "firebase/firestore";
 import { buildTaxReadyTransaction } from "./transactionHelpers";
 
@@ -52,31 +53,8 @@ export const CONDITION_LABEL_TO_CODE = {
 
 export const CONDITION_DISPLAY_ORDER = ["NM", "LP", "MP", "HP", "DMG"];
 
-// TCGPlayer to Cardmarket condition mapping
-// Used for displaying conditions to European viewers
-export const TCG_TO_CARDMARKET_CONDITION = {
-  "Mint": "Mint",
-  "Near Mint": "Near Mint",
-  "NM": "Near Mint",
-  "Lightly Played": "Excellent",
-  "LP": "Excellent",
-  "Moderately Played": "Good",
-  "MP": "Good",
-  "Heavily Played": "Played",
-  "HP": "Played",
-  "Damaged": "Poor",
-  "DMG": "Poor",
-};
-
-// Cardmarket to TCGPlayer condition mapping (reverse)
-export const CARDMARKET_TO_TCG_CONDITION = {
-  "Mint": "Mint",
-  "Near Mint": "Near Mint",
-  "Excellent": "Lightly Played",
-  "Good": "Moderately Played",
-  "Played": "Heavily Played",
-  "Poor": "Damaged",
-};
+export { TCG_TO_CARDMARKET_CONDITION, CARDMARKET_TO_TCG_CONDITION } from "./conditionMappings";
+import { TCG_TO_CARDMARKET_CONDITION, CARDMARKET_TO_TCG_CONDITION } from "./conditionMappings";
 
 // European country codes (for IP-based detection fallback)
 export const EUROPEAN_COUNTRIES = [
@@ -264,6 +242,10 @@ let FX_RATES = {
   NOK: 10.8,
   DKK: 6.9,
   ISK: 138.0,
+  // Additional CardLadder currencies: fallback USD rates from this app's
+  // existing public FX feed, 2026-09-11. Refreshed with the other rates below.
+  CAD: 1.38, AUD: 1.39, CNY: 6.73, JPY: 154.25,
+  SGD: 1.27, PHP: 62.66, MXN: 16.97, NZD: 1.72, HKD: 7.84,
 };
 let FX_LAST_FETCH = 0;
 const FX_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
@@ -281,15 +263,8 @@ async function fetchFXRates() {
     const data = await response.json();
     
     if (data && data.rates) {
-      FX_RATES = {
-        USD: 1.0,
-        EUR: data.rates.EUR || 0.92,
-        GBP: data.rates.GBP || 0.79,
-        SEK: data.rates.SEK || 10.5,
-        NOK: data.rates.NOK || 10.8,
-        DKK: data.rates.DKK || 6.9,
-        ISK: data.rates.ISK || 138.0,
-      };
+      FX_RATES = Object.fromEntries(Object.entries(FX_RATES).map(([code, fallback]) => [code,
+        code === 'USD' ? 1 : typeof data.rates[code] === 'number' && Number.isFinite(data.rates[code]) && data.rates[code] > 0 ? data.rates[code] : fallback]));
       FX_LAST_FETCH = now;
       if (import.meta.env.DEV) console.log('✅ FX rates updated:', FX_RATES);
     }
@@ -453,7 +428,9 @@ export function computeMarketValues(
         : Number(storedOverride);
     }
   }
-  const sellerAsk = computeSuggestedPrice({
+  const acceptedEur = acceptedCardmarketPrice(source);
+  const acceptedOffer = acceptedEur == null ? null : convertCurrency(acceptedEur, targetCurrency, 'EUR');
+  const sellerAsk = normalizedOverride ?? acceptedOffer ?? computeSuggestedPrice({
     tcg,
     cmAvg,
     cmLowest,
@@ -462,21 +439,21 @@ export function computeMarketValues(
   });
 
   const prefersTcg = marketSource === "tcg" || marketSource === "tcgplayer";
-  const preferredMarket = prefersTcg
+  const preferredMarket = acceptedOffer ?? (prefersTcg
     ? (tcg || cmAvg || cmLowest)
-    : (cmAvg || cmLowest || tcg);
+    : (cmAvg || cmLowest || tcg));
 
   const liquidBenchmarks = [tcg, cmLowest].filter((value) => value > 0);
-  const quickSale = liquidBenchmarks.length > 0
+  const quickSale = acceptedOffer ?? (liquidBenchmarks.length > 0
     ? Math.min(...liquidBenchmarks)
-    : preferredMarket;
+    : preferredMarket);
 
   return {
     sellerAsk,
     preferredMarket,
     quickSale,
     benchmarks: { tcg, cmAvg, cmLowest },
-    preferredSource: prefersTcg ? "TCGplayer" : "CardMarket",
+    preferredSource: acceptedOffer != null ? "Cardmarket chosen offer" : prefersTcg ? "TCGplayer" : "CardMarket",
     availableBenchmarkCount: [tcg, cmAvg, cmLowest].filter((value) => value > 0).length,
   };
 }
@@ -530,6 +507,12 @@ export function computeItemMetrics(item, userCurrency = 'USD') {
     };
   }
   
+  const chosenOffer = acceptedCardmarketPrice(item);
+  if (chosenOffer != null) {
+    const price = convertCurrency(chosenOffer, userCurrency, 'EUR');
+    return { tcg: computeTcgPrice(item, item.condition || 'NM', userCurrency), cmAvg: price, cmLowest: price, suggested: price };
+  }
+
   // Standard calculation for ungraded cards
   const condition = item.condition || "NM";
   const tcg = computeTcgPrice(item, condition, userCurrency);

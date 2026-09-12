@@ -54,3 +54,8 @@ Dragon Ball*
 Brawl Stars*
 Clash*
 Supercell*
+
+# Local Firebase state and generated browser-companion bundles
+.firebase/
+public/cardladder-companion/
+public/cardmarket-companion/
