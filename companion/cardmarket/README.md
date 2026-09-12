@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.2.2
+# Rafchu Cardmarket Companion 0.2.3
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -40,3 +40,6 @@ Reports expire after 24 hours. Changes to an inventory card's tags, language,
 condition, name, set, number or grading invalidate the old product binding.
 Sealed, signed, stamped and Poké/Master Ball variants need more precise support
 and are held for review in this pilot.
+
+
+Security update: release builds only expose the bridge to the two Rafchu HTTPS origins. Localhost is no longer trusted automatically: an unrelated local development server must not be able to read your capture reports. If maintaining a local development build, add only its exact origin to the background allowlist and its host to a separate development manifest. Never distribute that development manifest. Reload the extension after installing this update.

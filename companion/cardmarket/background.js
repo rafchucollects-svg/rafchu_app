@@ -3,7 +3,7 @@ import { cardmarketSearchUrl, rankCardmarketProducts } from '../../src/utils/car
 import { safeProductSearchUrl } from './products.js';
 import { createCaptureRunner, filteredUrl } from './capture.js';
 const captureRunner = createCaptureRunner(chrome);
-const appOrigins = new Set(['https://rafchu-tcg-app.firebaseapp.com', 'http://127.0.0.1:5173', 'http://localhost:5173']);
+const appOrigins = new Set(['https://rafchu-tcg-app.firebaseapp.com', 'https://rafchu-tcg-app.web.app']);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let active = false;
 let cancelled = false;
@@ -65,7 +65,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message.channel !== 'rafchu-cardmarket') return;
   (async () => {
     try {
-      if (!sender.url || !appOrigins.has(new URL(sender.url).origin)) throw new Error('Untrusted Cardmarket companion caller.');
+      if ((sender.frameId && sender.frameId !== 0) || !sender.url || !appOrigins.has(new URL(sender.url).origin)) throw new Error('Untrusted Cardmarket companion caller.');
       const stored = await chrome.storage.local.get(['status', 'report', 'products', 'captureJob']);
       let data;
       if (message.action === 'status') data = { installed: true, version: chrome.runtime.getManifest().version, runId: stored.report?.runId, productRunId: stored.products?.runId, reportRevision: stored.report ? `${stored.report.runId}:${stored.report.captures.length}` : null, canResume: Boolean(stored.captureJob && !captureRunner.active), hasCaptureJob: Boolean(stored.captureJob), capabilities: ['product-suggestions', 'resumable-capture'], status: !active && !captureRunner.active && stored.status?.state === 'running' ? { state: stored.captureJob ? 'paused' : 'error', message: stored.captureJob ? 'Capture interrupted. Resume to continue from the last completed card.' : 'Search interrupted. Retry suggestions.' } : stored.status };

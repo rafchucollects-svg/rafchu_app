@@ -1,5 +1,11 @@
 # Rafchu CardLadder Companion
 
+## Version 1.1.1 — trusted app pages
+
+Capture reports are available only to the two Rafchu HTTPS sites in a top-level
+tab. Localhost and embedded frames are rejected. The multicurrency capture and
+review behavior from 1.1.0 is retained.
+
 ## Version 1.1.0 — multiple currencies
 
 The reader supports all 13 currency choices currently shown by CardLadder:
@@ -244,3 +250,6 @@ No live inventory updates were applied. The isolated sample preview confirmed
 fallback opt-in, Select all leaving fallback choices unchecked, and preservation
 of an active EUR manual selling-price override. Hosting was deployed and its
 entry bundle matched the production build (`index-BkwQbmRw.js`).
+
+
+Security update: release builds only expose the bridge to the two Rafchu HTTPS origins. Localhost is no longer trusted automatically: an unrelated local development server must not be able to read your capture reports. If maintaining a local development build, add only its exact origin to the background allowlist and its host to a separate development manifest. Never distribute that development manifest. Reload the extension after installing this update.

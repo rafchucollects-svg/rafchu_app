@@ -2,7 +2,7 @@ import { CARD_LADDER_REPORT_VERSION, salesWindow } from '../../src/utils/cardLad
 import { isCardLadderCurrency } from '../../src/utils/cardLadderCurrency.js';
 
 const ORIGIN = 'https://app.cardladder.com';
-const APP_ORIGINS = new Set(['https://rafchu-tcg-app.firebaseapp.com', 'https://rafchu-tcg-app.web.app', 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4173', 'http://127.0.0.1:4173']);
+const APP_ORIGINS = new Set(['https://rafchu-tcg-app.firebaseapp.com', 'https://rafchu-tcg-app.web.app']);
 let active = null;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const saveStatus = status => chrome.storage.local.set({ status });
@@ -99,6 +99,7 @@ async function capture() {
 
 async function handle(message, sender) {
   const extensionPage = sender.url?.startsWith(chrome.runtime.getURL(''));
+  if (sender.frameId && sender.frameId !== 0) throw new Error('Embedded companion caller rejected.');
   if (!extensionPage && !isApp(sender.url)) throw new Error('Untrusted companion caller.');
   const stored = await chrome.storage.local.get(['status', 'report', 'daily']);
   if (message.action === 'status') {
