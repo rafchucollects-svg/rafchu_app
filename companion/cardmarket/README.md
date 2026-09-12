@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.0
+# Rafchu Cardmarket Companion 0.3.1
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -57,7 +57,7 @@ page archive, HTML and unrelated resources are discarded. No headers are forged,
 no login/verification is bypassed, and no external image proxy is used.
 
 JPEG previews are stored in a separate local cache for the capture, capped at
-2 MB total and 120 KB per encoded preview, with up to 40 new previews per product.
+4 MB total and 120 KB per encoded preview, with up to 40 new previews per product.
 The cache is replaced on a new run and is only returned for the matching report
 for 24 hours. Prices remain usable if a photo cannot load or the cache is full.
 Photos are never included in an inventory/Firestore save and are not synced to
@@ -67,3 +67,5 @@ The price action says **Save market estimates** by default. To change manual
 selling prices too, select **Also replace my manual selling prices**; the button
 then says **Update selling prices**. Saving, success and failure feedback appears
 next to that button. Failed saves keep the selected offers available for retry.
+
+Version 0.3.1 captures photos only for offers eligible under the same condition, language, variant and raw-card checks used by the review panel. Excluded listings do not consume the preview cache.

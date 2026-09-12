@@ -90,6 +90,12 @@ function bindingMatches(item, binding) {
   try { const checked = createCardmarketBinding(item, binding); return Object.keys(checked).every(key => checked[key] === binding[key]); } catch { return false; }
 }
 
+export function matchesCardmarketOffer(offer, binding) {
+  return offer.language === binding.language && offer.condition === binding.condition && offer.finish === binding.finish &&
+    offer.firstEdition === binding.firstEdition && offer.signed === false && offer.altered === false &&
+    !/\b(?:(?:psa|bgs|cgc|sgc)(?=\b|\d)|beckett|graded|grading|slab|proxy|replica|reprint|lot|bundle|signed|autograph\b)/i.test(offer.comments || '');
+}
+
 export function summarizeCardmarketOffers(item, capture, now = Date.now()) {
   const binding = item.cardmarketBinding;
   if (!bindingMatches(item, binding)) return { status: 'needs-match', reason: 'Link and confirm this card’s exact product and filters.', offers: [] };
@@ -107,9 +113,7 @@ export function summarizeCardmarketOffers(item, capture, now = Date.now()) {
     if (typeof offer.price !== 'number' || !Number.isFinite(offer.price) || offer.price <= 0 || offer.currency !== 'EUR' ||
         typeof offer.seller !== 'string' || !offer.seller.trim() || typeof offer.offerId !== 'string' || !/^articleRow\d+$/.test(offer.offerId)) throw new Error('An offer contains unreadable price or seller evidence.');
     // Each rendered offer must independently verify all of its attributes.
-    if (offer.language !== binding.language || offer.condition !== binding.condition || offer.finish !== binding.finish ||
-        offer.firstEdition !== binding.firstEdition || offer.signed !== false || offer.altered !== false ||
-        /\b(?:(?:psa|bgs|cgc|sgc)(?=\b|\d)|beckett|graded|grading|slab|proxy|replica|reprint|lot|bundle|signed|autograph\b)/i.test(offer.comments || '')) { excluded++; continue; }
+    if (!matchesCardmarketOffer(offer, binding)) { excluded++; continue; }
     const duplicate = eligible.get(offer.offerId);
     if (duplicate && (duplicate.price !== offer.price || duplicate.seller !== offer.seller)) throw new Error('Conflicting duplicate offer evidence.');
     eligible.set(offer.offerId, offer);

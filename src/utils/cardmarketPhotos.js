@@ -1,5 +1,5 @@
 // Kept in the companion's local cache, never in saved inventory documents.
-export const CARDMARKET_PHOTO_CACHE_LIMIT = 2_000_000;
+export const CARDMARKET_PHOTO_CACHE_LIMIT = 4_000_000;
 export const CARDMARKET_PHOTO_LIMIT = 120_000;
 export const CARDMARKET_PHOTOS_PER_PAGE = 40;
 
