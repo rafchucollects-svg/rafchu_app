@@ -1,4 +1,4 @@
-import { safeCardmarketImage } from '../../src/utils/cardmarketSync.js';
+import { matchesCardmarketOffer, safeCardmarketImage } from '../../src/utils/cardmarketSync.js';
 import { CARDMARKET_PHOTO_CACHE_LIMIT, CARDMARKET_PHOTO_LIMIT, CARDMARKET_PHOTOS_PER_PAGE, safeCardmarketPhotoData } from '../../src/utils/cardmarketPhotos.js';
 import { sameCapturePage } from './capture.js';
 import { sellerPhotosFromArchive } from './photoArchive.js';
@@ -29,7 +29,7 @@ export async function captureSellerPhotos(api, tabId, capture, existing = {}, ca
   const photos = { ...existing };
   let used = Object.entries(photos).reduce((size, [url, data]) => size + url.length + data.length, 0);
   if (!api.pageCapture?.saveAsMHTML) return { photos, warning: 'Update or reload the companion to save seller-photo previews.' };
-  const sources = [...new Set(capture.offers.map(offer => safeCardmarketImage(offer.scanUrl, 'seller')).filter(Boolean))]
+  const sources = [...new Set(capture.offers.filter(offer => matchesCardmarketOffer(offer, capture.filters || {})).map(offer => safeCardmarketImage(offer.scanUrl, 'seller')).filter(Boolean))]
     .filter(url => !photos[url]).slice(0, CARDMARKET_PHOTOS_PER_PAGE);
   if (!sources.length) return { photos };
   if (used >= CARDMARKET_PHOTO_CACHE_LIMIT - CARDMARKET_PHOTO_LIMIT) return { photos, warning: 'The local photo preview cache is full. Original listing links are still available.' };

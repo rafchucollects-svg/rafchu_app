@@ -34,7 +34,8 @@ it('accepts only bounded JPEG previews for the app display', () => {
   for (const value of ['data:text/html;base64,aGVsbG8=', 'data:image/svg+xml;base64,aGVsbG8=', 'javascript:alert(1)', photo + 'A'.repeat(CARDMARKET_PHOTO_LIMIT)]) expect(safeCardmarketPhotoData(value)).toBeNull();
 });
 
-const capture = () => ({ filteredUrl: filteredUrl({ productUrl: 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Test/Card', language: 'English', condition: 'EX', finish: 'reverse', firstEdition: false }), offers: [{ scanUrl: source }] });
+const filters = { language: 'English', condition: 'EX', finish: 'reverse', firstEdition: false };
+const capture = () => ({ filteredUrl: filteredUrl({ productUrl: 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Test/Card', ...filters }), filters, offers: [{ ...filters, signed: false, altered: false, scanUrl: source }] });
 function browser(data) {
   return { tabs: { get: vi.fn(async () => ({ url: data.filteredUrl })), sendMessage: vi.fn(async (_id, request) => ({ ok: true, data: request.action === 'prepare-photos' ? [{ sourceUrl: source, loadedUrl: loaded }] : null })) }, pageCapture: { saveAsMHTML: vi.fn(async () => ({ size: 1000, text: async () => archive([{ url: loaded }]) })) } };
 }
@@ -66,4 +67,13 @@ it('does not download duplicate previews or exceed the cache budget', async () =
   const full = { [other]: 'x'.repeat(CARDMARKET_PHOTO_CACHE_LIMIT) };
   expect((await captureSellerPhotos(api, 5, data, full)).warning).toMatch(/cache is full/);
   expect(api.pageCapture.saveAsMHTML).not.toHaveBeenCalled();
+});
+
+it('keeps excluded conditions, languages, variants and graded listings out of the photo cache', async () => {
+  const data = capture(); const eligible = data.offers[0];
+  const excluded = [{ condition: 'NM' }, { language: 'Japanese' }, { finish: 'non-reverse' }, { firstEdition: true }, { signed: true }, { altered: true }, { comments: 'PSA 9 graded' }];
+  data.offers.unshift(...excluded.map((changes, index) => ({ ...eligible, ...changes, scanUrl: `https://marketplace-article-scans.s3.cardmarket.com/${2000 + index}/${2000 + index}.jpg` })));
+  const api = browser(data);
+  await captureSellerPhotos(api, 5, data, {}, () => false, async () => photo);
+  expect(api.tabs.sendMessage.mock.calls[0][1].sources).toEqual([source]);
 });
