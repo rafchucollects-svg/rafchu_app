@@ -1,13 +1,18 @@
 import { cardmarketTarget, safeCardmarketProduct } from './cardmarketSync.js';
 
 const normalize = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-export const cardmarketSearchName = value => String(value || '').replace(/\b(?:1st\s+edition|first\s+edition|unlimited|reverse\s+holo)\b/gi, '').replace(/δ|\bdelta species\b/gi, '').replace(/\s+/g, ' ').trim();
+export const cardmarketSearchName = value => String(value || '')
+  .replace(/\b(?:1st\s+edition|first\s+edition|unlimited|reverse\s+holo)\b/gi, '')
+  .replace(/δ|\bdelta species\b/gi, '')
+  .replace(/★/g, ' Gold Star ')
+  .replace(/[-–—]\s*(EX|GX)\b/gi, ' $1')
+  .replace(/\s+/g, ' ').trim();
 const nameKey = value => normalize(cardmarketSearchName(value));
 const numberKey = value => normalize(String(value || '').split('/')[0]).replace(/^([a-z]*)0+(?=\d)/, '$1');
 const setKey = value => {
   const key = normalize(value);
   const aliased = ({ 'japanese expedition': 'base expansion pack', expedition: 'expedition base set' })[key] || key;
-  return aliased.replace(/^(?:ex|black white|sword shield|sun moon|scarlet violet|xy) (?=\S)/, '');
+  return aliased.replace(/^(?:ex|e card|black white|sword shield|sun moon|scarlet violet|xy) (?=\S)/, '');
 };
 export const sameCardmarketSet = (left, right) => Boolean(setKey(left)) && setKey(left) === setKey(right);
 const base = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/';
@@ -23,6 +28,11 @@ export const CARDMARKET_KNOWN_PRODUCTS = [
   ['Shining Steelix', 'Neo Destiny', '112', 'Neo-Destiny/Shining-Steelix-NDE112'],
   ['Charizard', 'Base Expansion Pack', '103', 'Base-Expansion-Pack/Charizard-V2-EC1103', 'Japanese'],
   ['Eevee', 'BW Black Star Promos', 'BW97', 'BW-Black-Star-Promos/Eevee-V2-BWBW97'],
+  ['Reshiram & Charizard GX', 'SM Black Star Promos', 'SM201', 'SM-Black-Star-Promos/Reshiram-Charizard-GX-V1-SM201'],
+  ['Charizard & Braixen GX', 'SM Black Star Promos', 'SM230', 'SM-Black-Star-Promos/Charizard-Braixen-GX-SM230'],
+  ['Mew Gold Star δ Delta Species', 'EX Dragon Frontiers', '101', 'EX-Dragon-Frontiers/Mew-Gold-Star-Delta-Species-DF101'],
+  ['Latias EX', 'Plasma Freeze', '112', 'Plasma-Freeze/Latias-EX-PLF112'],
+  ['Umbreon', 'Aquapolis', 'H29', 'Aquapolis/Umbreon-V1-AQH29'],
 ].map(([name, set, number, path, language = 'English']) => ({ name, set, number, productUrl: base + path, language, source: 'catalogue' }));
 
 export function cardmarketSearchUrl(item) {

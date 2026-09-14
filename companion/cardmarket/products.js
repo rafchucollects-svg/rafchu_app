@@ -23,7 +23,7 @@ export function readCardmarketProducts(root, href, task) {
   const form = root.querySelector('#SearchResultForm');
   if (!url || !form) throw new Error('Complete Cardmarket search verification in the reader tab, then retry.');
   const options = [...form.querySelectorAll('select[name="idExpansion"] option')].filter(el => el.value !== '0' && sameCardmarketSet(text(el), task.set));
-  if (options.length !== 1) throw new Error('No unique expansion match in Cardmarket search. Check the expansion or replace the suggested URL.');
+  if (options.length !== 1) throw Object.assign(new Error('No unique expansion match in Cardmarket search. Check the expansion or replace the suggested URL.'), { code: 'expansion-mismatch' });
   const category = [...form.querySelectorAll('select[name="idCategory"] option')].find(el => text(el) === 'Singles');
   if (!category) throw new Error('Cardmarket’s Singles search filter is unavailable.');
   const current = new URL(url);
@@ -32,6 +32,8 @@ export function readCardmarketProducts(root, href, task) {
     form.querySelector('select[name="idExpansion"]').value === options[0].value && form.querySelector('select[name="idCategory"]').value === category.value;
   if (!expansionResults && (current.searchParams.get('idExpansion') !== options[0].value || current.searchParams.get('idCategory') !== category.value || current.searchParams.get('searchMode') !== 'v2')) {
     const next = new URL(cardmarketSearchUrl(task));
+    // Keep a number-only retry when refining it to the actual expansion option.
+    next.searchParams.set('searchString', current.searchParams.get('searchString') ?? next.searchParams.get('searchString'));
     next.searchParams.set('searchMode', 'v2');
     next.searchParams.set('idCategory', category.value);
     next.searchParams.set('idExpansion', options[0].value);
@@ -50,5 +52,12 @@ export function readCardmarketProducts(root, href, task) {
     return productUrl && card && set ? [{ ...card, set, productUrl, source: 'browser-search', productImageUrl: safeCardmarketImage(el.querySelector('img')?.getAttribute('src')) }] : [];
   });
   const next = root.querySelector('a[aria-label="Next page"][href]');
-  return { candidates, nextUrl: next ? safeProductSearchUrl(new URL(next.getAttribute('href'), href).href) : null };
+  // If the name query misses, retry once by number within this verified expansion.
+  // The caller still checks the complete name, expansion and collector number.
+  const fallback = new URL(cardmarketSearchUrl(task));
+  fallback.searchParams.set('searchString', String(task.number || '').split('/')[0].replace(/^[a-z]+(?=\d)/i, ''));
+  fallback.searchParams.set('searchMode', 'v2');
+  fallback.searchParams.set('idCategory', category.value);
+  fallback.searchParams.set('idExpansion', options[0].value);
+  return { candidates, nextUrl: next ? safeProductSearchUrl(new URL(next.getAttribute('href'), href).href) : null, fallbackUrl: fallback.href };
 }
