@@ -3,24 +3,27 @@ import { safeProductSearchUrl } from './products.js';
 
 // Search strategy is separate from Chrome navigation so retries and identity
 // checks can be tested together. Verification failures propagate to the caller.
-export async function findCardmarketProducts(task, readPage) {
-  let nextUrl = cardmarketSearchUrl(task);
-  let fallbackUrl;
-  const candidates = [];
-  const seen = new Set();
-  for (let pass = 0; pass < 2; pass++) {
-    for (let page = 0; nextUrl && page < 8; page++) {
-      if (!safeProductSearchUrl(nextUrl) || seen.has(nextUrl)) throw new Error('Search pagination could not be completed. Retry suggestions.');
-      seen.add(nextUrl);
-      const result = await readPage(nextUrl);
-      candidates.push(...result.candidates);
-      fallbackUrl = result.fallbackUrl || fallbackUrl;
-      nextUrl = result.nextUrl;
+export const productSearchState = task => ({ nextUrl: cardmarketSearchUrl(task), candidates: [], seen: [], pass: 0, page: 0, fallbackUrls: [] });
+export async function findCardmarketProducts(task, readPage, state = productSearchState(task), checkpoint = async () => {}) {
+  for (; state.pass < 3; state.pass++) {
+    for (; state.nextUrl && state.page < 8;) {
+      if (!safeProductSearchUrl(state.nextUrl) || state.seen.includes(state.nextUrl)) throw new Error('Search pagination could not be completed. Retry suggestions.');
+      const result = await readPage(state.nextUrl);
+      // Record a page only after reading succeeds, so verification can resume
+      // this exact page without being mistaken for a pagination loop.
+      state.seen.push(state.nextUrl);
+      state.candidates.push(...result.candidates);
+      state.fallbackUrls = [...new Set([...state.fallbackUrls, ...(result.fallbackUrls || (result.fallbackUrl ? [result.fallbackUrl] : []))])];
+      state.nextUrl = result.nextUrl;
+      state.page++;
+      await checkpoint();
     }
-    if (nextUrl) throw new Error('Too many search pages. Use a more precise card name or expansion.');
-    const matches = rankCardmarketProducts(task, candidates);
-    if (matches.length || !fallbackUrl || seen.has(fallbackUrl)) return matches;
-    nextUrl = fallbackUrl;
+    if (state.nextUrl) throw new Error('Too many search pages. Use a more precise card name or expansion.');
+    const matches = rankCardmarketProducts(task, state.candidates);
+    const fallbackUrl = state.fallbackUrls.find(url => !state.seen.includes(url));
+    if (matches.length || !fallbackUrl) return matches;
+    state.nextUrl = fallbackUrl;
+    state.page = 0;
   }
-  return rankCardmarketProducts(task, candidates);
+  return rankCardmarketProducts(task, state.candidates);
 }

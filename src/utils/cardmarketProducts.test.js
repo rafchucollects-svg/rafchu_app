@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CARDMARKET_KNOWN_PRODUCTS, cardmarketSearchUrl, rankCardmarketProducts, suggestCardmarketProducts, sameCardmarketSet } from './cardmarketProducts';
 import { readCardmarketProducts } from '../../companion/cardmarket/products';
-import { findCardmarketProducts } from '../../companion/cardmarket/productSearch';
+import { findCardmarketProducts, productSearchState } from '../../companion/cardmarket/productSearch';
 const card = { name: 'Blastoise', set: 'Expedition Base Set', number: '004/165', language: 'English' };
 const url = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/Blastoise-EX4';
 const search = 'https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=Blastoise+004&searchMode=v2&idCategory=51&idExpansion=1536';
@@ -118,7 +118,7 @@ it('keeps a number-only query when following a grid link that needs refinement',
   expect(new URL(result.nextUrl).searchParams.get('searchString')).toBe('004');
 });
 
-it('rejects a wrong collector number from the broader fallback and retries at most once', async () => {
+it('rejects a wrong collector number and bounds retries to number and name within the expansion', async () => {
   searchFixture();
   document.querySelector('h2').lastChild.textContent = 'Blastoise (EX 36)';
   const visits = [];
@@ -126,7 +126,24 @@ it('rejects a wrong collector number from the broader fallback and retries at mo
     visits.push(href);
     return readCardmarketProducts(document, href, card);
   })).toEqual([]);
-  expect(visits).toHaveLength(3);
+  expect(visits).toHaveLength(4);
+});
+
+it('finds H29 by name when Cardmarket does not find its collector number', async () => {
+  searchFixture();
+  document.querySelector('[name="idExpansion"]').insertAdjacentHTML('beforeend', '<option value="1537">Aquapolis</option>');
+  document.querySelector('.galleryBox').remove();
+  const umbreon = { name: 'Umbreon', number: 'H29', set: 'E-Card Aquapolis' };
+  const product = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Aquapolis/Umbreon-V1-AQH29';
+  const visits = [];
+  const matches = await findCardmarketProducts(umbreon, async href => {
+    visits.push(href);
+    if (new URL(href).searchParams.get('searchString') === 'Umbreon') document.querySelector('main').insertAdjacentHTML('beforeend', `<a class="galleryBox" href="${product}"><h2><span class="expansion-symbol" aria-label="Aquapolis"></span>Umbreon (AQ H29)</h2></a>`);
+    return readCardmarketProducts(document, href, umbreon);
+  });
+  expect(matches).toMatchObject([{ productUrl: product, number: 'H29' }]);
+  expect(visits.map(href => new URL(href).searchParams.get('searchString'))).toEqual(['Umbreon 29', 'Umbreon 29', '29', 'Umbreon']);
+  expect(new URL(visits.at(-1)).searchParams.get('idExpansion')).toBe('1537');
 });
 
 it('collects multiple printings across pagination before deciding whether to retry', async () => {
@@ -149,4 +166,19 @@ it('never retries verification failures or follows unsafe or looping pagination'
     await expect(findCardmarketProducts(card, async () => { reads++; return { candidates: [], nextUrl }; })).rejects.toThrow('pagination');
     expect(reads).toBe(1);
   }
+});
+
+it('resumes a paused fallback without rereading earlier search pages or losing candidates', async () => {
+  const state = productSearchState(card);
+  const fallbackUrl = search.replace('Blastoise+004', '004');
+  await expect(findCardmarketProducts(card, async href => {
+    if (href === fallbackUrl) throw new Error('verification');
+    return { candidates: [{ ...candidate, number: '36' }], nextUrl: null, fallbackUrl };
+  }, state)).rejects.toThrow('verification');
+  const restored = JSON.parse(JSON.stringify(state));
+  const visits = [];
+  expect(await findCardmarketProducts(card, async href => {
+    visits.push(href); return { candidates: [candidate], nextUrl: null };
+  }, restored)).toMatchObject([{ productUrl: url }]);
+  expect(visits).toEqual([fallbackUrl]);
 });

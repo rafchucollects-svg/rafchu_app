@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.3
+# Rafchu Cardmarket Companion 0.3.4
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -89,3 +89,15 @@ Completed searches appear as each card finishes and survive a worker interruptio
 An unknown expansion reports an error for that card and lets later cards run;
 verification or unreadable pages still stop the search and keep partial results.
 Retry Suggest product links after completing verification. Permissions are unchanged.
+
+## Search recovery in 0.3.4
+
+Product searches now pause at verification. Open Cardmarket reader, complete
+verification, then use Resume product search. The same reader and unfinished
+search page are reused, including after a Chrome worker restart. Completed
+cards and earlier pages are retained. Stop search clears the pending queue.
+If both the full name/number query and the number query miss, search retries
+by name within the same expansion; full collector numbers still have to match.
+The verified catalogue also includes Pikachu & Zekrom GX from Team Up #33.
+Retries keep earlier exact suggestions for unchanged inventory identities for
+24 hours. A failed lookup cannot erase a recent valid suggestion.

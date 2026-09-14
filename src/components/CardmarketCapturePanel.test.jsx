@@ -154,3 +154,18 @@ it('shows each completed product suggestion while search is still running withou
   expect(button('Save product match').disabled).toBe(true);
   expect(mocks.save).not.toHaveBeenCalled();
 });
+
+it('offers product-search recovery separately from capture and blocks competing runs', async () => {
+  status = { installed: true, version: '0.3.4', hasSuggestionJob: true, canResumeSuggestions: true, capabilities: ['product-suggestions', 'resumable-product-search'], status: { state: 'paused', message: 'Finish verification, then resume product search.' } };
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(host.textContent).toContain('Product search paused');
+  expect(button('Resume capture')).toBeUndefined();
+  expect(button('Capture 2 linked cards').disabled).toBe(true);
+  await act(async () => button('Open Cardmarket reader').click());
+  expect(mocks.request).toHaveBeenCalledWith('open-reader');
+  await act(async () => button('Resume product search').click());
+  expect(mocks.request).toHaveBeenCalledWith('resume-suggestions');
+  await act(async () => button('Stop search').click());
+  expect(mocks.request).toHaveBeenCalledWith('cancel');
+  expect(mocks.save).not.toHaveBeenCalled();
+});

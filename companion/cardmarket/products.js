@@ -1,4 +1,4 @@
-import { cardmarketSearchUrl, sameCardmarketSet } from '../../src/utils/cardmarketProducts.js';
+import { cardmarketSearchName, cardmarketSearchUrl, sameCardmarketSet } from '../../src/utils/cardmarketProducts.js';
 import { safeCardmarketImage, safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
 const text = el => (el?.innerText ?? el?.textContent ?? '').trim();
 export function safeProductSearchUrl(value) {
@@ -52,12 +52,14 @@ export function readCardmarketProducts(root, href, task) {
     return productUrl && card && set ? [{ ...card, set, productUrl, source: 'browser-search', productImageUrl: safeCardmarketImage(el.querySelector('img')?.getAttribute('src')) }] : [];
   });
   const next = root.querySelector('a[aria-label="Next page"][href]');
-  // If the name query misses, retry once by number within this verified expansion.
+  // Retry by number, then by name, within this verified expansion.
   // The caller still checks the complete name, expansion and collector number.
   const fallback = new URL(cardmarketSearchUrl(task));
   fallback.searchParams.set('searchString', String(task.number || '').split('/')[0].replace(/^[a-z]+(?=\d)/i, ''));
   fallback.searchParams.set('searchMode', 'v2');
   fallback.searchParams.set('idCategory', category.value);
   fallback.searchParams.set('idExpansion', options[0].value);
-  return { candidates, nextUrl: next ? safeProductSearchUrl(new URL(next.getAttribute('href'), href).href) : null, fallbackUrl: fallback.href };
+  const byName = new URL(fallback);
+  byName.searchParams.set('searchString', cardmarketSearchName(task.name));
+  return { candidates, nextUrl: next ? safeProductSearchUrl(new URL(next.getAttribute('href'), href).href) : null, fallbackUrl: fallback.href, fallbackUrls: [fallback.href, byName.href] };
 }
