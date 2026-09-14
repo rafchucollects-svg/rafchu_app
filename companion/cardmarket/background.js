@@ -1,5 +1,5 @@
 import { safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
-import { cardmarketSearchUrl, rankCardmarketProducts } from '../../src/utils/cardmarketProducts.js';
+import { findCardmarketProducts } from './productSearch.js';
 import { safeProductSearchUrl } from './products.js';
 import { createCaptureRunner, filteredUrl } from './capture.js';
 import { captureSellerPhotos } from './photoCapture.js';
@@ -20,36 +20,38 @@ async function suggest(tasks) {
       const key = JSON.stringify([task.name, task.set, task.number, task.language]);
       let candidates = cache.get(key);
       if (!candidates) {
-        candidates = [];
-        let nextUrl = cardmarketSearchUrl(task);
-        const seen = new Set();
-        for (let page = 0; nextUrl && page < 8; page++) {
-          if (cancelled) throw new Error('Suggestion search stopped.');
-          if (!safeProductSearchUrl(nextUrl) || seen.has(nextUrl)) throw new Error('Search pagination could not be completed. Retry suggestions.');
-          seen.add(nextUrl);
-          if (!tab) tab = await chrome.tabs.create({ url: nextUrl, active: true });
-          else await chrome.tabs.update(tab.id, { url: nextUrl, active: true });
-          let ready = false;
-          for (let attempt = 0; attempt < 120; attempt++) {
+        try {
+          candidates = await findCardmarketProducts(task, async nextUrl => {
             if (cancelled) throw new Error('Suggestion search stopped.');
-            await pause(500);
-            const state = await chrome.tabs.get(tab.id);
-            if (state.status !== 'complete' || !(safeProductSearchUrl(state.url) || safeCardmarketProduct(state.url))) continue;
-            try { ready = (await chrome.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'ping', mode: 'products' }))?.ok; } catch { /* Navigation is still completing. */ }
-            if (ready) break;
-          }
-          if (!ready) throw new Error('Open the Cardmarket search reader, complete verification, then retry suggestions.');
-          const response = await chrome.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'products', task });
-          if (!response?.ok) throw new Error(response?.error || 'Could not read product suggestions.');
-          candidates.push(...response.data.candidates);
-          nextUrl = response.data.nextUrl;
-          if (nextUrl) await pause(700);
+            if (!tab) tab = await chrome.tabs.create({ url: nextUrl, active: true });
+            else await chrome.tabs.update(tab.id, { url: nextUrl, active: true });
+            let ready = false;
+            for (let attempt = 0; attempt < 120; attempt++) {
+              if (cancelled) throw new Error('Suggestion search stopped.');
+              await pause(500);
+              const state = await chrome.tabs.get(tab.id);
+              if (state.status !== 'complete' || !(safeProductSearchUrl(state.url) || safeCardmarketProduct(state.url))) continue;
+              try { ready = (await chrome.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'ping', mode: 'products' }))?.ok; } catch { /* Navigation is still completing. */ }
+              if (ready) break;
+            }
+            if (!ready) throw new Error('Open the Cardmarket search reader, complete verification, then retry suggestions.');
+            const response = await chrome.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'products', task });
+            if (!response?.ok) throw Object.assign(new Error(response?.error || 'Could not read product suggestions.'), { code: response?.code });
+            await pause(700);
+            return response.data;
+          });
+        } catch (error) {
+          // A card with an unknown expansion must not prevent later cards from
+          // being searched. Verification/navigation failures still stop the run.
+          if (error.code !== 'expansion-mismatch') throw error;
+          products.results.push({ entryId: task.entryId, inventoryKey: task.inventoryKey, candidates: [], searchedAt: new Date().toISOString(), error: error.message });
+          await chrome.storage.local.set({ products });
+          continue;
         }
-        if (nextUrl) throw new Error('Too many search pages. Use a more precise card name or expansion.');
-        candidates = rankCardmarketProducts(task, candidates);
         cache.set(key, candidates);
       }
       products.results.push({ entryId: task.entryId, inventoryKey: task.inventoryKey, candidates, searchedAt: new Date().toISOString(), ...(!candidates.length ? { error: 'No exact name, expansion and number match found. Your current URL was kept.' } : {}) });
+      await chrome.storage.local.set({ products });
       await pause(700);
     }
     await chrome.storage.local.set({ products, status: { state: 'complete', message: `Product suggestions ready for ${products.results.length} cards. Review the proposed links before saving matches.` } });
@@ -69,7 +71,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if ((sender.frameId && sender.frameId !== 0) || !sender.url || !appOrigins.has(new URL(sender.url).origin)) throw new Error('Untrusted Cardmarket companion caller.');
       const stored = await chrome.storage.local.get(['status', 'report', 'products', 'captureJob']);
       let data;
-      if (message.action === 'status') data = { installed: true, version: chrome.runtime.getManifest().version, runId: stored.report?.runId, productRunId: stored.products?.runId, reportRevision: stored.report ? `${stored.report.runId}:${stored.report.captures.length}` : null, canResume: Boolean(stored.captureJob && !captureRunner.active), hasCaptureJob: Boolean(stored.captureJob), capabilities: ['product-suggestions', 'resumable-capture', 'seller-photo-cache', 'promo-product-lookup'], status: !active && !captureRunner.active && stored.status?.state === 'running' ? { state: stored.captureJob ? 'paused' : 'error', message: stored.captureJob ? 'Capture interrupted. Resume to continue from the last completed card.' : 'Search interrupted. Retry suggestions.' } : stored.status };
+      if (message.action === 'status') data = { installed: true, version: chrome.runtime.getManifest().version, runId: stored.report?.runId, productRunId: stored.products?.runId, productRevision: stored.products ? `${stored.products.runId}:${stored.products.results.length}` : null, reportRevision: stored.report ? `${stored.report.runId}:${stored.report.captures.length}` : null, canResume: Boolean(stored.captureJob && !captureRunner.active), hasCaptureJob: Boolean(stored.captureJob), capabilities: ['product-suggestions', 'resumable-capture', 'seller-photo-cache', 'promo-product-lookup', 'resilient-product-search'], status: !active && !captureRunner.active && stored.status?.state === 'running' ? { state: stored.captureJob ? 'paused' : 'error', message: stored.captureJob ? 'Capture interrupted. Resume to continue from the last completed card.' : 'Search interrupted. Retry suggestions.' } : stored.status };
       else if (message.action === 'products') data = stored.products || null;
       else if (message.action === 'suggest') {
         if (active || captureRunner.active || stored.captureJob) throw new Error('Finish or stop the current Cardmarket capture first.');

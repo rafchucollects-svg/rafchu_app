@@ -22,7 +22,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   }
   if (message.action === 'products') {
     try { respond({ ok: true, data: readCardmarketProducts(document, location.href, message.task) }); }
-    catch (error) { respond({ ok: false, error: error.message }); }
+    catch (error) { respond({ ok: false, error: error.message, code: error.code }); }
     return;
   }
   if (message.action !== 'capture') return;

@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ app: {}, request: vi.fn(), save: vi.fn() }));
 vi.mock('@/contexts/AppContext', () => ({ useApp: () => mocks.app }));
 vi.mock('@/utils/cardmarketCompanion', () => ({ cardmarketRequest: mocks.request, saveCardmarketBinding: mocks.save, saveCardmarketOffers: mocks.save }));
 import { CardmarketSyncPanel } from './CardmarketSyncPanel';
-import { createCardmarketBinding } from '../utils/cardmarketSync';
+import { createCardmarketBinding, cardmarketInventoryKey } from '../utils/cardmarketSync';
 
 let host, root, status, report;
 const makeCard = name => {
@@ -137,4 +137,20 @@ it('keeps capture and price choices within the visible manual-price scope', asyn
   expect(button('Save 0 market estimates').disabled).toBe(true);
   await act(async () => button('Capture 1 linked card').click());
   expect(mocks.request).toHaveBeenCalledWith('start', [{ entryId: manual.entryId, name: manual.name, binding: manual.cardmarketBinding }]);
+});
+
+it('shows each completed product suggestion while search is still running without saving a match', async () => {
+  const card = { ...makeCard('Arbok'), cardmarketBinding: undefined, number: '3' };
+  mocks.app.collectionItems = [card];
+  status = { installed: true, productRunId: 'search', productRevision: 'search:0', status: { state: 'running' } };
+  let results = [];
+  mocks.request.mockImplementation(async action => action === 'status' ? status : { results });
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  const url = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/Arbok-EX3';
+  results = [{ entryId: card.entryId, inventoryKey: cardmarketInventoryKey(card), candidates: [{ name: card.name, set: card.set, number: card.number, productUrl: url }] }];
+  status.productRevision = 'search:1';
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(host.querySelector('input[type="url"]').value).toBe(url);
+  expect(button('Save product match').disabled).toBe(true);
+  expect(mocks.save).not.toHaveBeenCalled();
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CARDMARKET_KNOWN_PRODUCTS, cardmarketSearchUrl, rankCardmarketProducts, suggestCardmarketProducts } from './cardmarketProducts';
+import { CARDMARKET_KNOWN_PRODUCTS, cardmarketSearchUrl, rankCardmarketProducts, suggestCardmarketProducts, sameCardmarketSet } from './cardmarketProducts';
 import { readCardmarketProducts } from '../../companion/cardmarket/products';
+import { findCardmarketProducts } from '../../companion/cardmarket/productSearch';
 const card = { name: 'Blastoise', set: 'Expedition Base Set', number: '004/165', language: 'English' };
 const url = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/Blastoise-EX4';
 const search = 'https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=Blastoise+004&searchMode=v2&idCategory=51&idExpansion=1536';
@@ -29,6 +30,27 @@ describe('Cardmarket product suggestions', () => {
     expect(rankCardmarketProducts(eevee, [candidate])).toHaveLength(1);
     expect(rankCardmarketProducts(eevee, [{ ...candidate, number: '94' }, { ...candidate, set: 'BW Promos' }])).toEqual([]);
     expect(suggestCardmarketProducts(eevee)[0].productUrl).toBe(productUrl);
+  });
+  it.each([
+    ['Reshiram & Charizard-GX', 'SM Black Star Promos', 'SM201', 'Reshiram & Charizard GX 201', 'Reshiram-Charizard-GX-V1-SM201'],
+    ['Charizard & Braixen-GX', 'SM Black Star Promos', 'SM230', 'Charizard & Braixen GX 230', 'Charizard-Braixen-GX-SM230'],
+    ['Latias-EX', 'Black & White Plasma Freeze', '112', 'Latias EX 112', 'Latias-EX-PLF112'],
+    ['Mew ★ δ', 'EX Dragon Frontiers', '101', 'Mew Gold Star 101', 'Mew-Gold-Star-Delta-Species-DF101'],
+    ['Umbreon', 'E-Card Aquapolis', 'H29', 'Umbreon 29', 'Umbreon-V1-AQH29'],
+  ])('finds %s using Cardmarket names and verified catalogue links', (name, set, number, query, slug) => {
+    const item = { name, set, number };
+    expect(new URL(cardmarketSearchUrl(item)).searchParams.get('searchString')).toBe(query);
+    expect(suggestCardmarketProducts(item)[0]?.productUrl).toContain(slug);
+    expect(suggestCardmarketProducts({ ...item, number: '999' })).toEqual([]);
+  });
+  it('keeps Gold Star, GX, holo numbers and promo expansions distinct', () => {
+    const mew = CARDMARKET_KNOWN_PRODUCTS.find(row => row.name.includes('Mew Gold Star'));
+    expect(rankCardmarketProducts({ ...mew, name: 'Mew' }, [mew])).toEqual([]);
+    const sm = CARDMARKET_KNOWN_PRODUCTS.find(row => row.number === 'SM201');
+    expect(rankCardmarketProducts({ ...sm, name: 'Reshiram & Charizard' }, [sm])).toEqual([]);
+    const umbreon = CARDMARKET_KNOWN_PRODUCTS.find(row => row.number === 'H29');
+    expect(rankCardmarketProducts({ ...umbreon, number: '29' }, [umbreon])).toEqual([]);
+    expect(sameCardmarketSet('SM Black Star Promos', 'SM Promos')).toBe(false);
   });
 });
 function searchFixture() {
@@ -73,4 +95,58 @@ it('handles search redirects to the expansion catalogue without repeatedly refin
   expect(readCardmarketProducts(document,expansion,card)).toMatchObject({candidates:[candidate],nextUrl:null});
   document.querySelector('[name="idExpansion"]').value = '5021';
   expect(readCardmarketProducts(document,expansion,card)).toMatchObject({candidates:[],nextUrl:expect.stringContaining('idExpansion=1536')});
+});
+
+it('retries a missed name by number in the actual expansion and checks the resulting identity', async () => {
+  searchFixture();
+  document.querySelector('.galleryBox').remove();
+  const visits = [];
+  const matches = await findCardmarketProducts(card, async href => {
+    visits.push(href);
+    if (new URL(href).searchParams.get('searchString') === '004') searchFixture();
+    return readCardmarketProducts(document, href, card);
+  });
+  expect(matches).toMatchObject([{ productUrl: url }]);
+  expect(visits).toHaveLength(3);
+  expect(new URL(visits[2]).searchParams.get('idExpansion')).toBe('1536');
+  expect(new URL(visits[2]).searchParams.get('idCategory')).toBe('51');
+});
+
+it('keeps a number-only query when following a grid link that needs refinement', () => {
+  searchFixture();
+  const result = readCardmarketProducts(document, 'https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=004', card);
+  expect(new URL(result.nextUrl).searchParams.get('searchString')).toBe('004');
+});
+
+it('rejects a wrong collector number from the broader fallback and retries at most once', async () => {
+  searchFixture();
+  document.querySelector('h2').lastChild.textContent = 'Blastoise (EX 36)';
+  const visits = [];
+  expect(await findCardmarketProducts(card, async href => {
+    visits.push(href);
+    return readCardmarketProducts(document, href, card);
+  })).toEqual([]);
+  expect(visits).toHaveLength(3);
+});
+
+it('collects multiple printings across pagination before deciding whether to retry', async () => {
+  const other = url.replace('Blastoise-EX4', 'Blastoise-V2-EX4');
+  const visits = [];
+  const matches = await findCardmarketProducts(card, async href => {
+    visits.push(href);
+    return visits.length === 1
+      ? { candidates: [candidate], nextUrl: search + '&site=2', fallbackUrl: search.replace('Blastoise+004', '004') }
+      : { candidates: [{ ...candidate, productUrl: other }], nextUrl: null };
+  });
+  expect(matches).toHaveLength(2);
+  expect(visits).toHaveLength(2);
+});
+
+it('never retries verification failures or follows unsafe or looping pagination', async () => {
+  await expect(findCardmarketProducts(card, async () => { throw new Error('verification'); })).rejects.toThrow('verification');
+  for (const nextUrl of ['https://evil.example/', cardmarketSearchUrl(card)]) {
+    let reads = 0;
+    await expect(findCardmarketProducts(card, async () => { reads++; return { candidates: [], nextUrl }; })).rejects.toThrow('pagination');
+    expect(reads).toBe(1);
+  }
 });

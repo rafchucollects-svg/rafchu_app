@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.2
+# Rafchu Cardmarket Companion 0.3.3
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -76,3 +76,16 @@ then says **Update selling prices**. Saving, success and failure feedback appear
 next to that button. Failed saves keep the selected offers available for retry.
 
 Version 0.3.1 captures photos only for offers eligible under the same condition, language, variant and raw-card checks used by the review panel. Excluded listings do not consume the preview cache.
+
+## Product lookup in 0.3.3
+
+Search normalizes EX/GX suffixes and the Gold Star symbol and recognises E-Card
+expansion prefixes. If the name query misses, it retries once by card number
+within the expansion selected from Cardmarket's actual options. Full names,
+expansions and collector numbers still have to match; no product is auto-confirmed.
+Verified catalogue links include SM201, SM230, Mew Gold Star, Latias EX 112 and
+Umbreon H29. Multiple suggestions remain reviewable printing choices.
+Completed searches appear as each card finishes and survive a worker interruption.
+An unknown expansion reports an error for that card and lets later cards run;
+verification or unreadable pages still stop the search and keep partial results.
+Retry Suggest product links after completing verification. Permissions are unchanged.
