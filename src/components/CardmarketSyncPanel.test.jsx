@@ -19,6 +19,14 @@ it('fills a lookup suggestion automatically without saving or confirming it',()=
  expect(host.querySelector('input[type="checkbox"]').checked).toBe(false);
  expect(host.querySelector('button').disabled).toBe(true);expect(save).not.toHaveBeenCalled();
 });
+it('clears an old no-match warning when an exact catalogue suggestion is available',()=>{
+ const lookupError='No exact name, expansion and number match found.';
+ render({lookupError});expect(host.textContent).toContain(lookupError);
+ render({item:{...item,name:'Charizard & Braixen-GX',set:'SM Black Star Promos',number:'SM230'},lookupError});
+ expect(input().value).toContain('Charizard-Braixen-GX-SM230');
+ expect(host.textContent).not.toContain(lookupError);
+ expect(host.querySelector('button').disabled).toBe(true);
+});
 it('keeps a user-corrected URL when new lookup results arrive and saves that exact correction',()=>{
  const save=vi.fn();render({candidates:[suggestion],onSave:save});typeUrl(correction);
  render({candidates:[{...suggestion,productUrl:suggestion.productUrl+'?new=1'}],onSave:save});expect(input().value).toBe(correction);

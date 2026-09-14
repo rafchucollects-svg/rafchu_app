@@ -35,7 +35,7 @@ export function CardmarketMatchForm({ item, busy, candidates = [], lookupError, 
       {suggestions.length > 1 && <label className="mt-2 block text-xs">Other product suggestions<select className={basic} value={suggestion ? productUrl : ''} onChange={e => changeUrl(e.target.value)}><option value="" disabled>Choose a suggestion…</option>{suggestions.map(row => <option key={row.productUrl} value={row.productUrl}>{row.name} · {row.set} · #{row.number} · {row.productUrl.split('/').pop()}</option>)}</select></label>}
     </div>}
     {!productUrl && <p className="mt-2 text-sm text-slate-600">Click Suggest product links above to search for this card automatically.</p>}
-    {lookupError && <p className="mt-2 text-xs text-amber-800">{lookupError}</p>}
+    {lookupError && !suggestions.some(row => row.score >= 100) && <p className="mt-2 text-xs text-amber-800">{lookupError}</p>}
     <label className="mt-3 block text-xs">Product URL — suggested automatically; replace it if needed<input aria-label={`Cardmarket URL for ${item.entryId}`} className={basic} type="url" value={productUrl} onChange={e => changeUrl(e.target.value)} /></label>
     <a className="mt-2 inline-block text-xs text-blue-800 underline" href={cardmarketSearchUrl(item)} target="_blank" rel="noopener noreferrer">Search Cardmarket yourself</a>
     <div className="mt-2 grid grid-cols-2 gap-3">
