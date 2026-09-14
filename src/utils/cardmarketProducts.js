@@ -33,6 +33,7 @@ export const CARDMARKET_KNOWN_PRODUCTS = [
   ['Mew Gold Star δ Delta Species', 'EX Dragon Frontiers', '101', 'EX-Dragon-Frontiers/Mew-Gold-Star-Delta-Species-DF101'],
   ['Latias EX', 'Plasma Freeze', '112', 'Plasma-Freeze/Latias-EX-PLF112'],
   ['Umbreon', 'Aquapolis', 'H29', 'Aquapolis/Umbreon-V1-AQH29'],
+  ['Pikachu & Zekrom GX', 'Team Up', '33', 'Team-Up/Pikachu-Zekrom-GX-V1-TEU33'],
 ].map(([name, set, number, path, language = 'English']) => ({ name, set, number, productUrl: base + path, language, source: 'catalogue' }));
 
 export function cardmarketSearchUrl(item) {
