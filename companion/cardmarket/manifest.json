@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Rafchu Cardmarket Companion",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Find Cardmarket products and capture listings together for review in Rafchu.",
   "permissions": [
     "storage",
