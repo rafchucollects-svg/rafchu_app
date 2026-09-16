@@ -1,6 +1,12 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
+// Keep the real currency/sticker calculations, but pin their external FX
+// response before cardHelpers initializes so CI cannot refresh mid-assertion.
+vi.hoisted(() => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ rates: { USD: 1, EUR: 0.92, GBP: 0.79 } }) })));
+});
+afterAll(() => vi.unstubAllGlobals());
 const mocks = vi.hoisted(() => ({ request: vi.fn(), save: vi.fn(), items: [], preferences: {} }));
 vi.mock('@/contexts/AppContext', () => ({ useApp: () => ({ user: { uid: 'test' }, db: {}, collectionItems: mocks.items, ...mocks.preferences }) }));
 vi.mock('@/utils/cardLadderCompanion', () => ({ autoSyncKey: uid => `auto:${uid}`, companionRequest: mocks.request, saveCardLadderReport: mocks.save }));

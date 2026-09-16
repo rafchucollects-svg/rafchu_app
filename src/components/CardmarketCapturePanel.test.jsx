@@ -1,6 +1,14 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
+// Keep real conversion and sticker-pricing logic, with deterministic exchange
+// rates even when the release build refreshes FX during module initialization.
+vi.hoisted(() => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    json: async () => ({ rates: { USD: 1, EUR: 0.92, GBP: 0.79 } }),
+  })));
+});
+afterAll(() => vi.unstubAllGlobals());
 const mocks = vi.hoisted(() => ({ app: {}, request: vi.fn(), save: vi.fn() }));
 vi.mock('@/contexts/AppContext', () => ({ useApp: () => mocks.app }));
 vi.mock('@/utils/cardmarketCompanion', () => ({ cardmarketRequest: mocks.request, saveCardmarketBinding: mocks.save, saveCardmarketOffers: mocks.save }));
