@@ -1,5 +1,6 @@
 import { safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
 import { waitForCardmarketReader } from './readerWait.js';
+import { writeCompanionStorage, STORAGE_PHOTO_WARNING } from './storage.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const filterNames = ['language', 'minCondition', 'isReverseHolo', 'isSigned', 'isFirstEd', 'isAltered'];
@@ -30,7 +31,7 @@ export function createCaptureRunner(api, capturePhotos) {
       if (capturePhotos) {
         const savedPhotos = previous ? (await api.storage.local.get('photoCache')).photoCache : null;
         if (savedPhotos?.runId === job.report.runId) photoCache = savedPhotos;
-        else await api.storage.local.set({ photoCache });
+        else photoCache = (await writeCompanionStorage(api, { photoCache }, { photoWrite: true })).photoCache;
       }
       await save({ state: 'running', message: `Reading ${job.tasks.length} confirmed products…` });
       for (; job.nextIndex < job.tasks.length;) {
@@ -64,9 +65,9 @@ export function createCaptureRunner(api, capturePhotos) {
           try {
             const cached = await capturePhotos(api, tab.id, result.data, photoCache.images, () => cancelled);
             const nextCache = { runId: job.report.runId, updatedAt: new Date().toISOString(), images: cached.photos };
-            await api.storage.local.set({ photoCache: nextCache });
-            photoCache = nextCache;
-            if (cached.warning) result.data.photoWarning = cached.warning;
+            const saved = await writeCompanionStorage(api, { photoCache: nextCache }, { photoWrite: true });
+            photoCache = saved.photoCache;
+            if (cached.warning || saved.photosEvicted) result.data.photoWarning = [cached.warning, saved.photosEvicted && STORAGE_PHOTO_WARNING].filter(Boolean).join(' ');
           } catch { result.data.photoWarning = 'Could not save local photo previews. Original listing links are still available.'; }
         }
         if (cancelled) throw new Error('Capture stopped.');

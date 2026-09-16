@@ -33,39 +33,74 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   reading = true; cancelled = false;
   (async () => {
     let result;
+    const expectedUrl = preview ? message.filteredUrl : location.href;
+    const samePage = preview ? sameDiscoveryPage : sameCapturePage;
     const pageFailure = message => Object.assign(new Error(message), { code: 'preview-incomplete' });
     const read = () => {
-      if (!preview) return readCardmarketPage(document, location.href);
-      if (!sameDiscoveryPage(location.href, message.filteredUrl)) throw new Error('The Cardmarket reader changed during listing discovery.');
+      if (!samePage(location.href, expectedUrl)) throw new Error('The Cardmarket reader changed during listing capture.');
       const state = cardmarketReaderState(document);
       if (!state.ok && ['verification', 'server-error'].includes(state.reason)) throw Object.assign(new Error(
         state.reason === 'verification' ? 'Cardmarket verification interrupted listing capture. Open the reader and resume after it clears.'
           : 'Cardmarket returned a temporary server error while reading listings. Resume to retry this product.'), { code: state.reason });
-      const next = readCardmarketDiscoveryPage(document, location.href);
-      if (result && JSON.stringify(next.coverage) !== JSON.stringify(result.coverage)) throw new Error('Cardmarket offer filters changed during listing discovery.');
+      const next = preview ? readCardmarketDiscoveryPage(document, location.href) : readCardmarketPage(document, location.href);
+      if (result && JSON.stringify(preview ? next.coverage : next.filters) !== JSON.stringify(preview ? result.coverage : result.filters)) throw new Error('Cardmarket offer filters changed during listing capture.');
       return next;
     };
-    try {
-      result = read();
-      if (preview && result.offers.length > 1000) { result.offers = result.offers.slice(0, 1000); throw pageFailure('More than 1,000 offers. Narrow the filters before capture.'); }
-      // The user's choice needs the actual offer list, not an estimated aggregate.
-      for (let page = 0; !result.complete && page < 20; page++) {
+    const checkLimit = () => {
+      if (result.offers.length > 1000 || (!result.complete && result.offers.length >= 1000)) {
+        if (preview) result.offers = result.offers.slice(0, 1000);
+        throw pageFailure('More than 1,000 offers. Narrow the filters before capture.');
+      }
+    };
+    const rows = () => JSON.stringify(result.offers);
+    const moreButton = () => [...document.querySelectorAll('button')].find(el => /Show more results/i.test(el.textContent));
+    async function readyForNextPage(previousRows = null) {
+      const initialRows = rows();
+      const initialButton = moreButton();
+      const pendingResponse = previousRows !== null || initialButton?.disabled || initialButton?.getAttribute('aria-disabled') === 'true';
+      let previous = JSON.stringify([initialRows, result.complete]);
+      let stablePolls = 0;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await pause(400);
         if (cancelled) throw new Error('Capture stopped.');
-        if (result.offers.length >= 1000) throw pageFailure('More than 1,000 offers. Narrow the filters before capture.');
-        const before = result.offers.map(offer => offer.offerId).join(',');
-        const more = [...document.querySelectorAll('button')].find(el => /Show more results/i.test(el.textContent));
-        if (!more || more.disabled) throw pageFailure('The next offer page is unavailable. Retry the capture.');
-        more.click();
-        let changed = false;
-        for (let attempt = 0; attempt < 40; attempt++) {
-          await pause(400);
-          if (cancelled) throw new Error('Capture stopped.');
-          chrome.runtime.sendMessage({ channel: 'rafchu-cardmarket-progress' }).catch(() => {});
-          result = read();
-          if (preview && result.offers.length > 1000) { result.offers = result.offers.slice(0, 1000); throw pageFailure('More than 1,000 offers. Narrow the filters before capture.'); }
-          if (result.complete || result.offers.map(offer => offer.offerId).join(',') !== before) { changed = true; break; }
-        }
-        if (!changed) throw pageFailure('Cardmarket did not load the next offer page. Current prices were preserved.');
+        chrome.runtime.sendMessage({ channel: 'rafchu-cardmarket-progress' }).catch(() => {});
+        result = read(); checkLimit();
+        const currentRows = rows();
+        const current = JSON.stringify([currentRows, result.complete]);
+        const stable = current === previous;
+        stablePolls = stable ? stablePolls + 1 : 0;
+        previous = current;
+        // AJAX can append rows before re-enabling its button. Wait for a stable
+        // snapshot and ready button; never click twice while that load settles.
+        // After a click or an initially disabled button, disappearance alone
+        // is not completion: the pending response must have changed the offers.
+        // Final rows can arrive in batches while the button is absent. Require
+        // 1.6 seconds of unchanged offers before accepting that terminal state.
+        if (stablePolls >= 4 && result.complete && (!pendingResponse || currentRows !== (previousRows ?? initialRows))) return null;
+        const button = moreButton();
+        if (stable && button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' &&
+            (previousRows === null || currentRows !== previousRows)) return button;
+      }
+      throw pageFailure(previousRows === null
+        ? 'The next offer page did not become ready. Cardmarket may still be loading; retry the capture.'
+        : 'Cardmarket did not load the next offer page completely. Current prices were preserved.');
+    }
+    try {
+      result = read(); checkLimit();
+      // The user's choice needs the actual offer list, not an estimated aggregate.
+      for (let page = 0; !result.complete && page < 20;) {
+        if (cancelled) throw new Error('Capture stopped.');
+        const more = await readyForNextPage();
+        if (!more) break;
+        const before = rows();
+        // Recheck after awaiting readiness: cancellation or a page update can
+        // be delivered before this continuation runs.
+        if (cancelled) throw new Error('Capture stopped.');
+        result = read(); checkLimit();
+        if (result.complete) { await readyForNextPage(before); continue; }
+        if (rows() !== before || more !== moreButton() || more.disabled || more.getAttribute('aria-disabled') === 'true') continue;
+        more.click(); page++;
+        await readyForNextPage(before);
       }
       if (!result.complete) throw pageFailure('Offer capture reached its page limit. Narrow the filters.');
       respond({ ok: true, data: result });

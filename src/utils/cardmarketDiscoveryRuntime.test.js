@@ -96,7 +96,7 @@ it('retains fresh previous preview evidence and its photos when a retry fails, w
   readPreview.mockResolvedValue({ ok: false, error: 'Could not read the offer table.' });
   await finish([task()]);
   expect(stored.status.state).toBe('complete');
-  expect(stored.products.results[0].previews).toEqual([old]);
+  expect(stored.products.results[0].previews).toEqual([{ ...old, discoveryRunId: 'earlier' }]);
   expect(stored.products.results[0].previewErrors[0].error).toContain('offer table');
   expect(stored.previewPhotoCache).toMatchObject({ runId: stored.products.runId, images: { retained: 'photo' } });
 });
@@ -137,7 +137,7 @@ it('retains complete earlier listings when a fresh retry is only partial', async
   stored.products = { runId: 'earlier', results: [{ ...task(), candidates: [candidate()], previews: [earlier], searchedAt: new Date().toISOString() }] };
   readPreview.mockImplementation(async message => ({ ok: true, data: preview(message.task, message.productUrl, { complete: false, moreAvailable: true, error: 'Could not read more listings.' }) }));
   await finish([task()]);
-  expect(stored.products.results[0].previews).toEqual([earlier]);
+  expect(stored.products.results[0].previews).toEqual([{ ...earlier, discoveryRunId: 'earlier' }]);
   expect(stored.products.results[0].previewErrors).toHaveLength(1);
 });
 
@@ -167,7 +167,7 @@ it('retains a fresh earlier printing when a new search only returns another exac
   readPreview.mockImplementation(async message => message.productUrl === oldCandidate.productUrl ? { ok: false, error: 'Could not read listings.' } : { ok: true, data: preview(message.task, message.productUrl) });
   await finish([task()]);
   expect(stored.products.results[0].candidates).toHaveLength(2);
-  expect(stored.products.results[0].previews).toContainEqual(earlier);
+  expect(stored.products.results[0].previews).toContainEqual({ ...earlier, discoveryRunId: 'earlier' });
 });
 
 it.each([
@@ -195,4 +195,91 @@ it.each([{ finishes: ['unknown'] }, { editions: [] }, { editions: ['false'] }])(
   await finish([task()]);
   expect(stored.products.results[0].previews).toEqual([]);
   expect(stored.products.results[0].previewErrors).toHaveLength(1);
+});
+
+it('stores previews once and rebuilds duplicate reuse after resuming a compact checkpoint', async () => {
+  let failed = false;
+  readProducts.mockImplementation(async message => {
+    if (message.task.name === 'Waiting' && !failed) { failed = true; return { ok: false, code: 'verification', error: 'Complete verification.' }; }
+    return { ok: true, data: { candidates: [candidate()], nextUrl: null } };
+  });
+  const tasks = [task(), task('waiting', { name: 'Waiting' }), task('copy')];
+  await finish(tasks);
+  expect(stored.status.state).toBe('paused');
+  expect(stored.suggestionJob).not.toHaveProperty('products');
+  expect(stored.suggestionJob).not.toHaveProperty('previewCache');
+  expect(stored.suggestionJob.productsRunId).toBe(stored.products.runId);
+  expect(JSON.stringify(stored.suggestionJob)).not.toContain('articleRow1');
+  runner = createSuggestionRunner(api, photos);
+  await finish(null, structuredClone(stored.suggestionJob));
+  expect(stored.status.state).toBe('complete');
+  expect(readPreview).toHaveBeenCalledTimes(1);
+  expect(stored.products.results.find(row => row.entryId === 'copy').previews[0].discoveryRunId).toBe(stored.products.runId);
+});
+
+it('resumes an installed legacy job with embedded results and converts the next checkpoint to compact storage', async () => {
+  readPreview.mockResolvedValueOnce({ ok: false, code: 'verification', error: 'Complete verification.' });
+  await finish([task()]);
+  const legacy = { ...stored.suggestionJob, products: structuredClone(stored.products), previewCache: {} };
+  delete legacy.productsRunId;
+  delete stored.products;
+  let compactObserved = false;
+  readPreview.mockImplementation(async message => {
+    compactObserved = !stored.suggestionJob.products && !stored.suggestionJob.previewCache;
+    return { ok: true, data: preview(message.task, message.productUrl) };
+  });
+  runner = createSuggestionRunner(api, photos);
+  await finish(null, legacy);
+  expect(compactObserved).toBe(true);
+  expect(stored.products.runId).toBe(legacy.products.runId);
+  expect(stored.products.results[0].previews).toHaveLength(1);
+});
+
+it('skips an oversized printing with a visible error, retains saved prices, and continues later candidates and duplicates', async () => {
+  const oversized = candidate('Charizard-V2-CG4'), later = candidate('Charizard-V3-CG4');
+  stored.report = { runId: 'confirmed', captures: [{ price: 80 }] };
+  readProducts.mockResolvedValue({ ok: true, data: { candidates: [candidate(), oversized, later], nextUrl: null } });
+  readPreview.mockImplementation(async message => ({ ok: true, data: preview(message.task, message.productUrl,
+    message.productUrl === oversized.productUrl ? { offers: Array.from({ length: 1000 }, (_,i) => ({ offerId: `articleRow${i}`, comments: 'x'.repeat(11_000) })) } : {}) }));
+  await finish([task(), task('copy')]);
+  expect(stored.status.state).toBe('complete');
+  expect(stored.suggestionJob).toBeNull();
+  expect(readPreview).toHaveBeenCalledTimes(3);
+  for (const row of stored.products.results) {
+    expect(row.previews.map(p => p.productUrl)).toEqual([candidate().productUrl, later.productUrl]);
+    expect(row.previewErrors).toEqual([{ productUrl: oversized.productUrl, error: expect.stringContaining('storage') }]);
+  }
+  expect(stored.report).toEqual({ runId: 'confirmed', captures: [{ price: 80 }] });
+});
+
+it('skips a printing when Chrome rejects its checkpoint instead of retrying its oversized payload', async () => {
+  const write = api.storage.local.set.getMockImplementation();
+  let quotaFailures = 0;
+  api.storage.local.set.mockImplementation(async patch => {
+    if (patch.products?.results?.some(row => row.previews?.length)) { quotaFailures++; throw new Error('QUOTA_BYTES quota exceeded'); }
+    return write(patch);
+  });
+  await finish([task()]);
+  expect(quotaFailures).toBe(1);
+  expect(stored.suggestionJob).toBeNull();
+  expect(stored.status.state).toBe('complete');
+  expect(stored.products.results[0].previews).toEqual([]);
+  expect(stored.products.results[0].previewErrors[0].error).toContain('storage');
+});
+
+it('saves only a small final status on an initial quota rejection and keeps the previous products intact', async () => {
+  stored.products = { runId: 'earlier', results: [{ ...task(), candidates: [candidate()], searchedAt: new Date().toISOString() }] };
+  const previousProducts = structuredClone(stored.products);
+  const write = api.storage.local.set.getMockImplementation();
+  let rejectedWrites = 0;
+  api.storage.local.set.mockImplementation(async patch => {
+    if (patch.products) { rejectedWrites++; throw new Error('QUOTA_BYTES quota exceeded'); }
+    return write(patch);
+  });
+  await finish([task()]);
+  expect(rejectedWrites).toBe(1);
+  expect(stored.products).toEqual(previousProducts);
+  expect(stored.suggestionJob).toBeNull();
+  expect(stored.status).toMatchObject({ state: 'complete', message: expect.stringContaining('storage is full') });
+  expect(readPreview).not.toHaveBeenCalled();
 });
