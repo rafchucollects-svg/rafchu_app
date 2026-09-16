@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { readCardmarketPage } from '../../companion/cardmarket/dom';
+import { readCardmarketPage, readCardmarketDiscoveryPage } from '../../companion/cardmarket/dom';
 const product = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/EX-Unseen-Forces/Jolteon-UF8';
 const filtered = product + '?language=1&minCondition=3&isReverseHolo=Y&isSigned=N&isFirstEd=N&isAltered=N';
 function fixture({ japanese = false, sellerType = 'Professional', reverse = true } = {}) {
@@ -35,4 +35,98 @@ it('captures this product’s reference image and the seller’s scan without us
   expect(readCardmarketPage(document, filtered).productImageUrl).toBeNull();
   document.querySelector('.slide:nth-child(2)').remove();
   expect(readCardmarketPage(document, filtered).productImageUrl).toBeNull();
+});
+
+const discovery = product + '?language=&minCondition=3&isReverseHolo=&isSigned=N&isFirstEd=&isAltered=N';
+function discoveryFixture() {
+  fixture();
+  document.querySelector('[name="language[1]"]').checked = false;
+  for (const name of ['isReverseHolo', 'isFirstEd']) document.querySelector(`[name="extra[${name}]"]`).innerHTML = '<option value="">All</option><option value="Y">Yes</option><option value="N">No</option>';
+}
+it('records broad discovery coverage without treating it as a confirmed-filter capture', () => {
+  discoveryFixture();
+  const result = readCardmarketDiscoveryPage(document, discovery);
+  expect(result).toMatchObject({ scope: 'product-preview', coverage: { languages: null, minCondition: 'EX', finishes: null, editions: null, signed: false, altered: false }, complete: true, offers: [{ language: 'English', condition: 'EX', finish: 'reverse', price: 100 }] });
+  expect(result.filters).toBeUndefined();
+  expect(() => readCardmarketPage(document, discovery)).toThrow(/one language.*reverse status.*edition/);
+  document.querySelector('[name="language[1]"]').checked = true;
+  expect(readCardmarketDiscoveryPage(document, discovery.replace('language=', 'language=1')).coverage.languages).toEqual(['English']);
+});
+it('requires real language and condition controls and applied filters for discovery', () => {
+  for (const name of ['language[1]', 'minCondition']) {
+    discoveryFixture(); document.querySelector(`[name="${name}"]`).remove();
+    expect(() => readCardmarketDiscoveryPage(document, discovery)).toThrow(/controls are missing/);
+  }
+  discoveryFixture(); document.querySelector('[name="language[1]"]').checked = true;
+  expect(() => readCardmarketDiscoveryPage(document, discovery)).toThrow(/Apply/);
+  discoveryFixture(); document.querySelector('[name="extra[isFirstEd]"]').value = 'Y';
+  expect(() => readCardmarketDiscoveryPage(document, discovery)).toThrow(/Apply/);
+  discoveryFixture();
+  expect(() => readCardmarketDiscoveryPage(document, discovery + '&minCondition=7')).toThrow(/Apply/);
+  expect(() => readCardmarketDiscoveryPage(document, discovery.replace('minCondition=3', 'minCondition=7'))).toThrow(/Apply/);
+});
+it('records an unfiltered edition offer set when Cardmarket omits the edition control', () => {
+  discoveryFixture(); document.querySelector('[name="extra[isReverseHolo]"]').remove();
+  expect(readCardmarketDiscoveryPage(document, discovery).coverage.finishes).toEqual(['non-reverse']);
+  document.querySelector('[name="extra[isFirstEd]"]').remove();
+  expect(readCardmarketDiscoveryPage(document, discovery).coverage.editions).toBeNull();
+  expect(() => readCardmarketDiscoveryPage(document, discovery.replace('isFirstEd=', 'isFirstEd=Y'))).toThrow(/edition coverage is unknown/);
+  document.querySelector('form').insertAdjacentHTML('beforeend', '<input type="hidden" name="extra[isFirstEd]" value="N">');
+  expect(readCardmarketDiscoveryPage(document, discovery).coverage.editions).toEqual([false]);
+  discoveryFixture(); document.querySelector('[name="extra[isFirstEd]"]').innerHTML = '<option value="N">No</option>';
+  expect(readCardmarketDiscoveryPage(document, discovery).coverage.editions).toEqual([false]);
+});
+it('rejects restricted sellers and signed or altered filters before broad discovery', () => {
+  for (const control of ['<input type="checkbox" name="sellerCountry[1]" checked>', '<input type="checkbox" name="sellerType[1]" checked>', '<input name="amount" value="2">']) {
+    discoveryFixture(); document.querySelector('form').insertAdjacentHTML('beforeend', control);
+    expect(() => readCardmarketDiscoveryPage(document, discovery)).toThrow(/Clear/);
+  }
+  for (const name of ['isSigned', 'isAltered']) {
+    discoveryFixture(); document.querySelector(`[name="extra[${name}]"]`).remove();
+    expect(() => readCardmarketDiscoveryPage(document, discovery)).toThrow(/Signed and Altered/);
+  }
+});
+
+it('reads an explicit hidden non-first-edition filter on a modern product', () => {
+  fixture();
+  document.querySelector('h1').textContent = "Ethan's Ho-Oh ex (DRI 230) Destined Rivals - Singles";
+  document.querySelector('[name="extra[isFirstEd]"]').outerHTML = '<input type="hidden" name="extra[isFirstEd]" value="N">';
+  const modern = filtered.replace('EX-Unseen-Forces/Jolteon-UF8', 'Destined-Rivals/Ethans-Ho-Oh-ex-V3-DRI230');
+  expect(readCardmarketPage(document, modern)).toMatchObject({ filters: { firstEdition: false }, complete: true });
+  expect(() => readCardmarketPage(document, modern.replace('isFirstEd=N', 'isFirstEd=Y'))).toThrow(/Apply/);
+  document.querySelector('[name="extra[isFirstEd]"]').remove();
+  expect(readCardmarketPage(document, modern).filters.firstEdition).toBe(false);
+  expect(() => readCardmarketPage(document, modern.replace('isFirstEd=N', 'isFirstEd=Y'))).toThrow(/confirmed edition filter/);
+});
+
+it('reads language controls with an icon-only label without guessing unsupported languages', () => {
+  fixture(); document.querySelector('label').innerHTML = '<span aria-label="English"></span>';
+  expect(readCardmarketPage(document, filtered).filters.language).toBe('English');
+  document.querySelector('label').innerHTML = '';
+  expect(readCardmarketPage(document, filtered).filters.language).toBe('English');
+  document.querySelector('label').innerHTML = '<span aria-label="Japanese"></span>';
+  expect(() => readCardmarketPage(document, filtered)).toThrow(/confirmed one language/);
+});
+
+it('reads the confirmed No-edition request when modern product pages omit variant controls', () => {
+  fixture({ reverse: false });
+  document.querySelector('[name="extra[isFirstEd]"]').remove();
+  const modern = filtered.replace('EX-Unseen-Forces/Jolteon-UF8', 'Destined-Rivals/Ethans-Ho-Oh-ex-V3-DRI230').replace('isReverseHolo=Y', 'isReverseHolo=N');
+  const result = readCardmarketPage(document, modern);
+  expect(result.filters).toMatchObject({ finish: 'non-reverse', firstEdition: false });
+  // Rendering a first-edition offer never changes the requested filter or its
+  // independent attributes; downstream matching still excludes that offer.
+  document.querySelector('.product-attributes').insertAdjacentHTML('beforeend', '<span aria-label="First Edition"></span>');
+  expect(readCardmarketPage(document, modern)).toMatchObject({ filters: { firstEdition: false }, offers: [{ firstEdition: true }] });
+  expect(() => readCardmarketPage(document, modern.replace('isFirstEd=N', 'isFirstEd=Y'))).toThrow(/edition filter/);
+  expect(() => readCardmarketPage(document, modern.replace('&isFirstEd=N', ''))).toThrow(/edition filter/);
+});
+
+it('rejects a malformed existing edition control rather than calling it unrestricted', () => {
+  discoveryFixture();
+  document.querySelector('[name="extra[isFirstEd]"]').outerHTML = '<input type="hidden" name="extra[isFirstEd]" value="unknown">';
+  expect(() => readCardmarketDiscoveryPage(document, discovery)).toThrow(/edition coverage is unknown/);
+  discoveryFixture();
+  document.querySelector('[name="extra[isFirstEd]"]').innerHTML = '<option value="unknown">Unknown</option>';
+  expect(() => readCardmarketDiscoveryPage(document, discovery)).toThrow(/Apply/);
 });

@@ -155,9 +155,9 @@ export function applyCardmarketCaptures(items, captures, choices, now = Date.now
     if (!(price > 0)) throw new Error('Choose a supported pricing method.');
     updatedCount++;
     const previousManual = { overridePrice: item.overridePrice ?? null, overridePriceCurrency: item.overridePriceCurrency ?? null, manualPrice: item.manualPrice ?? null, manualPriceCurrency: item.manualPriceCurrency ?? null };
-    return { ...item, cardmarketPricing: { source: 'cardmarket-browser', method: choice.method, kind: 'asking-price', price, currency: 'EUR', runId,
+    return { ...item, cardmarketPricing: { source: 'cardmarket-browser', method: choice.method, kind: 'asking-price', price, currency: 'EUR', runId: capture.runId || runId,
       capturedAt: capture.capturedAt, appliedAt: new Date(now).toISOString(), inventoryKey: cardmarketInventoryKey(item), productUrl: capture.productUrl,
-      filters: capture.filters, productImageUrl: safeCardmarketImage(capture.productImageUrl), selectedOffer: selectedOffer || null, sellerCount: summary.sellerCount, lowest: summary.lowest, medianLowestFive: summary.medianLowestFive,
+      filters: capture.filters, ...(capture.discoveryCoverage ? { discoveryCoverage: capture.discoveryCoverage } : {}), productImageUrl: safeCardmarketImage(capture.productImageUrl), selectedOffer: selectedOffer || null, sellerCount: summary.sellerCount, lowest: summary.lowest, medianLowestFive: summary.medianLowestFive,
       warnings: summary.warnings, evidence: summary.lowestFive, replacedManual: choice.replaceManual, previousManual },
       ...(choice.replaceManual ? { overridePrice: price, overridePriceCurrency: 'EUR' } : {}) };
   });

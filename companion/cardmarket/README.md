@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.5
+# Rafchu Cardmarket Companion 0.3.6
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -14,8 +14,9 @@ Graded and sealed entries are excluded. Uncheck Show manually priced singles onl
 to include other ungraded singles. The summary shows linked cards and cards that
 still need a product match; capture and price application use the displayed scope.
 Verified catalogue links and existing
-inventory links are suggested automatically. Click Suggest product links to search
-Cardmarket for unmatched cards; the companion selects the matching expansion and
+inventory links are suggested automatically. Click Find links and listings to search
+Cardmarket for unmatched cards and capture their listing previews in the same run;
+the companion selects the matching expansion and
 checks names and full collector numbers, including Japanese expansion aliases and
 Black & White BW promo names. Compact promo numbers such as BW97 use the numeric
 part for searching, while exact matching still checks the full promo number.
@@ -24,7 +25,9 @@ precedence over later suggestions. Finding a link never confirms or saves a matc
 Confirm the product and its exact
 language, condition, reverse status and edition for each ungraded card. Your
 existing TCGplayer → Cardmarket condition mapping supplies the suggested condition.
-Capture linked cards. Completed offers appear automatically as each card finishes.
+The matching offers from a complete, current preview become available immediately
+after confirmation, without another capture. Use Refresh listings for matched cards
+when fresh data is needed. Completed offers appear automatically as each card finishes.
 You can also use Review latest offers to reopen them. Choose an individual offer and
 leave Include checked. Professional/Powerseller/Private labels and country are
 shown. The product reference image is shown with a warning that the pictured
@@ -118,3 +121,24 @@ the next card instead of retaining a queue that can never resume. Partial search
 results are not accepted as a finished match; prior exact links are kept. The
 completion message distinguishes available suggestions from cards needing review.
 Permissions and explicit match/price confirmation are unchanged.
+
+## Combined discovery in 0.3.6
+
+One search now saves both suggested product links and listing previews. Each
+printing has its own preview and progress is saved before visiting its listings.
+Confirming a product and its filters selects matching offers from that local
+capture; it does not run the reader again. Alternative printings never share
+prices. Seller-photo previews stay in this browser, with a separate 4 MB cache.
+No match or price is saved automatically.
+
+Preview coverage records the filters actually available on Cardmarket. Listings
+are checked individually again against the confirmed language, condition, finish
+and edition. Stale, incomplete, changed-card or incompatible previews cannot be
+used for pricing. A failed retry keeps an earlier complete current preview.
+Verification pauses at the exact product; resume and worker restart keep the
+unfinished printing and previously captured links/listings.
+
+Modern product pages such as Ethan's Ho-Oh can omit edition/reverse controls.
+The companion accepts the explicit non-first-edition request on these pages
+and still checks each listing, instead of asking for a control Cardmarket hides.
+Temporary server-error detection is also corrected. Permissions are unchanged.

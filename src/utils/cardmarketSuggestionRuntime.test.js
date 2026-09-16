@@ -150,3 +150,22 @@ it('searches duplicate identities once and keeps a result for each inventory ent
   expect(stored.products.results.map(row => row.entryId)).toEqual(['Blastoise', 'copy-two']);
   expect(api.tabs.remove).toHaveBeenCalledTimes(1);
 });
+
+it('advertises combined capture and returns only fresh photos belonging to the suggestion run', async () => {
+  expect((await request('status')).data.capabilities).toContain('combined-product-offers');
+  stored.products = { runId: 'discovery', results: [] };
+  stored.previewPhotoCache = { runId: 'discovery', updatedAt: new Date().toISOString(), images: { local: 'preview-photo' } };
+  stored.photoCache = { runId: 'confirmed', updatedAt: new Date().toISOString(), images: { private: 'other-run' } };
+  expect((await request('products')).data.photos).toEqual({ local: 'preview-photo' });
+  stored.previewPhotoCache.runId = 'other';
+  expect((await request('products')).data.photos).toEqual({});
+  stored.previewPhotoCache.runId = 'discovery';
+  stored.previewPhotoCache.updatedAt = new Date(Date.now() - 86400001).toISOString();
+  expect((await request('products')).data.photos).toEqual({});
+});
+
+it('rejects malformed preview filters before starting discovery', async () => {
+  expect(await request('suggest', [{ ...task('Blastoise'), captureOffers: true, condition: 'Unknown' }])).toMatchObject({ ok: false });
+  expect(await request('suggest', [{ ...task('Blastoise'), captureOffers: 'true' }])).toMatchObject({ ok: false });
+  expect(readProducts).not.toHaveBeenCalled();
+});
