@@ -155,6 +155,36 @@ it('shows each completed product suggestion while search is still running withou
   expect(mocks.save).not.toHaveBeenCalled();
 });
 
+it('shows an incomplete lookup warning even when an exact catalogue link is already suggested', async () => {
+  const card = eevee('eevee-a');
+  const lookupError = 'Search pagination could not be completed for this card. Review its product link.';
+  mocks.app.collectionItems = [card];
+  status = { installed: true, productRevision: 'search:1', capabilities: ['resumable-product-search', 'server-error-recovery'], status: { state: 'complete' } };
+  mocks.request.mockImplementation(async action => action === 'status' ? status : { results: [
+    { entryId: card.entryId, inventoryKey: cardmarketInventoryKey(card), candidates: [], error: lookupError, errorCode: 'search-incomplete' },
+  ] });
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(host.querySelector('input[type="url"]').value).toBe('https://www.cardmarket.com/en/Pokemon/Products/Singles/BW-Black-Star-Promos/Eevee-V2-BWBW97');
+  const matchForm = host.querySelector('article details');
+  expect(matchForm.open).toBe(true);
+  expect(matchForm.textContent).toContain('Suggested product');
+  expect(matchForm.textContent).toContain(lookupError);
+  expect(button('Save product match').disabled).toBe(true);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['an installed 0.3.4 companion', true, ['resumable-product-search'], true],
+  ['a companion with recovery support', true, ['resumable-product-search', 'server-error-recovery'], false],
+  ['an older companion without resumable search', true, ['product-suggestions'], false],
+  ['an unavailable companion', false, ['resumable-product-search'], false],
+])('shows the 0.3.5 recovery update warning appropriately for %s', async (_label, installed, capabilities, expected) => {
+  status = { installed, capabilities, status: { state: 'complete' } };
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(host.textContent.includes('Companion 0.3.5 fixes repeated stalls after Cardmarket server errors.')).toBe(expected);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
 it('offers product-search recovery separately from capture and blocks competing runs', async () => {
   status = { installed: true, version: '0.3.4', hasSuggestionJob: true, canResumeSuggestions: true, capabilities: ['product-suggestions', 'resumable-product-search'], status: { state: 'paused', message: 'Finish verification, then resume product search.' } };
   await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));

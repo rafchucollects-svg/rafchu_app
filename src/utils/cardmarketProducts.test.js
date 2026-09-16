@@ -163,9 +163,17 @@ it('never retries verification failures or follows unsafe or looping pagination'
   await expect(findCardmarketProducts(card, async () => { throw new Error('verification'); })).rejects.toThrow('verification');
   for (const nextUrl of ['https://evil.example/', cardmarketSearchUrl(card)]) {
     let reads = 0;
-    await expect(findCardmarketProducts(card, async () => { reads++; return { candidates: [], nextUrl }; })).rejects.toThrow('pagination');
+    await expect(findCardmarketProducts(card, async () => { reads++; return { candidates: [], nextUrl }; })).rejects.toMatchObject({ code: 'search-incomplete', message: expect.stringContaining('pagination') });
     expect(reads).toBe(1);
   }
+});
+
+it('classifies the page limit as a card-level incomplete search without accepting partial candidates', async () => {
+  let reads = 0;
+  await expect(findCardmarketProducts(card, async () => ({
+    candidates: [candidate], nextUrl: `${search}&site=${++reads}`,
+  }))).rejects.toMatchObject({ code: 'search-incomplete', message: expect.stringContaining('Too many search pages') });
+  expect(reads).toBe(8);
 });
 
 it('resumes a paused fallback without rereading earlier search pages or losing candidates', async () => {

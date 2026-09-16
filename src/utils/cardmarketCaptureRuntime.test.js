@@ -86,6 +86,43 @@ it('times out an unreadable page into a resumable pause instead of an indefinite
   expect(api.tabs.remove).not.toHaveBeenCalled();
 });
 
+it('retries an explicit 503 document once and captures the confirmed product with its filters intact', async () => {
+  const card = task('Blastoise');
+  const sendMessage = api.tabs.sendMessage.getMockImplementation();
+  let failed = true;
+  api.tabs.sendMessage.mockImplementation(async (id, message) => message.action === 'ping' && failed
+    ? { ok: false, reason: 'server-error', code: '503' }
+    : sendMessage(id, message));
+  api.tabs.reload = vi.fn(async () => { failed = false; });
+  await finish(createCaptureRunner(api).run([card]));
+  expect(api.tabs.reload).toHaveBeenCalledExactlyOnceWith(10);
+  expect(api.tabs.update).not.toHaveBeenCalled();
+  expect(stored.status.state).toBe('complete');
+  expect(stored.captureJob).toBeNull();
+  expect(stored.report.captures).toMatchObject([
+    { entryId: card.entryId, inventoryKey: card.binding.inventoryKey, filteredUrl: filteredUrl(card.binding), offers: [{ offerId: 'one', price: 100 }] },
+  ]);
+});
+
+it('continues capture when verification clears after two pings without reloading the reader', async () => {
+  const card = task('Blastoise');
+  const sendMessage = api.tabs.sendMessage.getMockImplementation();
+  let pings = 0;
+  api.tabs.sendMessage.mockImplementation(async (id, message) => message.action === 'ping' && ++pings <= 2
+    ? { ok: false, reason: 'verification' }
+    : sendMessage(id, message));
+  api.tabs.reload = vi.fn(async () => {});
+  await finish(createCaptureRunner(api).run([card]));
+  expect(pings).toBe(3);
+  expect(api.tabs.reload).not.toHaveBeenCalled();
+  expect(api.tabs.update).not.toHaveBeenCalled();
+  expect(stored.status.state).toBe('complete');
+  expect(stored.captureJob).toBeNull();
+  expect(stored.report.captures).toMatchObject([
+    { entryId: card.entryId, inventoryKey: card.binding.inventoryKey, filteredUrl: filteredUrl(card.binding), offers: [{ offerId: 'one', price: 100 }] },
+  ]);
+});
+
 it('keeps cached image bytes separate from offers and preserves completed prices if photo capture fails', async () => {
   api.storage.local.get = vi.fn(async () => structuredClone(stored));
   const capturePhotos = vi.fn(async () => ({ photos: { 'https://marketplace-article-scans.s3.cardmarket.com/1001/1001.jpg': 'data:image/jpeg;base64,aGVsbG8=' } }));
