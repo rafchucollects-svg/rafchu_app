@@ -234,8 +234,11 @@ function newCardLadderItem(holding, details, now) {
   return item;
 }
 
-export function applySalesReport(items, report, now = Date.now(), bindings = {}, additions = {}, selectedHoldingIds = null, valueHoldingIds = []) {
+export function applySalesReport(items, report, now = Date.now(), bindings = {}, additions = {}, selectedHoldingIds = null, valueHoldingIds = [], options = {}) {
   validateSalesReport(report, now);
+  if (!options || typeof options !== 'object' || Array.isArray(options) || (options.updateStickerPrices !== undefined && typeof options.updateStickerPrices !== 'boolean')) throw new Error('Choose a valid CardLadder price application mode.');
+  const updateStickerPrices = options.updateStickerPrices === true;
+  if (updateStickerPrices && selectedHoldingIds === null) throw new Error('Sticker prices require an explicit checked selection.');
   if (selectedHoldingIds !== null && !Array.isArray(selectedHoldingIds)) throw new Error('Invalid selection. Reload the preview.');
   const selected = selectedHoldingIds === null ? null : new Set(selectedHoldingIds);
   if (selected && [...selected].some(id => !report.holdings.some(h => h.holdingId === id))) throw new Error('Invalid selected holding. Reload the preview.');
@@ -270,6 +273,7 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
   const imageUpdates = new Map(rows.filter(row => ['ready', 'image-only', 'no-sales'].includes(row.status) && (!selected || selected.has(row.holding.holdingId)) && !row.item.image && safeCardLadderImage(row.holding.imageUrl) && claims.get(row.item.entryId) === 1).map(row => [row.item.entryId, safeCardLadderImage(row.holding.imageUrl)]));
   return {
     updatedCount: [...updates.keys()].filter(id => !addedIds.has(id)).length,
+    stickerUpdatedCount: updateStickerPrices ? [...updates.keys()].filter(id => !addedIds.has(id)).length : 0,
     addedCount: addedIds.size, skippedAddCount, imageUpdatedCount: imageUpdates.size,
     anomalySkippedCount: rows.filter(row => row.status === 'ready' && row.statistics?.highIsAnomaly && !selected).length,
     items: merged.map(item => {
@@ -277,10 +281,12 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
       const row = updates.get(item.entryId);
       if (!row) return item;
       const usesValue = valueSelection.has(row.holding.holdingId);
-      return { ...item, gradedPrice: usesValue ? row.fallbackValue : row.high.price, gradedPriceCurrency: row.currency,
+      const price = usesValue ? row.fallbackValue : row.high.price;
+      return { ...item, gradedPrice: price, gradedPriceCurrency: row.currency,
+        ...(updateStickerPrices ? { overridePrice: price, overridePriceCurrency: row.currency } : {}),
         cardladderData: { ...item.cardladderData, holdingId: row.holding.holdingId,
           holdingIdentityKey: cardLadderIdentity(row.holding, true), inventoryIdentityKey: inventoryFingerprint(item) },
-        cardladderPricing: { method: usesValue ? 'cardladder-value' : 'highest-sale-14d', providerValue: usesValue ? row.fallbackValue : null, source: 'cardladder-browser', currency: row.currency,
+        cardladderPricing: { ...(updateStickerPrices ? { stickerUpdated: true, stickerAppliedAt: new Date(now).toISOString(), previousOverride: { overridePrice: item.overridePrice ?? null, overridePriceCurrency: item.overridePriceCurrency ?? null } } : {}), method: usesValue ? 'cardladder-value' : 'highest-sale-14d', providerValue: usesValue ? row.fallbackValue : null, source: 'cardladder-browser', currency: row.currency,
           runId: report.runId, capturedAt: report.capturedAt, startDate: report.startDate, endDate: report.endDate,
           saleCount: row.saleCount, excludedCount: row.excluded, profileUrl: row.holding.profileUrl || null,
           statistics: row.statistics ? { count: row.statistics.count, mean: row.statistics.mean, median: row.statistics.median, standardDeviation: row.statistics.standardDeviation, highIsAnomaly: row.statistics.highIsAnomaly, highAnomalyCount: row.statistics.anomalies.filter(sale => sale.direction === 'high').length, lowAnomalyCount: row.statistics.anomalies.filter(sale => sale.direction === 'low').length } : null,

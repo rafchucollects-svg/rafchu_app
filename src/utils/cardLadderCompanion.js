@@ -19,7 +19,9 @@ export function companionRequest(action, timeout = 4000) {
 
 export const autoSyncKey = uid => `rafchu-cardladder-auto:${uid}`;
 
-export async function saveCardLadderReport(db, uid, report, bindings = {}, additions = {}, selectedHoldingIds = null, automatic = false, valueHoldingIds = []) {
+export async function saveCardLadderReport(db, uid, report, bindings = {}, additions = {}, selectedHoldingIds = null, automatic = false, valueHoldingIds = [], options = {}) {
+  if (options?.updateStickerPrices === true && automatic) throw new Error('Sticker price updates require manual review.');
+  if (options?.updateStickerPrices === true && selectedHoldingIds === null) throw new Error('Sticker prices require an explicit checked selection.');
   if (automatic && valueHoldingIds.length) throw new Error('CardLadder Value requires manual review.');
   if (!uid) throw new Error('Sign in to update your Inventory.');
   return runTransaction(db, async transaction => {
@@ -29,13 +31,13 @@ export async function saveCardLadderReport(db, uid, report, bindings = {}, addit
     const data = snapshot.exists() ? snapshot.data() : {};
     const last = data.cardLadderLastSync;
     if (last && (Date.parse(last.capturedAt) > Date.parse(report.capturedAt) ||
-        (last.runId === report.runId && !Object.keys(bindings).length && !Object.keys(additions).length && selectedHoldingIds === null))) return { updatedCount: 0, addedCount: 0, alreadyApplied: true };
-    const result = applySalesReport(data.items || [], report, Date.now(), bindings, additions, selectedHoldingIds, valueHoldingIds);
+        (last.runId === report.runId && !Object.keys(bindings).length && !Object.keys(additions).length && selectedHoldingIds === null))) return { updatedCount: 0, stickerUpdatedCount: 0, addedCount: 0, alreadyApplied: true };
+    const result = applySalesReport(data.items || [], report, Date.now(), bindings, additions, selectedHoldingIds, valueHoldingIds, options);
     if (automatic && localStorage.getItem(autoSyncKey(uid)) !== 'true') throw new Error('Automatic updates paused for manual review.');
     const write = { items: result.items,
-      cardLadderLastSync: { runId: report.runId, capturedAt: report.capturedAt, appliedAt: new Date().toISOString(), updatedCount: result.updatedCount, addedCount: result.addedCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount } };
+      cardLadderLastSync: { runId: report.runId, capturedAt: report.capturedAt, appliedAt: new Date().toISOString(), updatedCount: result.updatedCount, stickerUpdatedCount: result.stickerUpdatedCount, addedCount: result.addedCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount } };
     if (snapshot.exists()) transaction.update(ref, write);
     else transaction.set(ref, write, { merge: true });
-    return { updatedCount: result.updatedCount, addedCount: result.addedCount, skippedAddCount: result.skippedAddCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount, alreadyApplied: false };
+    return { updatedCount: result.updatedCount, stickerUpdatedCount: result.stickerUpdatedCount, addedCount: result.addedCount, skippedAddCount: result.skippedAddCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount, alreadyApplied: false };
   });
 }
