@@ -199,3 +199,35 @@ it('offers product-search recovery separately from capture and blocks competing 
   expect(mocks.request).toHaveBeenCalledWith('cancel');
   expect(mocks.save).not.toHaveBeenCalled();
 });
+
+it('compares the inventory sticker and selected offer in vendor currencies without changing EUR evidence', async () => {
+  const card = { ...makeCard('Blastoise'), overridePrice: 100.2, overridePriceCurrency: 'EUR', manualPrice: 999 };
+  mocks.app = { ...mocks.app, collectionItems: [card], currency: 'USD', secondaryCurrency: 'GBP', roundUpPrices: true };
+  report = { runId: 'test', captures: [captured(card)] };
+  mocks.save.mockResolvedValue({ updatedCount: 1 });
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  const sticker = () => host.querySelector('[aria-label="Current sticker price for Blastoise"] p');
+  expect(sticker().textContent).toBe('$109.00 (£86.04)');
+  const offerLabel = host.querySelector('input[type="radio"]').closest('label');
+  expect(offerLabel.textContent).toContain('$108.70 (£85.87)');
+  expect(host.querySelector('[aria-label="Selected offer price for Blastoise"]')).toBeNull();
+  act(() => host.querySelector('input[type="radio"]').click());
+  expect(host.querySelector('[aria-label="Selected offer price for Blastoise"] p').textContent).toBe('$108.70 (£85.87)');
+  await act(async () => button('Save 1 market estimate').click());
+  expect(mocks.save.mock.calls[0][2].captures[0].offers[0]).toMatchObject({ price: 100, currency: 'EUR' });
+  expect(card).toMatchObject({ overridePrice: 100.2, overridePriceCurrency: 'EUR', manualPrice: 999 });
+  mocks.app = { ...mocks.app, currency: 'GBP', secondaryCurrency: 'GBP', roundUpPrices: false };
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(sticker().textContent).toBe('£86.04');
+  expect(host.querySelector('input[type="radio"]').closest('label').textContent).toContain('£85.87');
+  expect(host.querySelector('input[type="radio"]').closest('label').textContent).not.toContain('(');
+});
+
+it('shows the current sticker from legacy manual pricing in its stored currency', async () => {
+  const card = { ...makeCard('Blastoise'), overridePrice: undefined, manualPrice: 50, manualPriceCurrency: 'GBP' };
+  mocks.app = { ...mocks.app, collectionItems: [card], currency: 'USD', secondaryCurrency: 'EUR' };
+  report = { runId: 'test', captures: [captured(card)] };
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(host.querySelector('[aria-label="Current sticker price for Blastoise"] p').textContent).toBe('$63.29 (€58.23)');
+  expect(mocks.save).not.toHaveBeenCalled();
+});

@@ -162,3 +162,14 @@ it('explains when confirmed filters have no matching captured offers without cla
   expect(mocks.saveOffers).not.toHaveBeenCalled();
   expectNoRecapture();
 });
+
+it('displays preconfirmation listings in vendor currencies while retaining the original EUR amounts', async () => {
+  mocks.app = { ...mocks.app, currency: 'USD', secondaryCurrency: 'GBP' };
+  await render();
+  expect(listingPreview().querySelector('strong').textContent).toBe('$107.61 (£85.01)');
+  expect(host.querySelector('[aria-label="Current sticker price for sm201"] p').textContent).toBe('$217.39 (£171.74)');
+  expect(products.results[0].previews[0].offers[0]).toMatchObject({ price: 99, currency: 'EUR' });
+  expect(mocks.saveOffers).not.toHaveBeenCalled();
+  expect(mocks.saveBinding).not.toHaveBeenCalled();
+  expectNoRecapture();
+});
