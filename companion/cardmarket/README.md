@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.6
+# Rafchu Cardmarket Companion 0.3.7
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -128,7 +128,7 @@ One search now saves both suggested product links and listing previews. Each
 printing has its own preview and progress is saved before visiting its listings.
 Confirming a product and its filters selects matching offers from that local
 capture; it does not run the reader again. Alternative printings never share
-prices. Seller-photo previews stay in this browser, with a separate 4 MB cache.
+prices. Seller-photo previews stay in this browser, within the shared 4 MB photo budget.
 No match or price is saved automatically.
 
 Preview coverage records the filters actually available on Cardmarket. Listings
@@ -142,3 +142,19 @@ Modern product pages such as Ethan's Ho-Oh can omit edition/reverse controls.
 The companion accepts the explicit non-first-edition request on these pages
 and still checks each listing, instead of asking for a control Cardmarket hides.
 Temporary server-error detection is also corrected. Permissions are unchanged.
+
+## Pagination and storage recovery in 0.3.7
+
+Cardmarket can append offers before its Show more button is ready again. The
+reader waits for the rows and button to settle before requesting the next page,
+instead of treating that brief disabled state as a capture failure. Waiting is
+bounded and still responds to cancellation, navigation and verification.
+
+Listing previews are stored once. The resumable job keeps its queue and progress
+without duplicating the offers, and older saved jobs remain compatible.
+Search and confirmed-capture photos share a 4 MB budget. Older thumbnails can
+be discarded to leave room for listings and recovery status; their original
+seller-photo links remain available. Saved reports and offer evidence are kept.
+If a new preview cannot fit, that product gets a clear storage warning and the
+queue continues. A failed save retains the last durable checkpoint instead of
+repeating the same oversized write. No additional permissions are required.

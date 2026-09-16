@@ -8,13 +8,16 @@ export function cardmarketReviewReport(items, report, products, now = Date.now()
   const captures = items.flatMap(item => {
     const previous = report?.captures?.find(row => row.entryId === item.entryId);
     const row = products?.results?.find(row => row.entryId === item.entryId);
-    const previews = (row?.previews || []).map(snapshot => materializeCardmarketDiscovery(item, snapshot, item.cardmarketBinding, now)).filter(Boolean);
+    const previews = (row?.previews || []).map(snapshot => {
+      const capture = materializeCardmarketDiscovery(item, snapshot, item.cardmarketBinding, now);
+      return capture ? { ...capture, runId: snapshot.discoveryRunId || products.runId || report?.runId } : null;
+    }).filter(Boolean);
     const preview = previews.sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt))[0];
     let previousUsable = false;
     try { previousUsable = ['ready', 'no-offers'].includes(summarizeCardmarketOffers(item, previous, now).status); } catch { /* A reviewed preview may replace an invalid old capture. */ }
     if (preview && (!previousUsable || Date.parse(preview.capturedAt) >= Date.parse(previous.capturedAt))) {
       reusedPreview = true;
-      return [{ ...preview, runId: products.runId || report?.runId }];
+      return [preview];
     }
     return previous ? [{ ...previous, runId: previous.runId || report?.runId }] : [];
   });

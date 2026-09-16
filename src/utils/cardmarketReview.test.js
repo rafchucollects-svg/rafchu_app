@@ -57,3 +57,12 @@ it('never reuses incomplete, changed-product, or expired discovery snapshots', (
     expect(cardmarketReviewReport([linked], null, { ...products, results: [{ ...products.results[0], previews: [{ ...snapshot, ...changed }] }] }, now)).toBeNull();
   }
 });
+
+it('keeps the original capture run when a later search retains an earlier preview', () => {
+  const retained = { ...snapshot, discoveryRunId: 'original-discovery' };
+  const newerProducts = { ...products, runId: 'later-retry', results: [{ ...products.results[0], previews: [retained] }] };
+  const report = cardmarketReviewReport([linked], null, newerProducts, now);
+  expect(report.captures[0].runId).toBe('original-discovery');
+  const applied = applyCardmarketCaptures([linked], report.captures, [{ entryId: item.entryId, method: 'selected-offer', offerId: offer.offerId, replaceManual: false }], now, report.runId);
+  expect(applied.items[0].cardmarketPricing.runId).toBe('original-discovery');
+});
