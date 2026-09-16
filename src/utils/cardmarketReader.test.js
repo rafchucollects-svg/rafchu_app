@@ -20,6 +20,21 @@ it('handles Japanese product pages with no reverse dropdown and cannot mark unre
   document.body.innerHTML = '<h1>Performing security verification</h1>';
   expect(() => readCardmarketPage(document, filtered)).toThrow(/verification/);
 });
+it('recognizes Cardmarket’s retained final button and its separate visible result cap', () => {
+  fixture();
+  document.body.insertAdjacentHTML('beforeend', '<style>.d-none{display:none}</style><div id="loadMore"><form data-ajax-action="Product_LoadMoreArticles" data-ajax-loader="loadMore" data-ajax-callback="loadMoreCallback"><input type="hidden" id="articlePage" name="page" value="2"><button id="loadMoreButton" disabled style="display:none"><span>Show more results</span></button></form><div id="MaxResultsReachedNotice" class="d-none">We only show the first 300 articles. Please use the filters for more precise results.</div></div>');
+  expect(readCardmarketPage(document, filtered)).toMatchObject({ complete: true, moreAvailable: false, offers: [{ offerId: 'articleRow1001' }] });
+  document.querySelector('#MaxResultsReachedNotice').classList.remove('d-none');
+  expect(readCardmarketPage(document, filtered)).toMatchObject({ complete: false, moreAvailable: true });
+});
+
+it.each(['display:none', 'visibility:hidden'])('ignores an unavailable duplicate pagination control hidden by %s on its parent', style => {
+  fixture();
+  document.body.insertAdjacentHTML('beforeend', `<div style="${style}"><button>Show more results</button></div><button id="loadMoreButton" disabled>Loading…</button>`);
+  expect(readCardmarketPage(document, filtered)).toMatchObject({ complete: false, moreAvailable: true });
+  document.querySelector('#loadMoreButton').style.display = 'none';
+  expect(readCardmarketPage(document, filtered)).toMatchObject({ complete: true, moreAvailable: false });
+});
 it('rejects unapplied filters, malformed prices and restricted seller filters', () => {
   fixture(); expect(() => readCardmarketPage(document, product)).toThrow(/Apply/);
   fixture(); document.querySelector('.price-container').textContent = '100 USD'; expect(() => readCardmarketPage(document, filtered)).toThrow(/EUR/);

@@ -4,6 +4,7 @@ import { readCardmarketProducts } from './products.js';
 import { prepareCardmarketPhotos, clearCardmarketPhotos } from './photoReader.js';
 import { sameCapturePage } from './capture.js';
 import { cardmarketReaderState } from './readerState.js';
+import { readCardmarketPagination } from './offerPagination.js';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let reading = false;
 let cancelled = false;
@@ -47,17 +48,17 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
       return next;
     };
     const checkLimit = () => {
+      if (readCardmarketPagination(document).limitReached) throw pageFailure('Cardmarket only shows the first 300 offers. Narrow the filters before capture.');
       if (result.offers.length > 1000 || (!result.complete && result.offers.length >= 1000)) {
         if (preview) result.offers = result.offers.slice(0, 1000);
         throw pageFailure('More than 1,000 offers. Narrow the filters before capture.');
       }
     };
     const rows = () => JSON.stringify(result.offers);
-    const moreButton = () => [...document.querySelectorAll('button')].find(el => /Show more results/i.test(el.textContent));
+    const moreButton = () => readCardmarketPagination(document).button;
     async function readyForNextPage(previousRows = null) {
       const initialRows = rows();
-      const initialButton = moreButton();
-      const pendingResponse = previousRows !== null || initialButton?.disabled || initialButton?.getAttribute('aria-disabled') === 'true';
+      const pendingResponse = previousRows !== null || readCardmarketPagination(document).loading;
       let previous = JSON.stringify([initialRows, result.complete]);
       let stablePolls = 0;
       for (let attempt = 0; attempt < 40; attempt++) {
@@ -73,10 +74,11 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
         // AJAX can append rows before re-enabling its button. Wait for a stable
         // snapshot and ready button; never click twice while that load settles.
         // After a click or an initially disabled button, disappearance alone
-        // is not completion: the pending response must have changed the offers.
+        // is not completion: require new offers or Cardmarket's explicit end.
         // Final rows can arrive in batches while the button is absent. Require
         // 1.6 seconds of unchanged offers before accepting that terminal state.
-        if (stablePolls >= 4 && result.complete && (!pendingResponse || currentRows !== (previousRows ?? initialRows))) return null;
+        const pagination = readCardmarketPagination(document);
+        if (stablePolls >= 4 && result.complete && (!pendingResponse || pagination.exhausted || currentRows !== (previousRows ?? initialRows))) return null;
         const button = moreButton();
         if (stable && button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' &&
             (previousRows === null || currentRows !== previousRows)) return button;

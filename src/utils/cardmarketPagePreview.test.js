@@ -91,6 +91,109 @@ function paginationFixture(action, options = {}) {
   return filteredUrl.replace('language=', 'language=1').replace('isReverseHolo=', 'isReverseHolo=N').replace('isFirstEd=', 'isFirstEd=N');
 }
 
+// Sanitized structure from Cardmarket's product page. Its callback hides and
+// disables the final button; it separately reveals the 300-result cap notice.
+function sitePaginationFixture(action, options = {}) {
+  const href = paginationFixture(action, { more: true, ...options });
+  const button = document.querySelector('button'); button.id = 'loadMoreButton';
+  document.body.insertAdjacentHTML('beforeend', '<style>.d-none{display:none}</style><div id="loadMore"><form data-ajax-action="Product_LoadMoreArticles" data-ajax-loader="loadMore" data-ajax-callback="loadMoreCallback"><input type="hidden" id="articlePage" name="page" value="2"></form><div id="MaxResultsReachedNotice" class="d-none">We only show the first 300 articles. Please use the filters for more precise results.</div></div>');
+  document.querySelector('#loadMore form').append(button);
+  return href;
+}
+
+it.each(['capture', 'capture-preview'])('%s reads all 146 offers after Cardmarket hides its retained final button', async action => {
+  const href = sitePaginationFixture(action, { disabled: true });
+  document.querySelector('#loadMore').insertAdjacentHTML('beforebegin', Array.from({ length: 145 }, (_, index) => offer(index + 2)).join(''));
+  const button = document.querySelector('#loadMoreButton'); button.style.display = 'none';
+  const click = vi.fn(); button.onclick = click;
+  const api = await reader(href);
+  const result = await api.send(action, { filteredUrl: href });
+  expect(result).toMatchObject({ ok: true, data: { complete: true, moreAvailable: false } });
+  expect(result.data.offers).toHaveLength(146);
+  expect(click).not.toHaveBeenCalled();
+});
+
+it.each(['capture', 'capture-preview'])('%s settles Cardmarket’s hidden final button without clicking it again', async action => {
+  const href = sitePaginationFixture(action); const api = await reader(href); vi.useFakeTimers();
+  const button = document.querySelector('#loadMoreButton');
+  const click = vi.fn(() => { button.disabled = true; button.style.display = 'none'; button.insertAdjacentHTML('beforebegin', offer(2)); });
+  button.onclick = click;
+  const finished = vi.fn();
+  const pending = api.send(action, { filteredUrl: href }).then(result => { finished(); return result; });
+  await vi.advanceTimersByTimeAsync(1200); expect(finished).not.toHaveBeenCalled();
+  await vi.runAllTimersAsync();
+  expect(await pending).toMatchObject({ ok: true, data: { complete: true, offers: [{ offerId: 'articleRow1' }, { offerId: 'articleRow2' }] } });
+  expect(click).toHaveBeenCalledTimes(1);
+});
+
+it.each(['capture', 'capture-preview'])('%s accepts a final zero-row response only with Cardmarket’s explicit hidden disabled button', async action => {
+  const href = sitePaginationFixture(action); const api = await reader(href); vi.useFakeTimers();
+  const button = document.querySelector('#loadMoreButton');
+  const click = vi.fn(() => { button.disabled = true; button.style.display = 'none'; }); button.onclick = click;
+  const finished = vi.fn();
+  const pending = api.send(action, { filteredUrl: href }).then(result => { finished(); return result; });
+  await vi.advanceTimersByTimeAsync(1200); expect(finished).not.toHaveBeenCalled();
+  await vi.runAllTimersAsync();
+  expect(await pending).toMatchObject({ ok: true, data: { complete: true, offers: [{ offerId: 'articleRow1' }] } });
+  expect(click).toHaveBeenCalledTimes(1);
+});
+
+it.each(['capture', 'capture-preview'])('%s keeps a known Loading button pending across split response batches', async action => {
+  const href = sitePaginationFixture(action); const api = await reader(href); vi.useFakeTimers();
+  const button = document.querySelector('#loadMoreButton');
+  button.onclick = () => {
+    button.disabled = true; button.textContent = 'Loading…';
+    setTimeout(() => button.insertAdjacentHTML('beforebegin', offer(2)), 100);
+    setTimeout(() => { button.insertAdjacentHTML('beforebegin', offer(3)); button.style.display = 'none'; }, 3000);
+  };
+  const finished = vi.fn();
+  const pending = api.send(action, { filteredUrl: href }).then(result => { finished(); return result; });
+  await vi.advanceTimersByTimeAsync(2800); expect(finished).not.toHaveBeenCalled();
+  await vi.runAllTimersAsync();
+  expect(await pending).toMatchObject({ ok: true, data: { complete: true, offers: [{ offerId: 'articleRow1' }, { offerId: 'articleRow2' }, { offerId: 'articleRow3' }] } });
+});
+
+it.each(['capture', 'capture-preview'])('%s preserves incompleteness when Cardmarket reveals its 300-offer cap', async action => {
+  const href = sitePaginationFixture(action); const api = await reader(href); vi.useFakeTimers();
+  const button = document.querySelector('#loadMoreButton');
+  button.onclick = () => {
+    button.insertAdjacentHTML('beforebegin', offer(2));
+    button.disabled = true; button.style.display = 'none';
+    document.querySelector('#MaxResultsReachedNotice').classList.remove('d-none');
+  };
+  const pending = api.send(action, { filteredUrl: href }); await vi.runAllTimersAsync();
+  const result = await pending;
+  expect(result.ok).toBe(action === 'capture-preview');
+  const failure = action === 'capture-preview' ? result.data : result;
+  expect(failure.error).toMatch(/first 300 offers/);
+  if (action === 'capture-preview') expect(failure).toMatchObject({ complete: false, moreAvailable: true, offers: [{ offerId: 'articleRow1' }, { offerId: 'articleRow2' }] });
+});
+
+it.each(['capture', 'capture-preview'])('%s does not infer an empty final response from a removed button', async action => {
+  const href = sitePaginationFixture(action); const api = await reader(href); vi.useFakeTimers();
+  document.querySelector('#loadMoreButton').onclick = event => event.target.remove();
+  const pending = api.send(action, { filteredUrl: href }); await vi.runAllTimersAsync();
+  const result = await pending;
+  expect(result.ok).toBe(action === 'capture-preview');
+  const failure = action === 'capture-preview' ? result.data : result;
+  expect(failure.error).toMatch(/did not load/);
+  if (action === 'capture-preview') expect(failure.complete).toBe(false);
+});
+
+it.each(['capture', 'capture-preview'])('%s waits for a busy product pagination container to clear before completion', async action => {
+  const href = sitePaginationFixture(action); const api = await reader(href); vi.useFakeTimers();
+  const container = document.querySelector('#loadMore'), button = document.querySelector('#loadMoreButton');
+  button.onclick = () => {
+    container.setAttribute('aria-busy', 'true'); button.disabled = true; button.style.display = 'none';
+    setTimeout(() => { button.insertAdjacentHTML('beforebegin', offer(2)); container.removeAttribute('aria-busy'); }, 3000);
+  };
+  const finished = vi.fn();
+  const pending = api.send(action, { filteredUrl: href }).then(result => { finished(); return result; });
+  await vi.advanceTimersByTimeAsync(2800); expect(finished).not.toHaveBeenCalled();
+  await vi.runAllTimersAsync();
+  expect(await pending).toMatchObject({ ok: true, data: { complete: true, offers: [{ offerId: 'articleRow1' }, { offerId: 'articleRow2' }] } });
+});
+
 it.each(['capture', 'capture-preview'])('%s waits for an initially disabled Show more button', async action => {
   const href = paginationFixture(action, { more: true, disabled: true }); const api = await reader(href); vi.useFakeTimers();
   const button = document.querySelector('button'); const click = vi.fn(() => { button.insertAdjacentHTML('beforebegin', offer(2)); button.remove(); });

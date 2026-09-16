@@ -21,6 +21,7 @@ const makeCard = name => {
   return { ...card, cardmarketBinding: createCardmarketBinding(card, { productUrl: `https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/${name}-EX4`, language: 'English', condition: 'EX', finish: 'reverse', firstEdition: false, confirmed: true }) };
 };
 const captured = card => ({ entryId: card.entryId, inventoryKey: card.cardmarketBinding.inventoryKey, productUrl: card.cardmarketBinding.productUrl, source: 'cardmarket-browser', currency: 'EUR', complete: true, capturedAt: new Date().toISOString(), filters: card.cardmarketBinding, offers: [{ offerId: 'articleRow100', seller: 'Test seller', sellerType: 'Professional', price: 100, currency: 'EUR', condition: 'EX', language: 'English', finish: 'reverse', firstEdition: false, signed: false, altered: false, url: card.cardmarketBinding.productUrl }] });
+const failed = (card, patch = {}) => ({ entryId: card.entryId, inventoryKey: card.cardmarketBinding.inventoryKey, binding: structuredClone(card.cardmarketBinding), name: card.name, error: 'Cardmarket did not load the next offer page completely.', code: 'pagination-stalled', failedAt: new Date().toISOString(), ...patch });
 const button = name => [...host.querySelectorAll('button')].find(el => el.textContent === name);
 beforeEach(() => {
   vi.useFakeTimers(); globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -238,4 +239,79 @@ it('shows the current sticker from legacy manual pricing in its stored currency'
   await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
   expect(host.querySelector('[aria-label="Current sticker price for Blastoise"] p').textContent).toBe('$63.29 (€58.23)');
   expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('shows a failed card as the queue continues and keeps completed offers available for explicit application', async () => {
+  mocks.save.mockResolvedValue({ updatedCount: 1 });
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  act(() => host.querySelector('input[type="radio"]').click());
+  report.errors = [failed(mocks.app.collectionItems[1])];
+  status = { ...status, reportRevision: 'test:1:1:1', capabilities: ['capture-pagination-recovery'], status: { state: 'running', message: 'Continuing capture.' } };
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  const failedCard = host.querySelectorAll('article')[1];
+  expect(failedCard.querySelector('[role="alert"]').textContent).toContain('Cardmarket did not load the next offer page completely. Current price preserved.');
+  expect(failedCard.textContent).not.toContain('Waiting for this card.');
+  expect(failedCard.querySelector('[aria-label="Current sticker price for Charizard"] p').textContent).toBe('€120.00');
+  expect(button('Retry 1 failed matched card')).toBeUndefined();
+  expect(host.querySelector('input[type="radio"]').checked).toBe(true);
+  expect(mocks.save).not.toHaveBeenCalled();
+  idle();
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(button('Retry 1 failed matched card').disabled).toBe(false);
+  await act(async () => button('Save 1 market estimate').click());
+  expect(mocks.save).toHaveBeenCalledWith(mocks.app.db, 'test', report, [{ entryId: 'Blastoise', method: 'selected-offer', offerId: 'articleRow100', replaceManual: false }]);
+  expect(mocks.app.collectionItems.map(card => card.overridePrice)).toEqual([120, 120]);
+});
+
+it('retries only failed visible cards with their current confirmed bindings and keeps completed offer choices', async () => {
+  idle();
+  const [success, retry] = mocks.app.collectionItems;
+  const hidden = { ...makeCard('Hidden'), overridePrice: undefined };
+  const staleIdentity = makeCard('Stale');
+  const rematched = makeCard('Rematched');
+  const unconfirmed = makeCard('Unconfirmed');
+  unconfirmed.cardmarketBinding.confirmed = false;
+  mocks.app.collectionItems = [success, retry, hidden, staleIdentity, rematched, unconfirmed];
+  report.errors = [failed(retry), failed(hidden), failed(staleIdentity, { inventoryKey: 'old-identity' }),
+    failed(rematched, { binding: { ...rematched.cardmarketBinding, productUrl: retry.cardmarketBinding.productUrl } }), failed(unconfirmed),
+    failed(retry, { entryId: 'missing-card' })];
+  status.capabilities = ['capture-pagination-recovery'];
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  act(() => host.querySelector('input[type="radio"]').click());
+  expect(host.querySelectorAll('article [role="alert"]')).toHaveLength(1);
+  await act(async () => button('Retry 1 failed matched card').click());
+  expect(mocks.request).toHaveBeenCalledWith('retry-failed', [{ entryId: retry.entryId, name: retry.name, binding: retry.cardmarketBinding }]);
+  expect(host.querySelector('input[type="radio"]').checked).toBe(true);
+  expect(button('Save 1 market estimate').disabled).toBe(false);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['an expired failure', card => failed(card, { failedAt: new Date(Date.now() - 86400001).toISOString() })],
+  ['a future failure', card => failed(card, { failedAt: new Date(Date.now() + 300001).toISOString() })],
+  ['missing identity evidence', card => failed(card, { binding: undefined })],
+  ['changed product filters', card => failed(card, { binding: { ...card.cardmarketBinding, condition: 'NM' } })],
+])('ignores %s when displaying and retrying capture errors', async (_label, errorFor) => {
+  idle(); report.errors = [errorFor(mocks.app.collectionItems[1])];
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(host.querySelector('article [role="alert"]')).toBeNull();
+  expect(button('Retry 1 failed matched card')).toBeUndefined();
+});
+
+it('ignores failures from a previous run while status is loading the next report', async () => {
+  idle(); report.errors = [failed(mocks.app.collectionItems[1])];
+  status.runId = 'new-run';
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(host.querySelector('article [role="alert"]')).toBeNull();
+  expect(button('Retry 1 failed matched card')).toBeUndefined();
+});
+
+it.each([
+  [true, ['bounded-discovery-storage'], true],
+  [true, ['capture-pagination-recovery'], false],
+  [false, [], false],
+])('shows the 0.3.8 pagination recovery update hint for installed=%s capabilities=%j', async (installed, capabilities, expected) => {
+  status = { installed, capabilities, status: { state: 'complete' } };
+  await act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  expect(host.textContent.includes('Companion 0.3.8 retries a stalled offer page')).toBe(expected);
 });

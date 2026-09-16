@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.7
+# Rafchu Cardmarket Companion 0.3.8
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -158,3 +158,18 @@ seller-photo links remain available. Saved reports and offer evidence are kept.
 If a new preview cannot fit, that product gets a clear storage warning and the
 queue continues. A failed save retains the last durable checkpoint instead of
 repeating the same oversized write. No additional permissions are required.
+
+## Completed offer pages and recovery in 0.3.8
+
+Cardmarket hides and disables its Show more button when the last offer page has
+loaded. The reader now recognizes that completed state, including Ethan’s Ho-Oh
+ex, and does not wait for a hidden button. A visible 300-article limit notice
+still means the capture is incomplete; narrow the confirmed filters before retrying.
+
+A pagination failure retries the confirmed product once from a fresh page. If it
+still fails, the queue records the card for review and continues to the remaining
+products. Completed captures and current inventory prices are preserved. Verification
+and changed product/filter pages still pause for attention. After the queue finishes,
+Retry failed cards captures only the affected products and retains successful
+results. Reload the existing extension, refresh Rafchu and the Cardmarket reader,
+then Resume capture to continue a paused 0.3.7 queue.

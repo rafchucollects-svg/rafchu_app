@@ -1,4 +1,5 @@
 import { parseCardmarketEuro, safeCardmarketImage, safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
+import { readCardmarketPagination } from './offerPagination.js';
 const text = el => (el?.innerText ?? el?.textContent ?? '').trim();
 const langs = new Set(['English', 'Japanese', 'French', 'German', 'Spanish', 'Italian', 'Portuguese', 'Korean', 'T-Chinese', 'S-Chinese']);
 const conditions = { '1': 'MT', '2': 'NM', '3': 'EX', '4': 'GD', '5': 'LP', '6': 'PL', '7': 'PO' };
@@ -44,10 +45,10 @@ function readOffers(root, href, productUrl) {
 }
 
 function commonCapture(root, href, page, offers) {
-  const more = [...root.querySelectorAll('button')].find(el => /Show more results/i.test(text(el)));
+  const pagination = readCardmarketPagination(root);
   return { source: 'cardmarket-browser', currency: 'EUR', productUrl: page.productUrl, productTitle: page.title,
     productImageUrl: page.productImageUrl, filteredUrl: href, capturedAt: new Date().toISOString(),
-    offers, complete: !more, moreAvailable: Boolean(more) };
+    offers, complete: pagination.complete, moreAvailable: !pagination.complete };
 }
 
 export function readCardmarketPage(root, href) {
