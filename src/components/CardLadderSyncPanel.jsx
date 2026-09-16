@@ -19,6 +19,9 @@ export function CardLadderSyncPanel() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [updateStickerPrices, setUpdateStickerPrices] = useState(true);
+  const [savingPrices, setSavingPrices] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState(null);
   const [auto, setAuto] = useState(() => Boolean(user?.uid && localStorage.getItem(autoSyncKey(user.uid)) === 'true'));
   const refresh = useCallback(async () => {
     try { setStatus(await companionRequest('status')); } catch { setStatus({ installed: false }); }
@@ -41,7 +44,7 @@ export function CardLadderSyncPanel() {
     if (!data) throw new Error('No report yet. Run Sync Inventory first.');
     // Manual review takes control across this browser's Rafchu tabs.
     if (user?.uid) { localStorage.setItem(autoSyncKey(user.uid), 'false'); window.dispatchEvent(new Event('cardladder-preference')); }
-    setAuto(false); setReport(data); setBindings({}); setAdditions({}); setExcluded({}); setValueChoices({});
+    setAuto(false); setReport(data); setBindings({}); setAdditions({}); setExcluded({}); setValueChoices({}); setUpdateStickerPrices(true); setSaveFeedback(null);
   };
   const selectedAdditions = Object.fromEntries(Object.entries(additions).filter(([id]) => { const row = preview.rows.find(row => row.holding.holdingId === id); return row && !isExcluded(row); }));
   const addCount = Object.keys(selectedAdditions).length;
@@ -49,6 +52,25 @@ export function CardLadderSyncPanel() {
   const needsCurrencyUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 1));
   const legacyCurrencyFailure = report?.schemaVersion === 1 && Array.isArray(report.holdings) && report.holdings.some(holding =>
     holding?.complete !== true && typeof holding?.error === 'string' && holding.error.includes('A sale has an unreadable date, currency, price, or link.'));
+  const priceAction = updateStickerPrices ? `Update ${ready.length} sticker ${ready.length === 1 ? 'price' : 'prices'}` : `Save ${ready.length} market ${ready.length === 1 ? 'estimate' : 'estimates'}`;
+  const applyLabel = [ready.length || (!addCount && !imageOnly.length) ? priceAction : null,
+    addCount ? `${ready.length ? 'add' : 'Add'} ${addCount} new ${addCount === 1 ? 'card' : 'cards'}` : null,
+    imageOnly.length ? `${ready.length || addCount ? 'fill' : 'Fill'} ${imageOnly.length} missing ${imageOnly.length === 1 ? 'image' : 'images'}` : null].filter(Boolean).join(' and ');
+  const saveSelected = async () => {
+    if (busy || (!ready.length && !addCount && !imageOnly.length) || !user?.uid) return;
+    setBusy(true); setSavingPrices(true); setSaveFeedback(null); setError(''); setMessage('');
+    try {
+      const selectedIds = [...ready.map(row => row.holding.holdingId), ...imageOnly.map(row => row.holding.holdingId), ...Object.keys(selectedAdditions)];
+      const result = await saveCardLadderReport(db, user.uid, report, bindings, selectedAdditions, selectedIds, false,
+        preview.rows.filter(row => usesValue(row) && selectedIds.includes(row.holding.holdingId)).map(row => row.holding.holdingId), { updateStickerPrices });
+      const priceCount = result.updatedCount || 0;
+      const stickerCount = result.stickerUpdatedCount || 0;
+      setSaveFeedback({ type: 'success', message: result.alreadyApplied ? 'This capture was already applied.'
+        : `${updateStickerPrices ? `Updated ${stickerCount} existing sticker ${stickerCount === 1 ? 'price' : 'prices'} and saved ${priceCount} market ${priceCount === 1 ? 'estimate' : 'estimates'}.` : `Saved ${priceCount} market ${priceCount === 1 ? 'estimate' : 'estimates'}. Your manual sticker prices are unchanged.`}${result.addedCount ? ` Added ${result.addedCount} new ${result.addedCount === 1 ? 'card' : 'cards'}.` : ''}${result.imageUpdatedCount ? ` Filled ${result.imageUpdatedCount} missing ${result.imageUpdatedCount === 1 ? 'image' : 'images'}.` : ''}${result.skippedAddCount ? ` Skipped ${result.skippedAddCount} additions already in Inventory.` : ''} Existing quantities and purchase costs were preserved.` });
+      setAdditions({});
+    } catch (err) { setSaveFeedback({ type: 'error', message: err.message || 'Could not save your selected prices. Your selections are kept; please retry.' }); }
+    finally { setBusy(false); setSavingPrices(false); }
+  };
 
   return <section className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4" aria-label="CardLadder price sync">
     <h3 className="font-semibold text-emerald-950">Highest sale · last 14 days</h3>
@@ -116,6 +138,7 @@ export function CardLadderSyncPanel() {
           const previousDisplay = convertSyncAmount(row.previousPrice, row.previousCurrency, currency);
           const change = proposedDisplay != null && previousDisplay != null ? proposedDisplay - previousDisplay : null;
           const stickerPrice = row.item ? formatSyncStickerPrice(row.item, displayPreferences) : 'Not linked';
+          const hasStickerOverride = row.item?.overridePrice != null && !Number.isNaN(Number(row.item.overridePrice));
           const addition = additions[id];
           const purchaseCost = addition?.buyPrice === '' ? '' : addition?.buyPriceCurrency === currency ? addition?.buyPrice : convertSyncAmount(addition?.buyPrice, addition?.buyPriceCurrency, currency)?.toFixed(2) ?? '';
           return <div className={`rounded-xl border bg-white p-4 text-sm ${checked ? 'border-emerald-200' : 'border-slate-200'}`} key={id}>
@@ -130,6 +153,7 @@ export function CardLadderSyncPanel() {
             <div className="rounded-lg bg-emerald-50 p-2.5"><p className="text-xs text-emerald-900">14-day high</p><p className="mt-1 text-lg font-semibold tabular-nums text-emerald-950">{row.high ? money(row.high.price) : !row.holding.complete ? 'Unavailable' : 'No recent sales'}</p><p className="text-xs text-emerald-900">{row.high ? `${row.saleCount} eligible ${row.saleCount === 1 ? 'sale' : 'sales'}` : row.status === 'incomplete' || !row.holding.complete ? 'Capture incomplete' : usesValue(row) ? 'CardLadder Value selected below' : additions[id] ? 'Added without a price' : 'Price stays unchanged'}</p></div>
             <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs text-slate-600">Market estimate change</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{change == null ? '—' : `${change > 0 ? '+' : ''}${money(change, currency)}`}</p></div>
           </div>
+          {updateStickerPrices && ready.includes(row) && <p className="mb-2 text-xs font-medium text-amber-900">New sticker price: {formatSyncStickerPrice({ ...row.item, overridePrice: proposedPrice, overridePriceCurrency: row.currency }, displayPreferences)} when you update selected sticker prices.</p>}
           <p className={`text-xs font-medium ${checked && (row.status === 'unmatched' || row.status === 'ambiguous') && !additions[id] ? 'text-amber-800' : 'text-slate-600'}`}>{isExcluded(row) ? row.statistics?.highIsAnomaly ? 'Unusual high — unchecked until you review it' : 'Excluded from this save' : additions[id] ? 'Add as new card' : usesValue(row) && row.item && row.status !== 'ambiguous' ? 'Use CardLadder Value · ready' : labels[row.status]}</p>
           {!row.high && row.holding.complete && <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
             <p className="text-xs text-blue-900">CardLadder Value · current provider estimate</p>
@@ -162,7 +186,10 @@ export function CardLadderSyncPanel() {
               {row.statistics.anomalies.length > 20 && <p className="mt-2">Showing the first 20 of {row.statistics.anomalies.length} flagged sales.</p>}
             </details>
           </div>}
-          {row.locked && <p className="text-xs text-amber-800">Your current sticker price ({stickerPrice}) remains active. Market-estimate updates do not replace it.</p>}
+          {row.locked && <p className="text-xs text-amber-800">{updateStickerPrices && ready.includes(row)
+            ? `Your current sticker price (${stickerPrice}) will be replaced by the selected price when you apply it.`
+            : hasStickerOverride ? `Your current sticker price (${stickerPrice}) remains unchanged with this selection.`
+              : 'Without a sticker override, the sticker price follows the market estimate.'}</p>}
           {row.holding.error && <p className="text-xs text-amber-800">{row.holding.error}</p>}
           {(row.status === 'unmatched' || row.status === 'ambiguous' || bindings[row.holding.holdingId]) && <label className="mt-2 block text-xs">Choose an existing card, or add it if it is missing:
             <select aria-label={`Link ${row.holding.name} ${row.holding.holdingId}`} className="mt-1 w-full rounded border p-2" value={additions[row.holding.holdingId] ? '__new__' : bindings[row.holding.holdingId]?.entryId || ''} onChange={event => {
@@ -185,12 +212,16 @@ export function CardLadderSyncPanel() {
           </div>}
         </div>; })}
       </div>
-      <Button className="mt-3" size="sm" disabled={busy || (!ready.length && !addCount && !imageOnly.length) || !user?.uid} onClick={() => action(async () => {
-        const selectedIds = [...ready.map(row => row.holding.holdingId), ...imageOnly.map(row => row.holding.holdingId), ...Object.keys(selectedAdditions)];
-        const result = await saveCardLadderReport(db, user.uid, report, bindings, selectedAdditions, selectedIds, false, preview.rows.filter(row => usesValue(row) && selectedIds.includes(row.holding.holdingId)).map(row => row.holding.holdingId));
-        setMessage(result.alreadyApplied ? 'This capture was already applied.' : `Updated ${result.updatedCount} ${result.updatedCount === 1 ? 'price' : 'prices'} and added ${result.addedCount} Inventory ${result.addedCount === 1 ? 'card' : 'cards'}.${result.imageUpdatedCount ? ` Filled ${result.imageUpdatedCount} missing ${result.imageUpdatedCount === 1 ? 'image' : 'images'}.` : ''}${result.skippedAddCount ? ` Skipped ${result.skippedAddCount} additions already in Inventory.` : ''} Existing quantities and purchase costs were preserved.`);
-        setAdditions({});
-      })}>Apply {ready.length} price {ready.length === 1 ? 'update' : 'updates'}{addCount ? ` and add ${addCount} new ${addCount === 1 ? 'card' : 'cards'}` : ''}{imageOnly.length ? ` and ${imageOnly.length} ${imageOnly.length === 1 ? 'image' : 'images'}` : ''}</Button>
+      <section aria-label="Apply selected CardLadder prices" aria-busy={savingPrices} className="mt-4 border-t border-emerald-200 pt-3">
+        <fieldset disabled={busy} className="space-y-2 text-sm"><legend className="mb-2 font-semibold">Apply selected prices to</legend>
+          <label className="flex items-center gap-2"><input type="radio" name="cardladder-price-target" checked={updateStickerPrices} onChange={() => { setUpdateStickerPrices(true); setSaveFeedback(null); }} />Sticker prices and market estimates</label>
+          <label className="flex items-center gap-2"><input type="radio" name="cardladder-price-target" checked={!updateStickerPrices} onChange={() => { setUpdateStickerPrices(false); setSaveFeedback(null); }} />Market estimates only</label>
+        </fieldset>
+        <p className="mt-2 text-xs text-slate-600">{updateStickerPrices ? 'Selected recommendations replace your current sticker prices and update market estimates. Priced new cards also receive the selected sticker price.' : 'Selected recommendations update market estimates. Manual sticker prices stay unchanged; suggested stickers still follow market estimates.'} Automatic sync always preserves manual sticker prices.</p>
+        <Button className="mt-3" size="sm" disabled={busy || (!ready.length && !addCount && !imageOnly.length) || !user?.uid} onClick={saveSelected}>{savingPrices ? 'Saving selected prices…' : applyLabel}</Button>
+        {savingPrices && <p className="mt-2 text-sm text-emerald-800" role="status">Saving your selected prices…</p>}
+        {saveFeedback && <p className={`mt-2 rounded-lg p-3 text-sm ${saveFeedback.type === 'error' ? 'bg-red-50 text-red-800' : 'bg-emerald-100 text-emerald-900'}`} role={saveFeedback.type === 'error' ? 'alert' : 'status'}>{saveFeedback.message}</p>}
+      </section>
     </div>}
   </section>;
 }

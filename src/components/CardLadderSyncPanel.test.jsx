@@ -20,7 +20,7 @@ beforeEach(() => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   mocks.items = [{ entryId: 'owned', name: 'Lugia V', set: 'Silver Tempest', number: '186', isGraded: true, gradingCompany: 'PSA', grade: '10', gradedPrice: 1500, gradedPriceCurrency: 'USD' }];
   mocks.preferences = { currency: 'EUR', secondaryCurrency: null, roundUpPrices: false };
-  mocks.save.mockReset(); mocks.save.mockResolvedValue({ updatedCount: 1, addedCount: 0 }); mocks.request.mockReset();
+  mocks.save.mockReset(); mocks.save.mockResolvedValue({ updatedCount: 1, stickerUpdatedCount: 1, addedCount: 0 }); mocks.request.mockReset();
 });
 
 it.each(['1.0.4', '1.0.9', '0.9.0'])('shows a download and reload instruction for legacy companion %s', async version => {
@@ -65,7 +65,7 @@ it('explains that a retained failed legacy report still needs a fresh capture af
   expect(host.querySelector('time').dateTime).toBe(report.capturedAt);
   expect(host.textContent).toContain('EUR per card');
   expect(host.textContent).toContain('Source prices were recorded in USD · legacy USD report');
-  expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Apply 0 price updates').disabled).toBe(true);
+  expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Update 0 sticker prices').disabled).toBe(true);
   expect(mocks.save).not.toHaveBeenCalled();
   expect(mocks.request).not.toHaveBeenCalledWith('start');
 });
@@ -80,7 +80,7 @@ it('keeps valid legacy USD reports available for explicit application without a 
   expect(host.querySelector('time').dateTime).toBe(report.capturedAt);
   expect(host.textContent).toContain('EUR per card');
   expect(host.textContent).toContain('Source prices were recorded in USD · legacy USD report');
-  const apply = [...host.querySelectorAll('button')].find(button => button.textContent === 'Apply 1 price update');
+  const apply = [...host.querySelectorAll('button')].find(button => button.textContent === 'Update 1 sticker price');
   expect(apply.disabled).toBe(false);
   expect(mocks.save).not.toHaveBeenCalled();
   await act(async () => apply.click());
@@ -123,7 +123,7 @@ it('shows the actual rounded inventory sticker beside market prices and follows 
   expect(amountBeside('Current market estimate')).toBe(displayed(1185, 1380, 'GBP', 'EUR'));
   expect(amountBeside('14-day high')).toBe(displayed(948, 1104, 'GBP', 'EUR'));
   expect(amountBeside('Market estimate change')).toBe(displayed(-237, -276, 'GBP', 'EUR'));
-  expect(host.textContent).toContain(`Your current sticker price (${displayed(201, 200.25 / 0.79 * 0.92, 'GBP', 'EUR')}) remains active`);
+  expect(host.textContent).toContain(`Your current sticker price (${displayed(201, 200.25 / 0.79 * 0.92, 'GBP', 'EUR')}) will be replaced`);
   expect(host.textContent).toContain(`View ${displayed(948, 1104, 'GBP', 'EUR')} sale`);
   mocks.preferences = { currency: 'USD', secondaryCurrency: 'GBP', roundUpPrices: false };
   await act(async () => root.render(<CardLadderSyncPanel />));
@@ -131,7 +131,7 @@ it('shows the actual rounded inventory sticker beside market prices and follows 
   expect(amountBeside('14-day high')).toBe(displayed(1200, 948, 'USD', 'GBP'));
   expect(report).toEqual(original);
   expect(mocks.save).not.toHaveBeenCalled();
-  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Apply 1 price update').click());
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Update 1 sticker price').click());
   expect(mocks.save.mock.calls[0][2]).toEqual(original);
   expect(mocks.items[0].overridePrice).toBe(200.25);
 });
@@ -170,7 +170,7 @@ it('converts the optional provider estimate without changing the original value 
   const selectValue = host.querySelector('[aria-label="Use CardLadder Value for Lugia V one"]');
   act(() => selectValue.click());
   expect(amountBeside('Market estimate change')).toBe(displayed(-230, -197.5));
-  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Apply 1 price update').click());
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Update 1 sticker price').click());
   expect(mocks.save.mock.calls[0][2].holdings[0]).toMatchObject({ cardLadderValue: 1250, cardLadderValueCurrency: 'USD' });
   expect(mocks.save.mock.calls[0][7]).toEqual(['one']);
 });
@@ -193,6 +193,78 @@ it('keeps purchase-cost input in the selected vendor currency while preserving i
   await act(async () => root.render(<CardLadderSyncPanel />));
   expect(input.value).toBe('92.00');
   expect(input.closest('label').textContent).toContain('Purchase cost per card (EUR, optional)');
-  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent.startsWith('Apply ') && button.textContent.includes('add 1 new card')).click());
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Add 1 new card').click());
   expect(mocks.save.mock.calls[0][4]).toMatchObject({ one: { buyPrice: '79', buyPriceCurrency: 'GBP' } });
+});
+
+const applyFooter = () => host.querySelector('[aria-label="Apply selected CardLadder prices"]');
+const mode = label => [...applyFooter().querySelectorAll('label')].find(element => element.textContent === label).querySelector('input');
+
+it('defaults to explicit sticker updates and can apply stickers from the same report after a market-only save', async () => {
+  mocks.items[0].overridePrice = 2000;
+  mocks.items[0].overridePriceCurrency = 'EUR';
+  const report = legacyReport();
+  await loadReport(report);
+  expect(mode('Sticker prices and market estimates').checked).toBe(true);
+  expect(applyFooter().querySelector('button').textContent).toBe('Update 1 sticker price');
+  expect(host.textContent).toContain(`New sticker price: ${formatCurrency(1104, 'EUR')}`);
+  expect(mocks.save).not.toHaveBeenCalled();
+  act(() => mode('Market estimates only').click());
+  expect(applyFooter().querySelector('button').textContent).toBe('Save 1 market estimate');
+  expect(host.textContent).not.toContain('New sticker price:');
+  expect(host.textContent).toContain('remains unchanged with this selection');
+  mocks.save.mockResolvedValueOnce({ updatedCount: 1, stickerUpdatedCount: 0, addedCount: 0 });
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(mocks.save.mock.calls[0][8]).toEqual({ updateStickerPrices: false });
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Saved 1 market estimate. Your manual sticker prices are unchanged.');
+  act(() => mode('Sticker prices and market estimates').click());
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(mocks.save.mock.calls[1][8]).toEqual({ updateStickerPrices: true });
+  expect(mocks.save.mock.calls[1][2]).toBe(report);
+  expect(mocks.save.mock.calls[1][5]).toEqual(['one']);
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Updated 1 existing sticker price and saved 1 market estimate.');
+});
+
+it('shows saving and failed-save feedback beside the action without losing the selected price or mode', async () => {
+  let failSave;
+  mocks.save.mockImplementationOnce(() => new Promise((_resolve, reject) => { failSave = reject; }));
+  await loadReport(legacyReport());
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(applyFooter().getAttribute('aria-busy')).toBe('true');
+  expect(applyFooter().querySelector('button').textContent).toBe('Saving selected prices…');
+  expect(applyFooter().querySelector('fieldset').disabled).toBe(true);
+  await act(async () => failSave(new Error('Permission denied. Please retry.')));
+  expect(applyFooter().querySelector('[role="alert"]').textContent).toBe('Permission denied. Please retry.');
+  expect(host.querySelector('[aria-label="Include Lugia V one"]').checked).toBe(true);
+  expect(mode('Sticker prices and market estimates').checked).toBe(true);
+  expect(applyFooter().querySelector('button').disabled).toBe(false);
+  expect(applyFooter().querySelector('button').textContent).toBe('Update 1 sticker price');
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+});
+
+it('counts only eligible prices as sticker updates and labels image-only work separately', async () => {
+  const report = legacyReport();
+  const imageCard = { ...mocks.items[0], entryId: 'image-card', name: 'Blastoise', number: '4', set: 'Expedition Base Set' };
+  const failedCard = { ...mocks.items[0], entryId: 'failed-card', name: 'Eevee', number: '97', set: 'BW Promos' };
+  mocks.items.push(imageCard, failedCard);
+  report.holdings.push({ ...report.holdings[0], holdingId: 'image', name: imageCard.name, set: imageCard.set, number: imageCard.number, imageUrl: 'https://d1htnxwo4o0jhw.cloudfront.net/blastoise.jpg', sales: [] },
+    { ...report.holdings[0], holdingId: 'failed', name: failedCard.name, set: failedCard.set, number: failedCard.number, complete: false, sales: [], error: 'Capture interrupted.' });
+  await loadReport(report);
+  expect(applyFooter().querySelector('button').textContent).toBe('Update 1 sticker price and fill 1 missing image');
+  expect(host.querySelector('[aria-label="Include Eevee failed"]').disabled).toBe(true);
+  mocks.save.mockResolvedValueOnce({ updatedCount: 1, stickerUpdatedCount: 1, imageUpdatedCount: 1, addedCount: 0 });
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(mocks.save.mock.calls[0][5]).toEqual(['one', 'image']);
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Updated 1 existing sticker price and saved 1 market estimate. Filled 1 missing image.');
+});
+
+it('does not promise to preserve a legacy manual field that does not control the graded sticker', async () => {
+  mocks.items[0] = { ...mocks.items[0], manualPrice: 2000, manualPriceCurrency: 'EUR' };
+  await loadReport(legacyReport());
+  expect(amountBeside('Current sticker price')).toBe(formatCurrency(1380, 'EUR'));
+  act(() => mode('Market estimates only').click());
+  expect(host.textContent).toContain('Without a sticker override, the sticker price follows the market estimate.');
+  expect(host.textContent).not.toContain(`Your current sticker price (${formatCurrency(1380, 'EUR')}) remains unchanged with this selection.`);
+  expect(applyFooter().querySelector('button').textContent).toBe('Save 1 market estimate');
+  expect(mocks.save).not.toHaveBeenCalled();
 });

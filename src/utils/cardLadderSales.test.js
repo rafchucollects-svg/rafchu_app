@@ -261,3 +261,85 @@ describe('explicit CardLadder Value fallback', () => {
     expect(readCollectionRows(document, undefined, 'USD')[0].cardLadderValue).toBeNull();
   });
 });
+
+describe('explicit CardLadder sticker application', () => {
+  const mode = { updateStickerPrices: true };
+  const checked = [holding.holdingId];
+  const apply = (items, input, selection = checked, values = [], additions = {}) => applySalesReport(items, input, now, {}, additions, selection, values, mode);
+
+  it('updates the selected actual sticker and market estimate in the captured source currency', () => {
+    const original = { ...item, overridePrice: 1900, overridePriceCurrency: 'EUR', manualPrice: 1800, manualPriceCurrency: 'GBP' };
+    const input = report([sale(1525, '2026-08-29')]);
+    const result = apply([original], input);
+    expect(result).toMatchObject({ updatedCount: 1, stickerUpdatedCount: 1, addedCount: 0 });
+    expect(result.items[0]).toMatchObject({ gradedPrice: 1525, gradedPriceCurrency: 'USD', overridePrice: 1525, overridePriceCurrency: 'USD', manualPrice: 1800, manualPriceCurrency: 'GBP', quantity: 3, buyPrice: 600,
+      cardladderPricing: { currency: 'USD', stickerUpdated: true, stickerAppliedAt: new Date(now).toISOString(), previousOverride: { overridePrice: 1900, overridePriceCurrency: 'EUR' }, highSale: { price: 1525, currency: 'USD' } } });
+    expect(original.overridePrice).toBe(1900);
+    expect(input.holdings[0].sales[0].currency).toBe('USD');
+  });
+
+  it('preserves old market-only behavior by default and when explicitly requested', () => {
+    const input = report([sale(1525, '2026-08-29')]);
+    for (const options of [undefined, { updateStickerPrices: false }]) {
+      const result = applySalesReport([item], input, now, {}, {}, checked, [], options);
+      expect(result).toMatchObject({ stickerUpdatedCount: 0, updatedCount: 1, items: [{ gradedPrice: 1525, overridePrice: 1700 }] });
+      expect(result.items[0].cardladderPricing).not.toHaveProperty('previousOverride');
+    }
+  });
+
+  it('requires explicit checked selection and a boolean sticker mode', () => {
+    const input = report([sale(1525, '2026-08-29')]);
+    expect(() => apply([item], input, null)).toThrow(/explicit checked selection/);
+    for (const options of [null, true, [], { updateStickerPrices: 'true' }]) {
+      expect(() => applySalesReport([item], input, now, {}, {}, checked, [], options)).toThrow(/application mode/);
+    }
+    expect(apply([item], input, [])).toMatchObject({ stickerUpdatedCount: 0, items: [item] });
+  });
+
+  it('does not change stickers for incomplete, no-sale, image-only, unmatched, or ambiguous rows', () => {
+    const incomplete = report([sale(1525, '2026-08-29')]); incomplete.holdings[0].complete = false;
+    const imageOnly = report([]); imageOnly.holdings[0].imageUrl = 'https://d1htnxwo4o0jhw.cloudfront.net/cert/abcdef/example.jpg';
+    for (const input of [incomplete, report([]), imageOnly]) {
+      const result = apply([item], input);
+      expect(result.stickerUpdatedCount).toBe(0);
+      expect(result.items[0].overridePrice).toBe(item.overridePrice);
+      expect(result.items[0].gradedPrice).toBe(item.gradedPrice);
+    }
+    const input = report([sale(1525, '2026-08-29')]);
+    const changed = { ...item, grade: '9' };
+    expect(apply([changed], input).items).toEqual([changed]);
+    const twin = { ...item, entryId: 'twin' };
+    expect(apply([item, twin], input)).toMatchObject({ stickerUpdatedCount: 0, items: [item, twin] });
+  });
+
+  it('sets an opted-in provider fallback as sticker but never chooses it automatically', () => {
+    const input = report([], { holdings: [{ ...holding, cardLadderValue: 1450, cardLadderValueCurrency: 'USD' }] });
+    expect(apply([item], input)).toMatchObject({ stickerUpdatedCount: 0, items: [item] });
+    expect(apply([item], input, checked, checked)).toMatchObject({ stickerUpdatedCount: 1, items: [{ overridePrice: 1450, overridePriceCurrency: 'USD', gradedPrice: 1450, cardladderPricing: { method: 'cardladder-value' } }] });
+  });
+
+  it('sets a sticker on priced additions without counting them as existing updates', () => {
+    const additions = { [holding.holdingId]: { quantity: 2, buyPrice: '600', buyPriceCurrency: 'EUR' } };
+    const result = apply([], report([sale(1525, '2026-08-29')]), checked, [], additions);
+    expect(result).toMatchObject({ addedCount: 1, updatedCount: 0, stickerUpdatedCount: 0, items: [{ overridePrice: 1525, overridePriceCurrency: 'USD', quantity: 2, buyPrice: 600, buyPriceCurrency: 'EUR', cardladderPricing: { previousOverride: { overridePrice: null, overridePriceCurrency: null } } }] });
+    expect(apply([], report([]), checked, [], additions).items[0]).not.toHaveProperty('overridePrice');
+    const fallback = report([], { holdings: [{ ...holding, cardLadderValue: 1450, cardLadderValueCurrency: 'USD' }] });
+    expect(apply([], fallback, checked, checked, additions).items[0]).toMatchObject({ overridePrice: 1450, overridePriceCurrency: 'USD' });
+  });
+
+  it('keeps explicit exclusion of anomalous rows and only applies a flagged high when checked', () => {
+    const input = report([100, 100, 100, 100, 1000].map((price, i) => sale(price, '2026-08-29', `anomaly-${i}`)));
+    expect(buildSalesPreview([item], input, now)[0].statistics.highIsAnomaly).toBe(true);
+    expect(apply([item], input, [])).toMatchObject({ stickerUpdatedCount: 0, items: [item] });
+    expect(apply([item], input)).toMatchObject({ stickerUpdatedCount: 1, items: [{ overridePrice: 1000 }] });
+  });
+
+  it('does not change unselected cards when other cards have applicable recommendations', () => {
+    const otherHolding = { ...holding, holdingId: 'other', name: 'Umbreon V', number: '189', sales: [{ ...sale(900, '2026-08-29'), title: 'Umbreon V 189 PSA 10' }] };
+    const other = { ...item, entryId: 'other', name: 'Umbreon V', number: '189', cardladderData: undefined };
+    const input = report([sale(1525, '2026-08-29')]); input.holdings.push(otherHolding);
+    const result = apply([item, other], input);
+    expect(result.stickerUpdatedCount).toBe(1);
+    expect(result.items[1]).toEqual(other);
+  });
+});

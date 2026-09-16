@@ -82,3 +82,53 @@ it('passes manual fallback choices through the transaction and prevents automati
   await expect(saveCardLadderReport({}, 'user-1', input, {}, {}, ['cl-one'], false, ['cl-one'])).resolves.toMatchObject({ updatedCount: 1 });
   expect(firestore.transaction.update.mock.calls[0][1].items[0]).toMatchObject({ gradedPrice: 1100, cardladderPricing: { method: 'cardladder-value' } });
 });
+
+describe('transactional sticker-price application', () => {
+  const mode = { updateStickerPrices: true };
+  it('reads the latest override for provenance and preserves costs, quantity and legacy manual prices', async () => {
+    const latest = { ...item, overridePrice: 1850, overridePriceCurrency: 'EUR', manualPrice: 1800, manualPriceCurrency: 'GBP', buyPrice: 777, buyPriceCurrency: 'EUR', quantity: 1 };
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [latest] }) });
+    const result = await saveCardLadderReport({}, 'user-1', report, {}, {}, ['cl-one'], false, [], mode);
+    expect(result).toMatchObject({ updatedCount: 1, stickerUpdatedCount: 1 });
+    const written = firestore.transaction.update.mock.calls[0][1];
+    expect(written.items[0]).toMatchObject({ overridePrice: 1525, overridePriceCurrency: 'USD', gradedPrice: 1525, manualPrice: 1800, manualPriceCurrency: 'GBP', buyPrice: 777, buyPriceCurrency: 'EUR', quantity: 1, cardladderPricing: { previousOverride: { overridePrice: 1850, overridePriceCurrency: 'EUR' } } });
+    expect(written.cardLadderLastSync.stickerUpdatedCount).toBe(1);
+  });
+
+  it('allows the same capture to update stickers after an earlier market-only application', async () => {
+    const latest = { ...item, overridePrice: 1900, overridePriceCurrency: 'EUR' };
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [latest] }) });
+    expect(await saveCardLadderReport({}, 'user-1', report)).toMatchObject({ updatedCount: 1, stickerUpdatedCount: 0 });
+    const marketOnly = firestore.transaction.update.mock.calls[0][1];
+    expect(marketOnly.items[0].overridePrice).toBe(1900);
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => marketOnly });
+    expect(await saveCardLadderReport({}, 'user-1', report, {}, {}, ['cl-one'], false, [], mode)).toMatchObject({ stickerUpdatedCount: 1, alreadyApplied: false });
+    expect(firestore.transaction.update.mock.calls[1][1].items[0]).toMatchObject({ overridePrice: 1525, overridePriceCurrency: 'USD', cardladderPricing: { previousOverride: { overridePrice: 1900, overridePriceCurrency: 'EUR' } } });
+  });
+
+  it('rejects automatic sticker updates and missing checked selections before starting a transaction', async () => {
+    localStorage.setItem(autoSyncKey('user-1'), 'true');
+    await expect(saveCardLadderReport({}, 'user-1', report, {}, {}, ['cl-one'], true, [], mode)).rejects.toThrow(/manual review/);
+    await expect(saveCardLadderReport({}, 'user-1', report, {}, {}, null, false, [], mode)).rejects.toThrow(/explicit checked selection/);
+    expect(firestore.transaction.get).not.toHaveBeenCalled();
+    expect(firestore.transaction.update).not.toHaveBeenCalled();
+  });
+
+  it('leaves automatic market refreshes unchanged and never rolls stickers back to an older capture', async () => {
+    const latest = { ...item, overridePrice: 1900, overridePriceCurrency: 'EUR' };
+    localStorage.setItem(autoSyncKey('user-1'), 'true');
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [latest] }) });
+    expect(await saveCardLadderReport({}, 'user-1', report, {}, {}, null, true)).toMatchObject({ updatedCount: 1, stickerUpdatedCount: 0 });
+    expect(firestore.transaction.update.mock.calls[0][1].items[0].overridePrice).toBe(1900);
+    firestore.transaction.update.mockClear();
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [latest], cardLadderLastSync: { runId: 'newer', capturedAt: new Date(now.getTime() + 10000).toISOString() } }) });
+    expect(await saveCardLadderReport({}, 'user-1', report, {}, {}, ['cl-one'], false, [], mode)).toMatchObject({ alreadyApplied: true, stickerUpdatedCount: 0 });
+    expect(firestore.transaction.update).not.toHaveBeenCalled();
+  });
+
+  it('passes the explicitly chosen provider fallback through to both market and sticker values', async () => {
+    const input = { ...report, holdings: [{ ...report.holdings[0], sales: [], cardLadderValue: 1100, cardLadderValueCurrency: 'USD' }] };
+    expect(await saveCardLadderReport({}, 'user-1', input, {}, {}, ['cl-one'], false, ['cl-one'], mode)).toMatchObject({ stickerUpdatedCount: 1 });
+    expect(firestore.transaction.update.mock.calls[0][1].items[0]).toMatchObject({ gradedPrice: 1100, overridePrice: 1100, overridePriceCurrency: 'USD', cardladderPricing: { method: 'cardladder-value' } });
+  });
+});
