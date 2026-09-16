@@ -44,11 +44,20 @@ export function CardLadderSyncPanel() {
   };
   const selectedAdditions = Object.fromEntries(Object.entries(additions).filter(([id]) => { const row = preview.rows.find(row => row.holding.holdingId === id); return row && !isExcluded(row); }));
   const addCount = Object.keys(selectedAdditions).length;
+  const version = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(status?.version || '');
+  const needsCurrencyUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 1));
+  const legacyCurrencyFailure = report?.schemaVersion === 1 && Array.isArray(report.holdings) && report.holdings.some(holding =>
+    holding?.complete !== true && typeof holding?.error === 'string' && holding.error.includes('A sale has an unreadable date, currency, price, or link.'));
 
   return <section className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4" aria-label="CardLadder price sync">
     <h3 className="font-semibold text-emerald-950">Highest sale · last 14 days</h3>
     <p className="mt-1 text-sm text-emerald-900">Update graded cards or add missing cards from your CardLadder Inventory. Matches use card identity and grade; certificate numbers are ignored.</p>
     <p className="mt-2 text-sm" role="status">{status?.status?.message || (status?.installed ? 'Companion connected.' : 'Install the browser companion, then reload this app tab.')}</p>
+    {status?.installed && status.version && <p className="mt-1 text-xs text-slate-600">Connected CardLadder companion: {status.version}</p>}
+    {needsCurrencyUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder companion update">
+      <p className="font-medium">Update the CardLadder companion to capture your display currency.</p>
+      <p className="mt-1">Your installed version only supports USD. <a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.1.1</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again.</p>
+    </aside>}
     <div className="mt-3 flex flex-wrap gap-2">
       <Button size="sm" disabled={busy || !status?.installed || status?.status?.state === 'running'} onClick={() => action(async () => { await companionRequest('start'); await refresh(); })}>Sync Inventory</Button>
       <Button size="sm" variant="outline" disabled={busy || !status?.runId} onClick={() => action(async () => load(await companionRequest('report')))}>Preview latest capture</Button>
@@ -77,9 +86,14 @@ export function CardLadderSyncPanel() {
     </label>
     {(error || preview.error) && <p role="alert" className="mt-3 text-sm text-red-700">{error || preview.error}</p>}
     {message && <p role="status" className="mt-3 text-sm font-medium text-emerald-800">{message}</p>}
+    {legacyCurrencyFailure && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="Older CardLadder capture needs refresh">
+      <p className="font-medium">This failed capture came from an older reader that only supported USD.</p>
+      <p className="mt-1">Its “unreadable date, currency, price, or link” error can be caused by EUR or another display currency. <a className="underline" href="/cardladder-companion.zip" download>Download the latest CardLadder companion</a>, replace its files and reload it in Chrome, then refresh Rafchu and CardLadder and run a fresh Sync Inventory.</p>
+      <p className="mt-1">Updating the extension keeps the previous report. Preview latest capture will keep showing this failed report until a new capture finishes. No prices from these incomplete holdings will be applied.</p>
+    </aside>}
     {report && !preview.error && <div className="mt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><h4 className="font-semibold text-slate-950">Review inventory changes</h4><p className="text-xs text-slate-600">{report.startDate} – {report.endDate} · {report.currency || 'USD'} per card</p></div>
+        <div><h4 className="font-semibold text-slate-950">Review inventory changes</h4><p className="text-xs text-slate-600">{report.startDate} – {report.endDate} · {report.currency || 'USD'} per card{report.schemaVersion === 1 ? ' · legacy USD report' : ''}</p><p className="mt-1 text-xs text-slate-600">Captured <time dateTime={report.capturedAt}>{new Date(report.capturedAt).toLocaleString()}</time></p></div>
         <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setReport(null); setBindings({}); setAdditions({}); setExcluded({}); setValueChoices({}); }}>Close preview</Button>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">Uses CardLadder’s date-only two-week window (UTC). Includes auctions, fixed prices, and accepted offers. Titles must match the card number, name, and grade; bundles and conflicting grades are excluded.</p>
