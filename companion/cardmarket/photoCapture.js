@@ -1,6 +1,7 @@
-import { matchesCardmarketOffer, safeCardmarketImage } from '../../src/utils/cardmarketSync.js';
+import { CARDMARKET_CONDITIONS, matchesCardmarketOffer, safeCardmarketImage } from '../../src/utils/cardmarketSync.js';
 import { CARDMARKET_PHOTO_CACHE_LIMIT, CARDMARKET_PHOTO_LIMIT, CARDMARKET_PHOTOS_PER_PAGE, safeCardmarketPhotoData } from '../../src/utils/cardmarketPhotos.js';
 import { sameCapturePage } from './capture.js';
+import { sameDiscoveryPage } from '../../src/utils/cardmarketDiscovery.js';
 import { sellerPhotosFromArchive } from './photoArchive.js';
 
 export async function cardmarketPhotoThumbnail({ type, base64 }) {
@@ -29,21 +30,28 @@ export async function captureSellerPhotos(api, tabId, capture, existing = {}, ca
   const photos = { ...existing };
   let used = Object.entries(photos).reduce((size, [url, data]) => size + url.length + data.length, 0);
   if (!api.pageCapture?.saveAsMHTML) return { photos, warning: 'Update or reload the companion to save seller-photo previews.' };
-  const sources = [...new Set(capture.offers.filter(offer => matchesCardmarketOffer(offer, capture.filters || {})).map(offer => safeCardmarketImage(offer.scanUrl, 'seller')).filter(Boolean))]
+  const preview = capture.scope === 'product-preview';
+  const samePage = preview ? sameDiscoveryPage : sameCapturePage;
+  const eligible = offer => preview
+    ? ['English', 'Japanese'].includes(offer.language) && CARDMARKET_CONDITIONS.includes(offer.condition)
+      && ['reverse', 'non-reverse'].includes(offer.finish) && typeof offer.firstEdition === 'boolean'
+      && matchesCardmarketOffer(offer, offer)
+    : matchesCardmarketOffer(offer, capture.filters || {});
+  const sources = [...new Set(capture.offers.filter(eligible).map(offer => safeCardmarketImage(offer.scanUrl, 'seller')).filter(Boolean))]
     .filter(url => !photos[url]).slice(0, CARDMARKET_PHOTOS_PER_PAGE);
   if (!sources.length) return { photos };
   if (used >= CARDMARKET_PHOTO_CACHE_LIMIT - CARDMARKET_PHOTO_LIMIT) return { photos, warning: 'The local photo preview cache is full. Original listing links are still available.' };
   let warning;
   try {
-    if (!sameCapturePage((await api.tabs.get(tabId)).url, capture.filteredUrl)) throw new Error('The Cardmarket reader changed before photos were saved.');
-    const prepared = await api.tabs.sendMessage(tabId, { channel: 'rafchu-cardmarket-reader', action: 'prepare-photos', sources, filteredUrl: capture.filteredUrl });
+    if (!samePage((await api.tabs.get(tabId)).url, capture.filteredUrl)) throw new Error('The Cardmarket reader changed before photos were saved.');
+    const prepared = await api.tabs.sendMessage(tabId, { channel: 'rafchu-cardmarket-reader', action: 'prepare-photos', sources, filteredUrl: capture.filteredUrl, ...(preview ? { scope: 'product-preview' } : {}) });
     if (!prepared?.ok || !Array.isArray(prepared.data)) throw new Error('Seller-photo previews could not be loaded.');
     const requested = prepared.data.filter(photo => sources.includes(photo.sourceUrl) && safeCardmarketImage(photo.loadedUrl, 'seller'));
     if (cancelled() || !requested.length) return { photos, warning: 'Some seller photos could not be loaded on Cardmarket. Original listing links are still available.' };
-    if (!sameCapturePage((await api.tabs.get(tabId)).url, capture.filteredUrl)) throw new Error('The Cardmarket reader changed before photos were saved.');
+    if (!samePage((await api.tabs.get(tabId)).url, capture.filteredUrl)) throw new Error('The Cardmarket reader changed before photos were saved.');
     const archive = await api.pageCapture.saveAsMHTML({ tabId });
     if (!archive || archive.size > 25_000_000 || cancelled()) throw new Error('Seller-photo capture was interrupted or too large.');
-    if (!sameCapturePage((await api.tabs.get(tabId)).url, capture.filteredUrl)) throw new Error('The Cardmarket reader changed while photos were saved.');
+    if (!samePage((await api.tabs.get(tabId)).url, capture.filteredUrl)) throw new Error('The Cardmarket reader changed while photos were saved.');
     const images = sellerPhotosFromArchive(await archive.text(), requested);
     for (const [source, image] of images) {
       if (cancelled()) break;

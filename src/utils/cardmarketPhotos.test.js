@@ -77,3 +77,29 @@ it('keeps excluded conditions, languages, variants and graded listings out of th
   await captureSellerPhotos(api, 5, data, {}, () => false, async () => photo);
   expect(api.tabs.sendMessage.mock.calls[0][1].sources).toEqual([source]);
 });
+
+it('caches eligible English and Japanese preview photos before a printing is confirmed', async () => {
+  const data = capture();
+  data.scope = 'product-preview';
+  data.filteredUrl = data.filteredUrl.replace('language=1', 'language=').replace('isReverseHolo=Y', 'isReverseHolo=').replace('isFirstEd=N', 'isFirstEd=');
+  delete data.filters;
+  const eligible = data.offers[0];
+  data.offers.push({ ...eligible, language: 'Japanese', condition: 'PO', finish: 'non-reverse', firstEdition: true, scanUrl: other });
+  const excluded = [{ language: 'French' }, { condition: null }, { finish: null }, { firstEdition: null }, { signed: true }, { altered: true }, { comments: 'PSA 9 graded' }];
+  data.offers.unshift(...excluded.map((changes, index) => ({ ...eligible, ...changes, scanUrl: `https://marketplace-article-scans.s3.cardmarket.com/${3000 + index}/${3000 + index}.jpg` })));
+  const api = browser(data);
+  await captureSellerPhotos(api, 5, data, {}, () => false, async () => photo);
+  expect(api.tabs.sendMessage.mock.calls[0][1]).toMatchObject({ action: 'prepare-photos', scope: 'product-preview', sources: [source, other] });
+  expect(api.pageCapture.saveAsMHTML).toHaveBeenCalledWith({ tabId: 5 });
+});
+
+it('rejects discovery-photo capture if its broad filter coverage changes', async () => {
+  const data = capture();
+  data.scope = 'product-preview';
+  data.filteredUrl = data.filteredUrl.replace('language=1', 'language=').replace('isReverseHolo=Y', 'isReverseHolo=').replace('isFirstEd=N', 'isFirstEd=');
+  const api = browser(data);
+  api.tabs.get.mockResolvedValue({ url: data.filteredUrl.replace('language=', 'language=7') });
+  const result = await captureSellerPhotos(api, 5, data, {}, () => false, async () => photo);
+  expect(result.warning).toMatch(/reader changed/);
+  expect(api.pageCapture.saveAsMHTML).not.toHaveBeenCalled();
+});

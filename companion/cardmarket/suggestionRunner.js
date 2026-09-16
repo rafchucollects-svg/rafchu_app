@@ -1,5 +1,6 @@
-import { safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
-import { rankCardmarketProducts } from '../../src/utils/cardmarketProducts.js';
+import { safeCardmarketProduct, CARDMARKET_CONDITIONS } from '../../src/utils/cardmarketSync.js';
+import { rankCardmarketProducts, CARDMARKET_KNOWN_PRODUCTS } from '../../src/utils/cardmarketProducts.js';
+import { discoveryUrl, sameDiscoveryPage } from '../../src/utils/cardmarketDiscovery.js';
 import { safeProductSearchUrl } from './products.js';
 import { findCardmarketProducts, productSearchState } from './productSearch.js';
 import { waitForCardmarketReader } from './readerWait.js';
@@ -7,82 +8,195 @@ import { waitForCardmarketReader } from './readerWait.js';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const readableUrl = value => safeProductSearchUrl(value) || safeCardmarketProduct(value);
 const identity = task => JSON.stringify([task.name, task.set, task.number, task.language]);
+const fresh = value => { const age = Date.now() - Date.parse(value); return age >= 0 && age < 86400000; };
+const recoverable = error => ['verification', 'server-error', 'page-unavailable'].includes(error.code);
+const coverageList = (value, allowed) => value === null || (Array.isArray(value) && value.length > 0 && value.every(item => allowed.includes(item)) && new Set(value).size === value.length);
 
-export function createSuggestionRunner(api) {
-  let active = false, cancelled = false;
+function checkedPreview(data, task, productUrl, url) {
+  const coverage = data?.coverage;
+  if (data?.scope !== 'product-preview' || data.source !== 'cardmarket-browser' || data.currency !== 'EUR' ||
+      safeCardmarketProduct(data.productUrl) !== productUrl || !sameDiscoveryPage(data.filteredUrl, url) ||
+      !fresh(data.capturedAt) || typeof data.complete !== 'boolean' || !Array.isArray(data.offers) || data.offers.length > 1000 ||
+      !coverage || !coverageList(coverage.languages, ['English', 'Japanese']) || !CARDMARKET_CONDITIONS.includes(coverage.minCondition) ||
+      !coverageList(coverage.finishes, ['reverse', 'non-reverse']) || !coverageList(coverage.editions, [true, false]) ||
+      coverage.signed !== false || coverage.altered !== false ||
+      JSON.stringify(coverage.languages) !== JSON.stringify(['English', 'Japanese'].includes(task.language) ? [task.language] : null) ||
+      coverage.minCondition !== (CARDMARKET_CONDITIONS.includes(task.condition) ? task.condition : 'PO') ||
+      (data.complete && (data.moreAvailable !== false || data.error)) ||
+      (data.entryId != null && data.entryId !== task.entryId) || (data.inventoryKey != null && data.inventoryKey !== task.inventoryKey)) {
+    throw new Error('The listing preview does not match this product and inventory card. Retry its listings after reviewing the match.');
+  }
+  return { ...data, productUrl, entryId: task.entryId, inventoryKey: task.inventoryKey };
+}
+
+function retainedPreviews(row, task, candidates) {
+  return (Array.isArray(row?.previews) ? row.previews : []).flatMap(preview => {
+    const productUrl = safeCardmarketProduct(preview?.productUrl);
+    if (!candidates.some(candidate => candidate.productUrl === productUrl)) return [];
+    try { return [checkedPreview(preview, task, productUrl, discoveryUrl(productUrl, task))]; } catch { return []; }
+  });
+}
+
+export function createSuggestionRunner(api, capturePhotos) {
+  let active = false, cancelled = false, readerId = null;
   async function run(tasks, previous) {
     active = true; cancelled = false;
     let job = previous;
     let keepReader = false;
+    let photoCache;
     try {
+      const stored = await api.storage.local.get(['products', 'previewPhotoCache']);
       if (!job) {
-        const stored = await api.storage.local.get('products');
         const results = (stored.products?.results || []).flatMap(row => {
           const task = tasks.find(task => task.entryId === row.entryId && task.inventoryKey === row.inventoryKey);
-          const age = Date.now() - Date.parse(row.searchedAt);
-          const candidates = task && age >= 0 && age < 86400000 ? rankCardmarketProducts(task, row.candidates) : [];
-          return candidates.length ? [{ ...row, candidates }] : [];
+          const candidates = task && fresh(row.searchedAt) ? rankCardmarketProducts(task, row.candidates) : [];
+          return candidates.length ? [{ ...row, candidates, ...(task.captureOffers ? { previews: retainedPreviews(row, task, candidates) } : {}) }] : [];
         });
-        job = { tasks, nextIndex: 0, tabId: null, readerUrl: null, search: null, products: { runId: crypto.randomUUID(), results, revision: 0 }, cache: {} };
+        job = { tasks, nextIndex: 0, tabId: null, readerUrl: null, search: null, products: { runId: crypto.randomUUID(), results, revision: 0 }, cache: {}, previewCache: {}, offerStage: null };
       }
+      readerId = job.tabId;
+      job.previewCache ||= {};
+      const combined = job.tasks.some(task => task.captureOffers === true);
+      const previousPhotos = stored.previewPhotoCache;
+      const photoRun = previous ? job.products.runId : stored.products?.runId;
+      photoCache = { runId: job.products.runId, updatedAt: new Date().toISOString(), images: previousPhotos && previousPhotos.runId === photoRun && fresh(previousPhotos.updatedAt) ? previousPhotos.images : {} };
+      if (combined) await api.storage.local.set({ previewPhotoCache: photoCache });
       const save = status => api.storage.local.set({ suggestionJob: job, products: job.products, status: { ...status, completed: job.nextIndex, total: job.tasks.length } });
-      await save({ state: 'running', message: 'Finding product links. Earlier matching suggestions are kept.' });
+      const putResult = result => {
+        job.products.results = job.products.results.filter(row => row.entryId !== result.entryId).concat(result);
+        job.products.revision++;
+      };
+      const openPage = async (url, acceptsUrl, persist) => {
+        if (cancelled) throw new Error('Product search stopped.');
+        let tab = job.tabId ? await api.tabs.get(job.tabId).catch(() => null) : null;
+        if (!tab) tab = await api.tabs.create({ url, active: true });
+        else if (job.readerUrl !== url || !acceptsUrl(tab.url)) tab = await api.tabs.update(tab.id, { url, active: true });
+        job.tabId = readerId = tab.id; job.readerUrl = url;
+        await persist();
+        return tab;
+      };
+      await save({ state: 'running', message: combined ? 'Finding product links and reading their listings. Earlier matching results are kept.' : 'Finding product links. Earlier matching suggestions are kept.' });
       for (; job.nextIndex < job.tasks.length;) {
         if (cancelled) throw new Error('Product search stopped.');
         const task = job.tasks[job.nextIndex];
         const label = `Finding product ${job.nextIndex + 1}/${job.tasks.length} · ${task.name}`;
         const persist = () => save({ state: 'running', message: label });
-        let candidates = job.cache[identity(task)], error, errorCode;
-        try {
-          if (!candidates) {
-            job.search ||= productSearchState(task);
-            await persist();
-            candidates = await findCardmarketProducts(task, async nextUrl => {
-              if (cancelled) throw new Error('Product search stopped.');
-              let tab = job.tabId ? await api.tabs.get(job.tabId).catch(() => null) : null;
-              if (!tab) tab = await api.tabs.create({ url: nextUrl, active: true });
-              else if (job.readerUrl !== nextUrl || !readableUrl(tab.url)) tab = await api.tabs.update(tab.id, { url: nextUrl, active: true });
-              job.tabId = tab.id; job.readerUrl = nextUrl;
+        let result = job.products.results.find(row => row.entryId === task.entryId && row.inventoryKey === task.inventoryKey);
+        if (!job.offerStage) {
+          let candidates = job.cache[identity(task)], error, errorCode;
+          try {
+            if (!candidates) {
+              job.search ||= productSearchState(task);
               await persist();
-              await waitForCardmarketReader(api, {
-                tabId: tab.id, mode: 'products', acceptsUrl: readableUrl, cancelled: () => cancelled,
-                resumeLabel: 'Resume product search',
-                onProgress: message => save({ state: 'running', message: `${label} · ${message}` }),
-              });
-              const response = await api.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'products', task });
-              if (!response?.ok) throw Object.assign(new Error(response?.error || 'Could not read product suggestions.'), { code: response?.code });
-              if (cancelled) throw new Error('Product search stopped.');
-              await pause(700);
-              return response.data;
-            }, job.search, persist);
-            job.cache[identity(task)] = candidates;
+              candidates = await findCardmarketProducts(task, async nextUrl => {
+                const tab = await openPage(nextUrl, readableUrl, persist);
+                await waitForCardmarketReader(api, {
+                  tabId: tab.id, mode: 'products', acceptsUrl: readableUrl, cancelled: () => cancelled,
+                  resumeLabel: 'Resume product search',
+                  onProgress: message => save({ state: 'running', message: `${label} · ${message}` }),
+                });
+                const response = await api.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'products', task });
+                if (!response?.ok) throw Object.assign(new Error(response?.error || 'Could not read product suggestions.'), { code: response?.code });
+                if (cancelled) throw new Error('Product search stopped.');
+                await pause(700);
+                return response.data;
+              }, job.search, persist);
+              job.cache[identity(task)] = candidates;
+            }
+          } catch (err) {
+            if (!['expansion-mismatch', 'search-incomplete'].includes(err.code)) throw err;
+            candidates = []; error = err.message; errorCode = err.code;
           }
-        } catch (err) {
-          if (!['expansion-mismatch', 'search-incomplete'].includes(err.code)) throw err;
-          candidates = []; error = err.message; errorCode = err.code;
+          // Use exactly the same catalogue priority as the app. Every distinct
+          // printing stays separate and still requires product confirmation.
+          if (task.captureOffers) candidates = rankCardmarketProducts(task, [...candidates, ...(result?.candidates || []), ...CARDMARKET_KNOWN_PRODUCTS]);
+          const old = result;
+          result = candidates.length
+            ? { entryId: task.entryId, inventoryKey: task.inventoryKey, candidates, searchedAt: new Date().toISOString(), ...(error ? { error, errorCode } : {}) }
+            : old ? { ...old, ...(error ? { error, errorCode } : {}) }
+              : { entryId: task.entryId, inventoryKey: task.inventoryKey, candidates: [], searchedAt: new Date().toISOString(), errorCode, error: error || 'No exact name, expansion and number match found. Your current URL was kept.' };
+          if (task.captureOffers) {
+            result.previews = retainedPreviews(old, task, result.candidates);
+            result.previewErrors = [];
+            job.offerStage = { entryId: task.entryId, inventoryKey: task.inventoryKey, nextCandidateIndex: 0 };
+            job.search = null;
+            putResult(result);
+            // Publish the link before any listing page can pause this task.
+            await persist();
+          }
         }
-        const old = job.products.results.find(row => row.entryId === task.entryId && row.inventoryKey === task.inventoryKey);
-        const result = candidates.length
-          ? { entryId: task.entryId, inventoryKey: task.inventoryKey, candidates, searchedAt: new Date().toISOString() }
-          : old ? { ...old, ...(error ? { error, errorCode } : {}) }
-            : { entryId: task.entryId, inventoryKey: task.inventoryKey, candidates: [], searchedAt: new Date().toISOString(), errorCode, error: error || 'No exact name, expansion and number match found. Your current URL was kept.' };
-        job.products.results = job.products.results.filter(row => row.entryId !== task.entryId).concat(result);
-        job.nextIndex++; job.search = null; job.products.revision++;
+        if (task.captureOffers && job.offerStage) {
+          if (job.offerStage.entryId !== task.entryId || job.offerStage.inventoryKey !== task.inventoryKey || !result) throw new Error('The saved listing task no longer matches this inventory card. Stop this search and start again.');
+          for (; job.offerStage.nextCandidateIndex < result.candidates.length;) {
+            if (cancelled) throw new Error('Product search stopped.');
+            const productUrl = result.candidates[job.offerStage.nextCandidateIndex].productUrl;
+            const url = discoveryUrl(productUrl, task);
+            const offerLabel = `${job.nextIndex + 1}/${job.tasks.length} · ${task.name} · Reading listings ${job.offerStage.nextCandidateIndex + 1}/${result.candidates.length}`;
+            const persistOffer = () => save({ state: 'running', message: offerLabel });
+            try {
+              let preview = job.previewCache[url];
+              if (preview && !fresh(preview.capturedAt)) preview = null;
+              if (!preview) {
+                const tab = await openPage(url, actual => sameDiscoveryPage(actual, url), persistOffer);
+                await waitForCardmarketReader(api, {
+                  tabId: tab.id, acceptsUrl: actual => sameDiscoveryPage(actual, url), cancelled: () => cancelled,
+                  resumeLabel: 'Resume product search', onProgress: message => save({ state: 'running', message: `${offerLabel} · ${message}` }),
+                });
+                const response = await api.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'capture-preview', task, productUrl, filteredUrl: url });
+                if (!response?.ok) throw Object.assign(new Error(response?.error || 'Could not read this product’s listings.'), { code: response?.code });
+                if (cancelled) throw new Error('Product search stopped.');
+                preview = checkedPreview(response.data, task, productUrl, url);
+                if (capturePhotos) {
+                  try {
+                    const cached = await capturePhotos(api, tab.id, preview, photoCache.images, () => cancelled);
+                    photoCache = { runId: job.products.runId, updatedAt: new Date().toISOString(), images: cached.photos };
+                    await api.storage.local.set({ previewPhotoCache: photoCache });
+                    if (cached.warning) preview.photoWarning = cached.warning;
+                  } catch { preview.photoWarning = 'Could not save local photo previews. Original listing links are still available.'; }
+                }
+                if (cancelled) throw new Error('Product search stopped.');
+                // Cache only the capture evidence: inventory attachments are
+                // assigned separately for each duplicate inventory entry.
+                const evidence = { ...preview };
+                delete evidence.entryId; delete evidence.inventoryKey;
+                job.previewCache[url] = evidence;
+              }
+              preview = checkedPreview(preview, task, productUrl, url);
+              const oldPreview = result.previews.find(row => row.productUrl === productUrl);
+              if (preview.complete || !oldPreview?.complete) result.previews = result.previews.filter(row => row.productUrl !== productUrl).concat(preview);
+              result.previewErrors = result.previewErrors.filter(row => row.productUrl !== productUrl);
+              if (!preview.complete) result.previewErrors.push({ productUrl, error: preview.error || 'Only part of this product’s listings could be read. Retry listings before applying a price.' });
+            } catch (error) {
+              if (cancelled || recoverable(error)) throw error;
+              result.previewErrors = result.previewErrors.filter(row => row.productUrl !== productUrl).concat({ productUrl, error: error.message });
+            }
+            job.offerStage.nextCandidateIndex++;
+            putResult(result);
+            await persistOffer();
+            await pause(700);
+          }
+        }
+        job.nextIndex++; job.search = null; job.offerStage = null;
+        // Link-only callers retain their original revision/progress contract.
+        if (!task.captureOffers) putResult(result);
         await persist();
         await pause(700);
       }
       const matched = job.products.results.filter(row => row.candidates.length).length;
-      const needsReview = job.products.results.filter(row => row.error).length;
-      const message = needsReview
-        ? `Search queue finished. Suggestions available for ${matched}/${job.tasks.length} cards; ${needsReview} ${needsReview === 1 ? 'card needs' : 'cards need'} review. Earlier matching links were kept. Review the proposed links before saving matches.`
-        : `Product suggestions ready for ${matched} cards. Review the proposed links before saving matches.`;
+      const needsReview = job.products.results.filter(row => row.error || row.previewErrors?.length).length;
+      const withListings = job.products.results.filter(row => row.previews?.some(preview => preview.complete && fresh(preview.capturedAt))).length;
+      const message = combined
+        ? `Search queue finished. Links available for ${matched}/${job.tasks.length} cards; complete listing previews for ${withListings}/${job.tasks.length}.${needsReview ? ` ${needsReview} ${needsReview === 1 ? 'card needs' : 'cards need'} review.` : ''} Confirm the product and filters to use captured listings; no prices were applied.`
+        : needsReview
+          ? `Search queue finished. Suggestions available for ${matched}/${job.tasks.length} cards; ${needsReview} ${needsReview === 1 ? 'card needs' : 'cards need'} review. Earlier matching links were kept. Review the proposed links before saving matches.`
+          : `Product suggestions ready for ${matched} cards. Review the proposed links before saving matches.`;
       await api.storage.local.set({ suggestionJob: null, products: job.products, status: { state: 'complete', message } });
     } catch (error) {
       keepReader = !cancelled;
-      await api.storage.local.set({ suggestionJob: cancelled ? null : job, ...(job ? { products: job.products } : {}), status: { state: cancelled ? 'complete' : 'paused', message: cancelled ? 'Product search stopped. Completed suggestions are kept.' : error.message, completed: job?.nextIndex || 0, total: job?.tasks.length || 0 } });
+      await api.storage.local.set({ suggestionJob: cancelled ? null : job, ...(job ? { products: job.products } : {}), status: { state: cancelled ? 'complete' : 'paused', message: cancelled ? 'Product search stopped. Completed links and listing previews are kept.' : error.message, completed: job?.nextIndex || 0, total: job?.tasks.length || 0 } });
     } finally {
       if (job?.tabId && !keepReader) await api.tabs.remove(job.tabId).catch(() => {});
-      active = false;
+      active = false; readerId = null;
     }
   }
   async function openReader(job) {
@@ -98,7 +212,8 @@ export function createSuggestionRunner(api) {
   }
   async function cancel() {
     cancelled = true;
-    await api.storage.local.set({ suggestionJob: null, status: { state: 'complete', message: 'Product search stopped. Completed suggestions are kept.' } });
+    if (readerId) await api.tabs.sendMessage(readerId, { channel: 'rafchu-cardmarket-reader', action: 'cancel' }).catch(() => {});
+    await api.storage.local.set({ suggestionJob: null, status: { state: 'complete', message: 'Product search stopped. Completed links and listing previews are kept.' } });
   }
   return { run, openReader, cancel, get active() { return active; } };
 }

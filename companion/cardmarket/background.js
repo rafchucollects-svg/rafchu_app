@@ -1,9 +1,9 @@
-import { safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
+import { safeCardmarketProduct, CARDMARKET_CONDITIONS } from '../../src/utils/cardmarketSync.js';
 import { createCaptureRunner, filteredUrl } from './capture.js';
 import { createSuggestionRunner } from './suggestionRunner.js';
 import { captureSellerPhotos } from './photoCapture.js';
 const captureRunner = createCaptureRunner(chrome, captureSellerPhotos);
-const suggestionRunner = createSuggestionRunner(chrome);
+const suggestionRunner = createSuggestionRunner(chrome, captureSellerPhotos);
 const appOrigins = new Set(['https://rafchu-tcg-app.firebaseapp.com', 'https://rafchu-tcg-app.web.app']);
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message.channel === 'rafchu-cardmarket-progress') { respond({ ok: true }); return; }
@@ -13,11 +13,19 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if ((sender.frameId && sender.frameId !== 0) || !sender.url || !appOrigins.has(new URL(sender.url).origin)) throw new Error('Untrusted Cardmarket companion caller.');
       const stored = await chrome.storage.local.get(['status', 'report', 'products', 'captureJob', 'suggestionJob']);
       let data;
-      if (message.action === 'status') data = { installed: true, version: chrome.runtime.getManifest().version, runId: stored.report?.runId, productRunId: stored.products?.runId, productRevision: stored.products ? `${stored.products.runId}:${stored.products.revision ?? stored.products.results.length}` : null, reportRevision: stored.report ? `${stored.report.runId}:${stored.report.captures.length}` : null, canResume: Boolean(stored.captureJob && !captureRunner.active), hasCaptureJob: Boolean(stored.captureJob), hasSuggestionJob: Boolean(stored.suggestionJob), canResumeSuggestions: Boolean(stored.suggestionJob && !suggestionRunner.active), capabilities: ['product-suggestions', 'resumable-capture', 'seller-photo-cache', 'promo-product-lookup', 'resilient-product-search', 'resumable-product-search', 'server-error-recovery'], status: !suggestionRunner.active && !captureRunner.active && stored.status?.state === 'running' ? { state: stored.captureJob || stored.suggestionJob ? 'paused' : 'error', message: stored.captureJob ? 'Capture interrupted. Resume to continue from the last completed card.' : stored.suggestionJob ? 'Product search interrupted. Resume to continue from the unfinished card.' : 'Search interrupted. Retry suggestions.' } : stored.status };
-      else if (message.action === 'products') data = stored.products || null;
+      if (message.action === 'status') data = { installed: true, version: chrome.runtime.getManifest().version, runId: stored.report?.runId, productRunId: stored.products?.runId, productRevision: stored.products ? `${stored.products.runId}:${stored.products.revision ?? stored.products.results.length}` : null, reportRevision: stored.report ? `${stored.report.runId}:${stored.report.captures.length}` : null, canResume: Boolean(stored.captureJob && !captureRunner.active), hasCaptureJob: Boolean(stored.captureJob), hasSuggestionJob: Boolean(stored.suggestionJob), canResumeSuggestions: Boolean(stored.suggestionJob && !suggestionRunner.active), capabilities: ['product-suggestions', 'resumable-capture', 'seller-photo-cache', 'promo-product-lookup', 'resilient-product-search', 'resumable-product-search', 'server-error-recovery', 'combined-product-offers'], status: !suggestionRunner.active && !captureRunner.active && stored.status?.state === 'running' ? { state: stored.captureJob || stored.suggestionJob ? 'paused' : 'error', message: stored.captureJob ? 'Capture interrupted. Resume to continue from the last completed card.' : stored.suggestionJob ? 'Product search interrupted. Resume to continue from the unfinished card.' : 'Search interrupted. Retry suggestions.' } : stored.status };
+      else if (message.action === 'products') {
+        const cache = (await chrome.storage.local.get('previewPhotoCache')).previewPhotoCache;
+        const age = Date.now() - Date.parse(cache?.updatedAt);
+        const fresh = cache?.runId === stored.products?.runId && age >= 0 && age < 86400000;
+        data = stored.products ? { ...stored.products, photos: fresh ? cache.images : {} } : null;
+      }
       else if (message.action === 'suggest') {
         if (suggestionRunner.active || captureRunner.active || stored.captureJob || stored.suggestionJob) throw new Error('Resume or stop the current Cardmarket task first.');
         if (!Array.isArray(message.tasks) || !message.tasks.length || message.tasks.length > 100 || message.tasks.some(task => !task.entryId || !task.inventoryKey || typeof task.name !== 'string' || !task.name.trim() || typeof task.set !== 'string' || !task.set.trim() || !task.number)) throw new Error('Choose up to 100 cards with names, expansions and numbers.');
+        if (message.tasks.some(task => (task.captureOffers != null && typeof task.captureOffers !== 'boolean') ||
+          (task.captureOffers && ((task.condition != null && !CARDMARKET_CONDITIONS.includes(task.condition)) ||
+            (task.language != null && (typeof task.language !== 'string' || task.language.length > 40)))))) throw new Error('Choose supported listing preview filters.');
         void suggestionRunner.run(message.tasks); data = { started: true };
       }
       else if (message.action === 'report') {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Rafchu Cardmarket Companion",
-  "version": "0.3.5",
-  "description": "Capture exact English/Japanese variant offers for manual review in Rafchu.",
+  "version": "0.3.6",
+  "description": "Find Cardmarket products and capture listings together for review in Rafchu.",
   "permissions": [
     "storage",
     "pageCapture"
