@@ -37,6 +37,39 @@ it('reports an unmatched expansion per card and continues to later cards', async
   expect(stored.products.results).toMatchObject([{ entryId: 'Unknown', error: 'No unique expansion match.' }, { entryId: 'Blastoise', candidates: [candidate('Blastoise')] }]);
 });
 
+it.each(['loop', 'limit'])('continues after a pagination %s and marks incomplete results for review', async failure => {
+  let pages = 0;
+  readProducts.mockImplementation(async message => ({ ok: true, data: message.task.name === 'Charizard'
+    ? { candidates: [candidate('Charizard')], nextUrl: `https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=Charizard+4${failure === 'limit' ? `&site=${++pages}` : ''}` }
+    : { candidates: [candidate(message.task.name)], nextUrl: null } }));
+  await request('suggest', [task('Charizard'), task('Blastoise')]);
+  await vi.runAllTimersAsync();
+  expect(stored.suggestionJob).toBeNull();
+  expect(stored.status.state).toBe('complete');
+  expect(stored.status.message).toContain('Suggestions available for 1/2 cards; 1 card needs review');
+  expect(stored.products.results).toMatchObject([
+    { entryId: 'Charizard', candidates: [], error: expect.stringMatching(/pagination|Too many search pages/) },
+    { entryId: 'Blastoise', candidates: [candidate('Blastoise')] },
+  ]);
+  expect(readProducts).toHaveBeenCalledTimes(failure === 'loop' ? 2 : 9);
+});
+
+it('keeps an earlier exact suggestion while reporting that its new search was incomplete', async () => {
+  stored.products = { runId: 'earlier', results: [
+    { ...task('Charizard'), candidates: [candidate('Charizard')], searchedAt: new Date().toISOString() },
+  ] };
+  readProducts.mockImplementation(async message => ({ ok: true, data: message.task.name === 'Charizard'
+    ? { candidates: [], nextUrl: 'https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=Charizard+4' }
+    : { candidates: [candidate(message.task.name)], nextUrl: null } }));
+  await request('suggest', [task('Charizard'), task('Blastoise')]);
+  await vi.runAllTimersAsync();
+  expect(stored.status.message).toContain('Suggestions available for 2/2 cards; 1 card needs review');
+  expect(stored.products.results).toMatchObject([
+    { entryId: 'Charizard', candidates: [candidate('Charizard')], error: expect.stringContaining('pagination') },
+    { entryId: 'Blastoise', candidates: [candidate('Blastoise')] },
+  ]);
+});
+
 it('persists and exposes partial suggestions while the next card is waiting, then preserves them on verification failure', async () => {
   await request('suggest', [task('Blastoise'), task('Charizard')]);
   await vi.advanceTimersByTimeAsync(1300);

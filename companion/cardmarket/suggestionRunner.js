@@ -2,6 +2,7 @@ import { safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
 import { rankCardmarketProducts } from '../../src/utils/cardmarketProducts.js';
 import { safeProductSearchUrl } from './products.js';
 import { findCardmarketProducts, productSearchState } from './productSearch.js';
+import { waitForCardmarketReader } from './readerWait.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const readableUrl = value => safeProductSearchUrl(value) || safeCardmarketProduct(value);
@@ -31,7 +32,7 @@ export function createSuggestionRunner(api) {
         const task = job.tasks[job.nextIndex];
         const label = `Finding product ${job.nextIndex + 1}/${job.tasks.length} · ${task.name}`;
         const persist = () => save({ state: 'running', message: label });
-        let candidates = job.cache[identity(task)], error;
+        let candidates = job.cache[identity(task)], error, errorCode;
         try {
           if (!candidates) {
             job.search ||= productSearchState(task);
@@ -43,18 +44,11 @@ export function createSuggestionRunner(api) {
               else if (job.readerUrl !== nextUrl || !readableUrl(tab.url)) tab = await api.tabs.update(tab.id, { url: nextUrl, active: true });
               job.tabId = tab.id; job.readerUrl = nextUrl;
               await persist();
-              let ready = false, verification = false;
-              for (let attempt = 0; attempt < 80; attempt++) {
-                if (cancelled) throw new Error('Product search stopped.');
-                await pause(500);
-                const state = await api.tabs.get(tab.id);
-                if (state.status !== 'complete' || !readableUrl(state.url)) continue;
-                let response;
-                try { response = await api.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'ping', mode: 'products' }); } catch { /* Navigation is still completing. */ }
-                if (response?.ok) { ready = true; break; }
-                if (response?.reason === 'verification') { verification = true; break; }
-              }
-              if (!ready) throw new Error(verification ? 'Cardmarket needs browser verification. Open the reader, finish verification, then resume product search.' : 'The Cardmarket search page has not loaded. Open the reader, wait for results, then resume product search.');
+              await waitForCardmarketReader(api, {
+                tabId: tab.id, mode: 'products', acceptsUrl: readableUrl, cancelled: () => cancelled,
+                resumeLabel: 'Resume product search',
+                onProgress: message => save({ state: 'running', message: `${label} · ${message}` }),
+              });
               const response = await api.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'products', task });
               if (!response?.ok) throw Object.assign(new Error(response?.error || 'Could not read product suggestions.'), { code: response?.code });
               if (cancelled) throw new Error('Product search stopped.');
@@ -64,22 +58,28 @@ export function createSuggestionRunner(api) {
             job.cache[identity(task)] = candidates;
           }
         } catch (err) {
-          if (err.code !== 'expansion-mismatch') throw err;
-          candidates = []; error = err.message;
+          if (!['expansion-mismatch', 'search-incomplete'].includes(err.code)) throw err;
+          candidates = []; error = err.message; errorCode = err.code;
         }
         const old = job.products.results.find(row => row.entryId === task.entryId && row.inventoryKey === task.inventoryKey);
         const result = candidates.length
           ? { entryId: task.entryId, inventoryKey: task.inventoryKey, candidates, searchedAt: new Date().toISOString() }
-          : old || { entryId: task.entryId, inventoryKey: task.inventoryKey, candidates: [], searchedAt: new Date().toISOString(), error: error || 'No exact name, expansion and number match found. Your current URL was kept.' };
+          : old ? { ...old, ...(error ? { error, errorCode } : {}) }
+            : { entryId: task.entryId, inventoryKey: task.inventoryKey, candidates: [], searchedAt: new Date().toISOString(), errorCode, error: error || 'No exact name, expansion and number match found. Your current URL was kept.' };
         job.products.results = job.products.results.filter(row => row.entryId !== task.entryId).concat(result);
         job.nextIndex++; job.search = null; job.products.revision++;
         await persist();
         await pause(700);
       }
-      await api.storage.local.set({ suggestionJob: null, products: job.products, status: { state: 'complete', message: `Product suggestions ready for ${job.products.results.length} cards. Review the proposed links before saving matches.` } });
+      const matched = job.products.results.filter(row => row.candidates.length).length;
+      const needsReview = job.products.results.filter(row => row.error).length;
+      const message = needsReview
+        ? `Search queue finished. Suggestions available for ${matched}/${job.tasks.length} cards; ${needsReview} ${needsReview === 1 ? 'card needs' : 'cards need'} review. Earlier matching links were kept. Review the proposed links before saving matches.`
+        : `Product suggestions ready for ${matched} cards. Review the proposed links before saving matches.`;
+      await api.storage.local.set({ suggestionJob: null, products: job.products, status: { state: 'complete', message } });
     } catch (error) {
       keepReader = !cancelled;
-      await api.storage.local.set({ suggestionJob: cancelled ? null : job, ...(job ? { products: job.products } : {}), status: { state: cancelled ? 'complete' : 'paused', message: error.message, completed: job?.nextIndex || 0, total: job?.tasks.length || 0 } });
+      await api.storage.local.set({ suggestionJob: cancelled ? null : job, ...(job ? { products: job.products } : {}), status: { state: cancelled ? 'complete' : 'paused', message: cancelled ? 'Product search stopped. Completed suggestions are kept.' : error.message, completed: job?.nextIndex || 0, total: job?.tasks.length || 0 } });
     } finally {
       if (job?.tabId && !keepReader) await api.tabs.remove(job.tabId).catch(() => {});
       active = false;

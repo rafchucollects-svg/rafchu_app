@@ -1,4 +1,5 @@
 import { safeCardmarketProduct } from '../../src/utils/cardmarketSync.js';
+import { waitForCardmarketReader } from './readerWait.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const filterNames = ['language', 'minCondition', 'isReverseHolo', 'isSigned', 'isFirstEd', 'isAltered'];
@@ -48,18 +49,11 @@ export function createCaptureRunner(api, capturePhotos) {
         job.tabId = readerId = tab.id;
         const label = `${job.nextIndex + 1}/${job.tasks.length} · ${task.name}`;
         await save({ state: 'running', message: `${label} · Waiting for Cardmarket…` });
-        let ready = false, verification = false;
-        for (let attempt = 0; attempt < 80; attempt++) {
-          if (cancelled) throw new Error('Capture stopped.');
-          await pause(500);
-          const state = await api.tabs.get(tab.id);
-          if (state.status !== 'complete' || !sameCapturePage(state.url, url)) continue;
-          let response;
-          try { response = await api.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'ping' }); } catch { /* Navigation is still completing. */ }
-          if (response?.ok) { ready = true; break; }
-          if (response?.reason === 'verification') { verification = true; break; }
-        }
-        if (!ready) throw new Error(verification ? 'Cardmarket needs browser verification. Open the reader, finish verification, then click Resume capture.' : 'The Cardmarket product has not loaded. Open the reader, wait for the offers, then click Resume capture.');
+        await waitForCardmarketReader(api, {
+          tabId: tab.id, acceptsUrl: actual => sameCapturePage(actual, url),
+          cancelled: () => cancelled, resumeLabel: 'Resume capture',
+          onProgress: message => save({ state: 'running', message: `${label} · ${message}` }),
+        });
         await save({ state: 'running', message: `${label} · Reading offers…` });
         const result = await api.tabs.sendMessage(tab.id, { channel: 'rafchu-cardmarket-reader', action: 'capture' });
         if (!result?.ok) throw new Error(result?.error || 'Cardmarket capture failed.');

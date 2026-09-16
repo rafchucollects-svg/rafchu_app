@@ -1,4 +1,4 @@
-# Rafchu Cardmarket Companion 0.3.4
+# Rafchu Cardmarket Companion 0.3.5
 
 Build with `npm run build:cardmarket`. In Chrome Extensions, Load unpacked:
 `public/cardmarket-companion` (this folder contains manifest.json).
@@ -101,3 +101,20 @@ by name within the same expansion; full collector numbers still have to match.
 The verified catalogue also includes Pikachu & Zekrom GX from Team Up #33.
 Retries keep earlier exact suggestions for unchanged inventory identities for
 24 hours. A failed lookup cannot erase a recent valid suggestion.
+
+
+## Recovery fixes in 0.3.5
+
+Temporary server-error pages (including 503 and 524) receive one ordinary reload
+after a short delay. If that retry fails, the task pauses with the error code
+and keeps earlier results. Resume can retry that failed page again. Verification
+pages are never reloaded automatically: the companion observes the same reader
+for up to 40 seconds, continuing if the check clears. If it needs your input,
+complete it in the reader and use Resume. Both product search and offer capture
+use this recovery behavior. Lost readiness replies are bounded.
+
+An invalid or looping search page marks that card for review and continues to
+the next card instead of retaining a queue that can never resume. Partial search
+results are not accepted as a finished match; prior exact links are kept. The
+completion message distinguishes available suggestions from cards needing review.
+Permissions and explicit match/price confirmation are unchanged.

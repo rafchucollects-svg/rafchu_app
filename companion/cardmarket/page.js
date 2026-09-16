@@ -2,6 +2,7 @@ import { readCardmarketPage } from './dom.js';
 import { readCardmarketProducts } from './products.js';
 import { prepareCardmarketPhotos, clearCardmarketPhotos } from './photoReader.js';
 import { sameCapturePage } from './capture.js';
+import { cardmarketReaderState } from './readerState.js';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let reading = false;
 let cancelled = false;
@@ -16,8 +17,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message.action === 'cancel') { cancelled = true; respond({ ok: true }); return; }
   if (message.action === 'ping') {
     // A verification document can finish loading before the actual product arrives.
-    const ok = Boolean(document.querySelector(message.mode === 'products' ? '#SearchResultForm, #FilterForm' : '#FilterForm') && document.querySelector('h1'));
-    respond({ ok, ...(!ok && /just a moment|security verification|verify (?:you are|that you are) human|access denied/i.test(`${document.title} ${document.body?.innerText || ''}`) ? { reason: 'verification' } : {}) });
+    respond(cardmarketReaderState(document, message.mode));
     return;
   }
   if (message.action === 'products') {
