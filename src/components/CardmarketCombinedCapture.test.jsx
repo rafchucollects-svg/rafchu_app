@@ -1,7 +1,15 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+// Keep real conversion and sticker-pricing logic, with deterministic exchange
+// rates even when the release build refreshes FX during module initialization.
+vi.hoisted(() => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    json: async () => ({ rates: { USD: 1, EUR: 0.92, GBP: 0.79 } }),
+  })));
+});
+afterAll(() => vi.unstubAllGlobals());
 const mocks = vi.hoisted(() => ({ app: {}, request: vi.fn(), saveBinding: vi.fn(), saveOffers: vi.fn() }));
 vi.mock('@/contexts/AppContext', () => ({ useApp: () => mocks.app }));
 vi.mock('@/utils/cardmarketCompanion', () => ({ cardmarketRequest: mocks.request, saveCardmarketBinding: mocks.saveBinding, saveCardmarketOffers: mocks.saveOffers }));
@@ -160,5 +168,16 @@ it('explains when confirmed filters have no matching captured offers without cla
   expect(host.querySelector('input[type="radio"]')).toBeNull();
   expect(button('Save 0 market estimates').disabled).toBe(true);
   expect(mocks.saveOffers).not.toHaveBeenCalled();
+  expectNoRecapture();
+});
+
+it('displays preconfirmation listings in vendor currencies while retaining the original EUR amounts', async () => {
+  mocks.app = { ...mocks.app, currency: 'USD', secondaryCurrency: 'GBP' };
+  await render();
+  expect(listingPreview().querySelector('strong').textContent).toBe('$107.61 (£85.01)');
+  expect(host.querySelector('[aria-label="Current sticker price for sm201"] p').textContent).toBe('$217.39 (£171.74)');
+  expect(products.results[0].previews[0].offers[0]).toMatchObject({ price: 99, currency: 'EUR' });
+  expect(mocks.saveOffers).not.toHaveBeenCalled();
+  expect(mocks.saveBinding).not.toHaveBeenCalled();
   expectNoRecapture();
 });

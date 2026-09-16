@@ -4,11 +4,12 @@ import { Button } from '@/components/ui/button';
 import { autoSyncKey, companionRequest, saveCardLadderReport } from '@/utils/cardLadderCompanion';
 import { buildSalesPreview, canAddCardLadderHolding, createSalesBinding, safeCardLadderImage } from '@/utils/cardLadderSales';
 
-import { formatCardLadderMoney } from '@/utils/cardLadderCurrency';
+import { convertSyncAmount, formatSyncMoney, formatSyncStickerPrice } from '@/utils/syncCurrency';
 const labels = { ready: 'Ready', 'no-sales': 'No matching sales in this window', incomplete: 'Capture incomplete', 'image-only': 'Add missing image · price unchanged', unmatched: 'Link an inventory card', ambiguous: 'Ambiguous match — choose a card' };
 
 export function CardLadderSyncPanel() {
-  const { user, db, collectionItems = [], currency = 'USD' } = useApp();
+  const { user, db, collectionItems = [], currency = 'EUR', secondaryCurrency = null, roundUpPrices = false } = useApp();
+  const displayPreferences = { currency, secondaryCurrency, roundUpPrices };
   const [status, setStatus] = useState(null);
   const [report, setReport] = useState(null);
   const [bindings, setBindings] = useState({});
@@ -93,7 +94,7 @@ export function CardLadderSyncPanel() {
     </aside>}
     {report && !preview.error && <div className="mt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><h4 className="font-semibold text-slate-950">Review inventory changes</h4><p className="text-xs text-slate-600">{report.startDate} – {report.endDate} · {report.currency || 'USD'} per card{report.schemaVersion === 1 ? ' · legacy USD report' : ''}</p><p className="mt-1 text-xs text-slate-600">Captured <time dateTime={report.capturedAt}>{new Date(report.capturedAt).toLocaleString()}</time></p></div>
+        <div><h4 className="font-semibold text-slate-950">Review inventory changes</h4><p className="text-xs text-slate-600">{report.startDate} – {report.endDate} · {currency} per card{secondaryCurrency && secondaryCurrency !== currency ? ` (${secondaryCurrency} in parentheses)` : ''}</p><p className="mt-1 text-xs text-slate-600">Captured <time dateTime={report.capturedAt}>{new Date(report.capturedAt).toLocaleString()}</time></p><details className="mt-1 text-xs text-slate-600"><summary className="cursor-pointer underline">Capture details</summary><p>Source prices were recorded in {report.currency || 'USD'}{report.schemaVersion === 1 ? ' · legacy USD report' : ''}. Saving preserves that source currency; the amounts above use your display preferences.</p></details></div>
         <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setReport(null); setBindings({}); setAdditions({}); setExcluded({}); setValueChoices({}); }}>Close preview</Button>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">Uses CardLadder’s date-only two-week window (UTC). Includes auctions, fixed prices, and accepted offers. Titles must match the card number, name, and grade; bundles and conflicting grades are excluded.</p>
@@ -106,25 +107,28 @@ export function CardLadderSyncPanel() {
       <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
         {preview.rows.map(row => {
           const id = row.holding.holdingId;
-          const money = value => formatCardLadderMoney(value, row.currency);
+          const money = (value, sourceCurrency = row.currency) => formatSyncMoney(value, sourceCurrency, displayPreferences);
           const selectable = Boolean(row.high || usesValue(row) || row.status === 'image-only' || canAddCardLadderHolding(collectionItems, row.holding) || additions[id]);
           const checked = selectable && !isExcluded(row);
           const cardImage = safeCardLadderImage(row.holding.imageUrl);
           const proposedPrice = usesValue(row) ? row.fallbackValue : row.high?.price;
-          const sameCurrency = row.currency === row.previousCurrency;
-          const change = sameCurrency && proposedPrice != null && row.previousPrice != null ? proposedPrice - row.previousPrice : null;
-          const manualPrice = row.item?.overridePrice ?? row.item?.manualPrice;
-          const manualCurrency = row.item?.overridePrice != null ? row.item.overridePriceCurrency || currency : row.item?.manualPriceCurrency || 'USD';
+          const proposedDisplay = convertSyncAmount(proposedPrice, row.currency, currency);
+          const previousDisplay = convertSyncAmount(row.previousPrice, row.previousCurrency, currency);
+          const change = proposedDisplay != null && previousDisplay != null ? proposedDisplay - previousDisplay : null;
+          const stickerPrice = row.item ? formatSyncStickerPrice(row.item, displayPreferences) : 'Not linked';
+          const addition = additions[id];
+          const purchaseCost = addition?.buyPrice === '' ? '' : addition?.buyPriceCurrency === currency ? addition?.buyPrice : convertSyncAmount(addition?.buyPrice, addition?.buyPriceCurrency, currency)?.toFixed(2) ?? '';
           return <div className={`rounded-xl border bg-white p-4 text-sm ${checked ? 'border-emerald-200' : 'border-slate-200'}`} key={id}>
           <div className="flex items-start gap-3">
             <input aria-label={`Include ${row.holding.name} ${id}`} className="mt-1 h-5 w-5 shrink-0 appearance-auto accent-emerald-700" type="checkbox" checked={checked} disabled={busy || !selectable} onChange={event => setExcluded(current => ({ ...current, [id]: !event.target.checked }))} />
             <>{cardImage && <img src={cardImage} alt={`${row.holding.name} — CardLadder reference`} className="h-20 w-14 shrink-0 rounded bg-slate-50 object-contain" loading="lazy" referrerPolicy="no-referrer" onError={event => { event.currentTarget.style.display = 'none'; }} />}</><div className="min-w-0 flex-1"><p className="font-semibold text-slate-950">{row.holding.name} #{row.holding.number}</p><p className="mt-0.5 text-xs text-slate-600">{row.holding.set} {row.holding.variation}</p></div>
             <span className="shrink-0 rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-800">{row.holding.gradingCompany} {row.holding.grade}</span>
           </div>
-          <div className="my-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-            <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs text-slate-600">Current market estimate</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{row.item ? formatCardLadderMoney(row.previousPrice, row.previousCurrency) : additions[id] ? 'New card' : 'Not linked'}</p></div>
+          <div className="my-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5"><p className="text-xs font-semibold uppercase text-amber-900">Current sticker price</p><p className="mt-1 text-lg font-semibold tabular-nums text-amber-950">{stickerPrice}</p><p className="text-xs text-amber-900">As shown in Inventory</p></div>
+            <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs text-slate-600">Current market estimate</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{row.item ? money(row.previousPrice, row.previousCurrency) : additions[id] ? 'New card' : 'Not linked'}</p></div>
             <div className="rounded-lg bg-emerald-50 p-2.5"><p className="text-xs text-emerald-900">14-day high</p><p className="mt-1 text-lg font-semibold tabular-nums text-emerald-950">{row.high ? money(row.high.price) : !row.holding.complete ? 'Unavailable' : 'No recent sales'}</p><p className="text-xs text-emerald-900">{row.high ? `${row.saleCount} eligible ${row.saleCount === 1 ? 'sale' : 'sales'}` : row.status === 'incomplete' || !row.holding.complete ? 'Capture incomplete' : usesValue(row) ? 'CardLadder Value selected below' : additions[id] ? 'Added without a price' : 'Price stays unchanged'}</p></div>
-            <div className="hidden rounded-lg bg-slate-50 p-2.5 sm:block"><p className="text-xs text-slate-600">Change</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{!sameCurrency && row.previousPrice != null && proposedPrice != null ? 'Different currencies' : change == null ? '—' : `${change > 0 ? '+' : ''}${money(change)}`}</p></div>
+            <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs text-slate-600">Market estimate change</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{change == null ? '—' : `${change > 0 ? '+' : ''}${money(change, currency)}`}</p></div>
           </div>
           <p className={`text-xs font-medium ${checked && (row.status === 'unmatched' || row.status === 'ambiguous') && !additions[id] ? 'text-amber-800' : 'text-slate-600'}`}>{isExcluded(row) ? row.statistics?.highIsAnomaly ? 'Unusual high — unchecked until you review it' : 'Excluded from this save' : additions[id] ? 'Add as new card' : usesValue(row) && row.item && row.status !== 'ambiguous' ? 'Use CardLadder Value · ready' : labels[row.status]}</p>
           {!row.high && row.holding.complete && <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
@@ -158,7 +162,7 @@ export function CardLadderSyncPanel() {
               {row.statistics.anomalies.length > 20 && <p className="mt-2">Showing the first 20 of {row.statistics.anomalies.length} flagged sales.</p>}
             </details>
           </div>}
-          {row.locked && <p className="text-xs text-amber-800">Your manual selling price ({new Intl.NumberFormat('en-US', { style: 'currency', currency: manualCurrency }).format(manualPrice)}) remains active. Market-estimate updates do not replace it.</p>}
+          {row.locked && <p className="text-xs text-amber-800">Your current sticker price ({stickerPrice}) remains active. Market-estimate updates do not replace it.</p>}
           {row.holding.error && <p className="text-xs text-amber-800">{row.holding.error}</p>}
           {(row.status === 'unmatched' || row.status === 'ambiguous' || bindings[row.holding.holdingId]) && <label className="mt-2 block text-xs">Choose an existing card, or add it if it is missing:
             <select aria-label={`Link ${row.holding.name} ${row.holding.holdingId}`} className="mt-1 w-full rounded border p-2" value={additions[row.holding.holdingId] ? '__new__' : bindings[row.holding.holdingId]?.entryId || ''} onChange={event => {
@@ -176,7 +180,7 @@ export function CardLadderSyncPanel() {
             <p className="mb-2 text-xs">Confirm how many you own. The capture does not provide quantity or purchase cost. Available CardLadder reference images are included; certificate number stays blank.</p>
             <div className="flex flex-wrap gap-3">
               <label className="text-xs">Quantity<input aria-label={`Quantity for ${row.holding.name} ${row.holding.holdingId}`} className="mt-1 block w-24 rounded border p-2" type="number" min="1" max="100000" step="1" value={additions[row.holding.holdingId].quantity} onChange={event => setAdditions(current => ({ ...current, [row.holding.holdingId]: { ...current[row.holding.holdingId], quantity: event.target.value } }))} /></label>
-              <label className="text-xs">Purchase cost per card ({additions[row.holding.holdingId].buyPriceCurrency}, optional)<input aria-label={`Purchase cost for ${row.holding.name} ${row.holding.holdingId}`} className="mt-1 block w-40 rounded border p-2" type="number" min="0" step="0.01" placeholder="Unknown" value={additions[row.holding.holdingId].buyPrice} onChange={event => setAdditions(current => ({ ...current, [row.holding.holdingId]: { ...current[row.holding.holdingId], buyPrice: event.target.value } }))} /></label>
+              <label className="text-xs">Purchase cost per card ({currency}, optional)<input aria-label={`Purchase cost for ${row.holding.name} ${row.holding.holdingId}`} className="mt-1 block w-40 rounded border p-2" type="number" min="0" step="0.01" placeholder="Unknown" value={purchaseCost} onChange={event => setAdditions(current => ({ ...current, [row.holding.holdingId]: { ...current[row.holding.holdingId], buyPrice: event.target.value, buyPriceCurrency: currency } }))} />{addition.buyPrice !== '' && secondaryCurrency && secondaryCurrency !== currency && <span className="mt-1 block text-slate-600">{money(addition.buyPrice, addition.buyPriceCurrency)}</span>}</label>
             </div>
           </div>}
         </div>; })}
