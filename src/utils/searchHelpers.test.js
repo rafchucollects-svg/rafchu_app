@@ -506,6 +506,29 @@ describe("mergeBestData", () => {
     expect(merged.prices.cardmarket.lowest_near_mint).toBe(8);
   });
 
+  it("preserves missing-price nulls while filling them from available fallback prices", () => {
+    const preferred = {
+      name: "Shining Charizard",
+      image: "https://example.com/shining-charizard.png",
+      prices: {
+        cardmarket: {
+          lowest_near_mint_FR: null,
+          lowest_near_mint_IT: null,
+          unavailable: undefined,
+        },
+      },
+    };
+    const fallback = {
+      name: "Shining Charizard",
+      prices: { cardmarket: { lowest_near_mint_IT: 3350 } },
+    };
+
+    expect(mergeBestData(preferred, fallback).prices.cardmarket).toStrictEqual({
+      lowest_near_mint_FR: null,
+      lowest_near_mint_IT: 3350,
+    });
+  });
+
   it("deep-merges complementary provider data and keeps descriptive labels", () => {
     const priced = {
       name: "Charizard ex",
@@ -542,6 +565,47 @@ describe("mergeBestData", () => {
 });
 
 describe("deduplicateResults", () => {
+  it("keeps Shining Charizard provider price fields serializable after deduplication", () => {
+    const identity = {
+      name: "Shining Charizard",
+      set: "Neo Destiny",
+      number: 107,
+      image: "https://example.com/shining-charizard.png",
+    };
+    const cards = [
+      {
+        ...identity,
+        id: 18459,
+        rarity: "Rare Shining",
+        tcgid: "neo4-107",
+        prices: {
+          cardmarket: {
+            currency: "EUR",
+            lowest_near_mint: 90000,
+            lowest_near_mint_FR: null,
+            lowest_near_mint_FR_EU_only: null,
+          },
+          tcgplayer: { currency: "EUR", market_price: 1277.78 },
+        },
+      },
+      {
+        ...identity,
+        id: 50062,
+        rarity: "SECRET RARE",
+        prices: {
+          cardmarket: { currency: "EUR", lowest_near_mint: 3250 },
+          tcgplayer: { currency: "EUR", market_price: null },
+        },
+      },
+    ];
+
+    const [merged] = deduplicateResults(cards);
+    expect(merged.prices.cardmarket.lowest_near_mint_FR).toBeNull();
+    expect(merged.prices.cardmarket.lowest_near_mint_FR_EU_only).toBeNull();
+    expect(merged.prices.tcgplayer.market_price).toBe(1277.78);
+    expect(merged.prices).toStrictEqual(JSON.parse(JSON.stringify(merged.prices)));
+  });
+
   it("removes duplicate cards", () => {
     const cards = [
       { name: "Pikachu", number: "25", set: "Base Set" },

@@ -1157,7 +1157,11 @@ export function mergeBestData(card1, card2) {
       if (isPlainObject(preferredValue) && isPlainObject(fallbackValue)) {
         merged[key] = mergeObjects(preferredValue, fallbackValue);
       } else {
-        merged[key] = hasValue(preferredValue) ? preferredValue : fallbackValue;
+        const value = hasValue(preferredValue)
+          ? preferredValue
+          : fallbackValue !== undefined ? fallbackValue : preferredValue;
+        // Retain explicit nulls when the other provider omits the field.
+        if (value !== undefined) merged[key] = value;
       }
     });
     return merged;
