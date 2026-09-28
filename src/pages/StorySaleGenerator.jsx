@@ -1,3 +1,4 @@
+import { PhotoStoryStudio } from "@/components/PhotoStoryStudio";
 import { CLOUD_FUNCTIONS_BASE } from "@/utils/functionEndpoint";
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -1044,7 +1045,7 @@ function createImageEntry(file) {
   };
 }
 
-export function StorySaleGenerator() {
+function InventoryStorySaleGenerator() {
   const { user, collectionItems, currency, secondaryCurrency } = useApp();
 
   const [images, setImages] = useState([]);
@@ -1055,7 +1056,7 @@ export function StorySaleGenerator() {
   const [globalError, setGlobalError] = useState(null);
 
   // Inventory-mode picker state
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(true);
   const [pickerMode, setPickerMode] = useState("graded"); // 'graded' | 'ungraded'
   const [pickerSearch, setPickerSearch] = useState("");
   const [pickerSelected, setPickerSelected] = useState(() => new Set());
@@ -2743,4 +2744,18 @@ export function StorySaleGenerator() {
       )}
     </div>
   );
+}
+
+export function StorySaleGenerator() {
+  const { user } = useApp();
+  const [mode, setMode] = useState('photos');
+  const [inventoryOpened, setInventoryOpened] = useState(false);
+  return <div className="max-w-7xl mx-auto">
+    <nav className="photo-studio-mode-nav" aria-label="Story Sale source">
+      <button aria-pressed={mode === 'photos'} onClick={() => setMode('photos')}>Your photos</button>
+      <button aria-pressed={mode === 'inventory'} onClick={() => { setInventoryOpened(true); setMode('inventory'); }}>Inventory collages</button>
+    </nav>
+    <div hidden={mode !== 'photos'}><PhotoStoryStudio key={user?.uid || 'signed-out'} /></div>
+    {inventoryOpened && <div hidden={mode !== 'inventory'}><InventoryStorySaleGenerator key={user?.uid || 'signed-out'} /></div>}
+  </div>;
 }
