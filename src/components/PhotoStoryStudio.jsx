@@ -824,6 +824,10 @@ export function PhotoStoryStudio() {
                       draggable="false"
                       style={{
                         position: "absolute",
+                        visibility:
+                          renderedPreview?.photoId === active.id
+                            ? "hidden"
+                            : "visible",
                         left: `${(layout.imageX / layout.width) * 100}%`,
                         top: `${(layout.imageY / layout.height) * 100}%`,
                         width: `${(layout.imageWidth / layout.width) * 100}%`,
