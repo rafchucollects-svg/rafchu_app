@@ -141,6 +141,40 @@ describe("embedded graded data", () => {
       },
     });
   });
+
+  it('normalizes BGS and CGC provider grades while keeping all 10 tiers distinct', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const card = { name: 'Lugia V', prices: {
+      cardmarket: { currency: 'EUR', graded: { bgs: { bgs9_5: 80, bgs10: 150, bgs10_black_label: 900 }, cgc: { cgc10: 100 } } },
+      ebay: { currency: 'USD', graded: { cgc: { 'CGC Pristine 10': { median_price: 300, sample_size: 4 }, '10 Perfect': 600, '8.5': 45 }, bgs: { 'BGS 10 Pristine': 160 } } },
+    } };
+    expect(getEmbeddedGradedPrices(card, 'BGS')).toEqual({
+      '9.5': { price: 80, sampleSize: null }, '10': { price: 160, sampleSize: null },
+      '10 Black Label': { price: 900, sampleSize: null },
+    });
+    for (const [company, grade, price, currency] of [
+      ['BGS', '9.5', 80, 'EUR'], ['BGS', '10', 160, 'USD'], ['BGS', '10 Black Label', 900, 'EUR'],
+      ['CGC', '10', 100, 'EUR'], ['CGC', '10 Pristine', 300, 'USD'], ['CGC', '10 Perfect', 600, 'USD'], ['CGC', '8.5', 45, 'USD'],
+    ]) {
+      await expect(apiFetchGradedPrices(card, company, grade)).resolves.toMatchObject({ success: true, graded: { company, grade, price, currency } });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not replace missing tiers or unsupported grades with an ordinary 10 price', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const card = { name: 'Lugia V', prices: { ebay: { graded: {
+      bgs: { '10': 100, '10 Perfect': 900 }, cgc: { '10': 100, '10 Pristine Perfect': 900 },
+    } } } };
+    expect(getEmbeddedGradedPrices(card, 'BGS')).toEqual({ '10': { price: 100, sampleSize: null } });
+    expect(getEmbeddedGradedPrices(card, 'CGC')).toEqual({ '10': { price: 100, sampleSize: null } });
+    for (const [company, grade] of [['BGS', '10 Black Label'], ['CGC', '10 Pristine'], ['CGC', '9.5'], ['PSA', '10 Pristine']]) {
+      await expect(apiFetchGradedPrices(card, company, grade)).resolves.toMatchObject({ success: false });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("database cache enrichment", () => {

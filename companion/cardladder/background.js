@@ -1,5 +1,6 @@
 import { CARD_LADDER_REPORT_VERSION, salesWindow } from '../../src/utils/cardLadderSales.js';
 import { isCardLadderCurrency } from '../../src/utils/cardLadderCurrency.js';
+import { readSalesDestination, salesGrading } from './grading.js';
 
 const ORIGIN = 'https://app.cardladder.com';
 const APP_ORIGINS = new Set(['https://rafchu-tcg-app.firebaseapp.com', 'https://rafchu-tcg-app.web.app']);
@@ -63,21 +64,15 @@ async function capture() {
       const holding = holdings[index];
       await saveStatus({ state: 'running', current: index + 1, total: holdings.length, message: `Reading ${holding.name} · ${holding.gradingCompany} ${holding.grade}`, startedAt: capturedAt });
       try {
-        // This release uses the PSA profile URL mapping verified against CardLadder.
-        if (holding.gradingCompany !== 'PSA' || !/^\d+(?:\.\d+)?$/.test(holding.grade)) throw new Error('This release supports numeric PSA grades. This holding was skipped.');
+        const grading = salesGrading(holding);
+        Object.assign(holding, { gradingCompany: grading.gradingCompany, grade: grading.grade });
         await navigate(tab.id, holding.collectionUrl);
-        Object.assign(holding, await command(tab.id, 'holding', { holdingId: holding.holdingId }));
+        Object.assign(holding, await command(tab.id, 'holding', { holdingId: holding.holdingId, gradingCompany: holding.gradingCompany, grade: holding.grade }));
         if (holding.error) throw new Error(holding.error);
-        const id = /\/profiles\/(?:psa|matched)-(\d+)/.exec(new URL(holding.profileUrl).pathname)?.[1];
-        if (!id) throw new Error('No supported exact PSA profile link.');
-        const profileId = `psa-${id}`;
-        const url = new URL(`${ORIGIN}/sales-history`);
-        url.searchParams.set('filters', `grader:psa|grade:g${holding.grade}|profileId:${profileId}`);
-        url.searchParams.set('sort', 'date');
-        url.searchParams.set('direction', 'desc');
-        await navigate(tab.id, url.href);
-        Object.assign(holding, await command(tab.id, 'sales', { startDate: report.startDate, endDate: report.endDate, profileId, grade: holding.grade, currency: report.currency }));
-      } catch (error) { holding.complete = false; holding.sales = []; holding.error = error.message; }
+        const { profileId, salesUrl } = readSalesDestination(holding.salesUrl, holding);
+        await navigate(tab.id, salesUrl);
+        Object.assign(holding, await command(tab.id, 'sales', { startDate: report.startDate, endDate: report.endDate, profileId, gradingCompany: holding.gradingCompany, grade: holding.grade, holding, currency: report.currency }));
+      } catch (error) { holding.complete = false; holding.sales = []; holding.latestSale = null; holding.error = error.message; }
       report.holdings.push(holding);
     }
     if (job.cancelled) throw new Error('Sync cancelled.');

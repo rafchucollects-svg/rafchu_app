@@ -1,5 +1,6 @@
 // Shared by the app and the browser companion. No credentials or provider API.
 import { isCardLadderCurrency } from './cardLadderCurrency.js';
+import { normalizeGrading, sameGrading } from './grading.js';
 export const CARD_LADDER_REPORT_VERSION = 2;
 const DAY = 86400000;
 const normalize = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -13,8 +14,9 @@ export function cardLadderIdentity(item, isHolding = false) {
   const year = String(raw.year || item.year || /\b(?:19|20)\d{2}\b/.exec(set)?.[0] || '');
   const setKey = normalize(set).replace(/\b(?:19|20)\d{2}\b/g, '').replace(/\bpokemon\b/g, '').replace(/\s+/g, ' ').trim();
   const language = normalize(item.language || (/japanese|japan/i.test(set) ? 'Japanese' : 'English'));
+  const grading = normalizeGrading(item.gradingCompany, item.grade);
   return JSON.stringify([normalize(raw.playerRaw || item.name), setKey, year, numberOf(item.number),
-    normalize(raw.variation ?? item.variation ?? item.rarity), language, normalize(item.gradingCompany), String(item.grade)]);
+    normalize(raw.variation ?? item.variation ?? item.rarity), language, normalize(grading?.gradingCompany || item.gradingCompany), grading?.grade || String(item.grade)]);
 }
 
 export function createSalesBinding(item, holding) {
@@ -113,13 +115,20 @@ export function saleIdentity(sale) {
 export function isComparableSale(sale, holding) {
   const title = ` ${normalize(sale.title)} `;
   if (/\b(lot|bundle|reprint|replica|proxy|signed|autograph|qualifier|oc|mk)\b/.test(title)) return false;
-  const grader = normalize(holding.gradingCompany);
-  const grade = normalize(holding.grade);
-  // Require an explicit correct grade, and reject conflicting grade statements.
-  const grades = [...title.matchAll(/\b(psa|bgs|cgc|sgc)\s*(\d+(?:\s+\d)?)(?=\s)/g)];
-  if (!grades.some(m => m[1] === grader && m[2] === grade)) return false;
-  if (grades.some(m => m[1] !== grader || m[2] !== grade)) return false;
-  if (/\b(black label|pristine|perfect)\b/.test(title)) return false;
+  if (!isSupportedCardLadderGrading(holding)) return false;
+  // Keep decimals intact: 9.5 and 9 are different grades. A label qualifier
+  // anywhere in the title must agree with the holding, including when sellers
+  // put "Black Label" or "Pristine" after the card name instead of the grade.
+  const gradeTitle = String(sale.title || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ')
+    .replace(/([a-z])(\d)|(\d)([a-z])/g, '$1$3 $2$4').replace(/\s+/g, ' ');
+  const normalizeLabel = label => /^(?:black\s*label|black|bl)$/.test(label) ? 'black label' : label;
+  const qualifiers = [...new Set((gradeTitle.match(/\b(?:black\s*label|bl|pristine|perfect|gold\s+label|gem\s+(?:mint|mt))\b/g) || [])
+    .map(normalizeLabel))];
+  const grades = [...gradeTitle.matchAll(/\b(psa|bgs|beckett|cgc|sgc)\s*(?:(black\s*label|black|bl|gold\s+label|pristine|perfect|gem\s+(?:mint|mt)|p|b)\s*)?(\d+(?:\.\d+)?)(?![\d.])(?:\s*(black|p|b)\b)?/g)];
+  if (!grades.length || grades.some(match => {
+    const labels = [...new Set([...qualifiers, ...[match[2], match[4]].filter(Boolean).map(normalizeLabel)])];
+    return !sameGrading(holding, { gradingCompany: match[1], grade: `${match[3]} ${labels.join(' ')}`.trim() });
+  })) return false;
   const name = normalize(holding.name).split(' ').filter(word => !['full','art','fa','holo'].includes(word));
   if (!name.length || !name.every(word => title.includes(` ${word} `))) return false;
   const number = numberOf(holding.number);
@@ -129,24 +138,47 @@ export function isComparableSale(sale, holding) {
   return true;
 }
 
+export function isSupportedCardLadderGrading(item) {
+  const grading = normalizeGrading(item?.gradingCompany, item?.grade);
+  return Boolean(grading && ['PSA', 'BGS', 'CGC'].includes(grading.gradingCompany));
+}
+
 export function summarizeSales(holding, window) {
-  if (holding.complete !== true) return { status: 'incomplete', saleCount: 0, high: null };
+  if (holding.complete !== true) return { status: 'incomplete', saleCount: 0, high: null, latestSale: null };
+  if (!isSupportedCardLadderGrading(holding)) return { status: 'unsupported', saleCount: 0, high: null, latestSale: null };
   const currency = holding.currency || 'USD';
   if (!isCardLadderCurrency(currency)) throw new Error('Unsupported capture currency. Run a new capture.');
   const eligible = new Map();
+  let latestSale = null;
+  const validateSale = sale => {
+    if (!parseSaleDate(sale?.soldDate) || !safeSaleUrl(sale?.url) || sale?.currency !== currency ||
+        typeof sale?.price !== 'number' || !Number.isFinite(sale.price) || sale.price <= 0) throw new Error('Invalid sale evidence. Capture this card again.');
+  };
+  const comparable = sale => ['Auction', 'Fixed Price', 'Best Offer'].includes(sale.type) && isComparableSale(sale, holding);
   let excluded = 0;
   for (const sale of holding.sales || []) {
-    if (!parseSaleDate(sale.soldDate) || !safeSaleUrl(sale.url) || sale.currency !== currency ||
-        typeof sale.price !== 'number' || !Number.isFinite(sale.price) || sale.price <= 0) throw new Error('Invalid sale evidence. Capture this card again.');
+    validateSale(sale);
+    const matches = comparable(sale);
+    if (matches && sale.soldDate <= window.endDate && (!latestSale || sale.soldDate > latestSale.soldDate)) latestSale = sale;
     if (sale.soldDate < window.startDate || sale.soldDate > window.endDate) continue;
-    if (!['Auction', 'Fixed Price', 'Best Offer'].includes(sale.type) || !isComparableSale(sale, holding)) { excluded++; continue; }
+    if (!matches) { excluded++; continue; }
     const id = saleIdentity(sale);
     const previous = eligible.get(id);
     if (previous && (previous.price !== sale.price || previous.soldDate !== sale.soldDate)) throw new Error('Conflicting duplicate sale records. Capture this card again.');
     eligible.set(id, sale);
   }
+  // A fresh companion can capture the last matching sale beyond the pricing
+  // window. It is context only: it never enters the 14-day high or statistics.
+  if (holding.latestSale != null) {
+    const sale = holding.latestSale;
+    validateSale(sale);
+    if (sale.soldDate > window.endDate || !comparable(sale)) throw new Error('Invalid latest sale evidence. Capture this card again.');
+    const duplicate = (holding.sales || []).find(other => saleIdentity(other) === saleIdentity(sale));
+    if (duplicate && (duplicate.price !== sale.price || duplicate.soldDate !== sale.soldDate)) throw new Error('Conflicting duplicate sale records. Capture this card again.');
+    if (!latestSale || sale.soldDate > latestSale.soldDate) latestSale = sale;
+  }
   const sales = [...eligible.values()].sort((a, b) => b.price - a.price || b.soldDate.localeCompare(a.soldDate));
-  return { status: sales.length ? 'ready' : 'no-sales', currency, saleCount: sales.length, excluded, high: sales[0] || null, statistics: saleStatistics(sales) };
+  return { status: sales.length ? 'ready' : 'no-sales', currency, saleCount: sales.length, excluded, high: sales[0] || null, latestSale, statistics: saleStatistics(sales) };
 }
 
 export function validateSalesReport(report, now = Date.now()) {
@@ -168,6 +200,7 @@ export function validateSalesReport(report, now = Date.now()) {
     if ((report.schemaVersion === 2 && holding.currency !== currency) ||
         (holding.currency && holding.currency !== currency) ||
         holding.sales.some(sale => sale.currency !== currency) ||
+        (holding.latestSale != null && holding.latestSale.currency !== currency) ||
         (holding.cardLadderValue != null && holding.cardLadderValueCurrency !== currency)) throw new Error('Mixed or missing capture currencies. Run a new capture without changing CardLadder’s display currency.');
     count += holding.sales.length;
     if (count > 50000) throw new Error('Report exceeds the 50,000-sale limit.');
@@ -178,7 +211,7 @@ export function validateSalesReport(report, now = Date.now()) {
 // Provider estimate is a separate, explicitly selected fallback, never a sale.
 export function cardLadderFallbackValue(holding, summary) {
   const value = holding.cardLadderValue;
-  return holding.complete === true && summary.saleCount === 0 && isCardLadderCurrency(holding.cardLadderValueCurrency) && holding.cardLadderValueCurrency === (holding.currency || 'USD') &&
+  return holding.complete === true && isSupportedCardLadderGrading(holding) && summary.saleCount === 0 && isCardLadderCurrency(holding.cardLadderValueCurrency) && holding.cardLadderValueCurrency === (holding.currency || 'USD') &&
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
 
@@ -187,7 +220,7 @@ export function buildSalesPreview(items, report, now = Date.now(), bindings = {}
   const used = new Set();
   return report.holdings.map(holding => {
     const summary = summarizeSales(holding, window);
-    const sameGrade = item => item.isGraded && normalize(item.gradingCompany) === normalize(holding.gradingCompany) && String(item.grade) === String(holding.grade);
+    const sameGrade = item => item.isGraded && sameGrading(item, holding);
     const identity = cardLadderIdentity(holding, true);
     const binding = bindings[holding.holdingId];
     const previouslyLinked = items.filter(item => item.cardladderData?.holdingId === holding.holdingId);
@@ -205,7 +238,7 @@ export function buildSalesPreview(items, report, now = Date.now(), bindings = {}
 }
 
 export function canAddCardLadderHolding(items, holding) {
-  return holding.complete === true && holding.gradingCompany === 'PSA' && /^\d+(?:\.\d+)?$/.test(holding.grade) &&
+  return holding.complete === true && isSupportedCardLadderGrading(holding) &&
     ['name', 'number', 'set'].every(key => typeof holding[key] === 'string' && holding[key].trim()) &&
     !items.some(item => item.cardladderData?.holdingId === holding.holdingId ||
       item.entryId === `cardladder-holding-${encodeURIComponent(holding.holdingId)}` ||
@@ -224,7 +257,7 @@ function newCardLadderItem(holding, details, now) {
     name: holding.name, set: holding.set, number: holding.number, rarity: holding.variation || '',
     language: /japanese|japan/i.test(holding.set) ? 'Japanese' : 'English',
     image: safeCardLadderImage(holding.imageUrl) || '', condition: 'NM', quantity, addedAt: now, source: 'cardladder', acquiredVia: 'cardladder',
-    isGraded: true, gradingCompany: holding.gradingCompany, grade: holding.grade,
+    isGraded: true, ...normalizeGrading(holding.gradingCompany, holding.grade),
     gradedPrice: null, gradedPriceCurrency: holding.currency || 'USD',
     ...(hasCost ? { buyPrice, buyPriceCurrency } : {}),
     cardladderData: { playerRaw: holding.name, setRaw: holding.set, variation: holding.variation || '',

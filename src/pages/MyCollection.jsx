@@ -1,3 +1,4 @@
+import { getGradeOptions, getGradeLabel, gradeForCompany, normalizeGrading, updateItemGrading } from "@/utils/grading";
 import { saveItemChanges } from "@/utils/inventoryStore";
 import { InventoryTrash } from "@/components/InventoryTrash";
 import { useMemo, useState, useCallback, useEffect } from "react";
@@ -390,8 +391,9 @@ export function MyCollection() {
   const startEditingCondition = (card) => {
     setEditingCondition(true);
     if (card.isGraded) {
-      setEditGradingCompany(card.gradingCompany || "PSA");
-      setEditGrade(card.grade || "10");
+      const grading = normalizeGrading(card.gradingCompany || "PSA", card.grade || "10");
+      setEditGradingCompany(grading?.gradingCompany || card.gradingCompany || "PSA");
+      setEditGrade(grading?.grade || card.grade || "10");
     } else {
       setEditConditionValue(card.condition || "NM");
     }
@@ -411,7 +413,10 @@ export function MyCollection() {
 
     try {
       setUpdatingGradePrice(true);
-      let newGradedPrice = selectedCardDetails.gradedPrice;
+      const updatedGrading = selectedCardDetails.isGraded
+        ? updateItemGrading(selectedCardDetails, editGradingCompany, editGrade) : selectedCardDetails;
+      let newGradedPrice = updatedGrading.gradedPrice;
+      let newGradedCurrency = updatedGrading.gradedPriceCurrency || "USD";
 
       // Refresh from supported graded market data when available.
       if (selectedCardDetails.isGraded) {
@@ -423,6 +428,7 @@ export function MyCollection() {
               'USD',
               data.graded.currency || 'USD',
             );
+            newGradedCurrency = 'USD';
           }
         } catch (err) {
           console.warn("Failed to fetch updated graded price:", err);
@@ -433,10 +439,9 @@ export function MyCollection() {
         if (item.entryId === selectedCardDetails.entryId) {
           if (selectedCardDetails.isGraded) {
             return {
-              ...item,
-              gradingCompany: editGradingCompany,
-              grade: editGrade,
+              ...updateItemGrading(item, editGradingCompany, editGrade),
               gradedPrice: newGradedPrice,
+              gradedPriceCurrency: newGradedCurrency,
             };
           } else {
             return { ...item, condition: editConditionValue };
@@ -450,10 +455,9 @@ export function MyCollection() {
       // Update modal with new values
       if (selectedCardDetails.isGraded) {
         setSelectedCardDetails({
-          ...selectedCardDetails,
-          gradingCompany: editGradingCompany,
-          grade: editGrade,
+          ...updatedGrading,
           gradedPrice: newGradedPrice,
+          gradedPriceCurrency: newGradedCurrency,
         });
       } else {
         setSelectedCardDetails({ ...selectedCardDetails, condition: editConditionValue });
@@ -1313,7 +1317,10 @@ export function MyCollection() {
                             <div className="flex items-center gap-2">
                               <Select
                                 value={editGradingCompany}
-                                onChange={(e) => setEditGradingCompany(e.target.value)}
+                                onChange={(e) => {
+                                  setEditGradingCompany(e.target.value);
+                                  setEditGrade(gradeForCompany(e.target.value, editGrade, "10"));
+                                }}
                                 className="w-20 h-8 text-sm"
                               >
                                 <option value="PSA">PSA</option>
@@ -1326,21 +1333,11 @@ export function MyCollection() {
                               <Select
                                 value={editGrade}
                                 onChange={(e) => setEditGrade(e.target.value)}
-                                className="w-16 h-8 text-sm"
+                                className="min-w-36 h-8 text-sm"
                               >
-                                <option value="10">10</option>
-                                <option value="9.5">9.5</option>
-                                <option value="9">9</option>
-                                <option value="8.5">8.5</option>
-                                <option value="8">8</option>
-                                <option value="7.5">7.5</option>
-                                <option value="7">7</option>
-                                <option value="6">6</option>
-                                <option value="5">5</option>
-                                <option value="4">4</option>
-                                <option value="3">3</option>
-                                <option value="2">2</option>
-                                <option value="1">1</option>
+                                {getGradeOptions(editGradingCompany).map(g => (
+                                  <option key={g} value={g}>{getGradeLabel(editGradingCompany, g)}</option>
+                                ))}
                               </Select>
                               {!updatingGradePrice && (
                                 <>

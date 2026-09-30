@@ -1,4 +1,5 @@
 import React from 'react';
+import { getGradeLabel, normalizeGrading } from '@/utils/grading';
 
 /**
  * Grading company badges styled to mimic each company's real slab labels.
@@ -142,11 +143,14 @@ const getStyle = (company) =>
  * previous text-only implementation: same props, drop-in replacement.
  */
 export const GradingBadge = ({ company, grade, className = '' }) => {
+  const normalized = normalizeGrading(company, grade);
+  company = normalized?.gradingCompany || company;
+  grade = getGradeLabel(company, grade);
   const { Wordmark, container, gradePill } = getStyle(company);
 
   return (
     <span
-      className={`inline-flex items-stretch gap-0 rounded border shadow-sm overflow-hidden ${container} ${className}`}
+      className={`inline-flex items-stretch gap-0 rounded border shadow-sm overflow-hidden whitespace-nowrap ${container} ${className}`}
       title={`${company || 'Graded'}${grade !== undefined && grade !== null && grade !== '' ? ` ${grade}` : ''}`}
     >
       <span className="flex items-center px-1.5 py-0.5 h-[20px]">
@@ -168,6 +172,9 @@ export const GradingBadge = ({ company, grade, className = '' }) => {
  * prop. Used in modals / detail views.
  */
 export const GradingCompanyLogo = ({ company, size = 'sm', grade, showText = true }) => {
+  const normalized = normalizeGrading(company, grade);
+  company = normalized?.gradingCompany || company;
+  grade = getGradeLabel(company, grade);
   const { Wordmark, container, gradePill } = getStyle(company);
 
   const heightMap = {
@@ -185,7 +192,7 @@ export const GradingCompanyLogo = ({ company, size = 'sm', grade, showText = tru
 
   return (
     <span
-      className={`inline-flex items-stretch rounded border shadow-sm overflow-hidden ${container} ${heightMap[size] || heightMap.sm}`}
+      className={`inline-flex items-stretch rounded border shadow-sm overflow-hidden whitespace-nowrap ${container} ${heightMap[size] || heightMap.sm}`}
       title={`${company || 'Graded'}${grade ? ` ${grade}` : ''}`}
     >
       <span className="flex items-center px-2">

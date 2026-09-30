@@ -138,7 +138,7 @@ describe('reviewed additions from captured holdings', () => {
     for (const details of [{ quantity: 0 }, { quantity: 1.5 }, { quantity: '' }, { quantity: 1, buyPrice: -1 }, { quantity: 1, buyPrice: 'bad' }]) {
       expect(() => applySalesReport([], report([]), now, {}, { [holding.holdingId]: details })).toThrow();
     }
-    for (const changes of [{ complete: false }, { gradingCompany: 'BGS' }, { number: '' }]) {
+    for (const changes of [{ complete: false }, { gradingCompany: 'SGC' }, { number: '' }]) {
       const input = report([]); Object.assign(input.holdings[0], changes);
       expect(() => applySalesReport([], input, now, {}, { [holding.holdingId]: { quantity: 1 } })).toThrow();
     }

@@ -1,15 +1,68 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCardLadderPurchasePrice,
+  cardLadderCertificateKey,
   cardLadderCompositeKey,
   cardLadderMatchScore,
   findManualDealCardMatch,
   manualDealCardMatchScore,
   parseCardLadderMoney,
+  parseCardLadderCondition,
   preserveDealAcquisitionData,
   preserveEditedCardLadderPurchasePrice,
   toPerUnitCardLadderAmount,
 } from "@/utils/cardLadderImport";
+
+describe("Card Ladder grading imports", () => {
+  it.each([
+    ["BGS10", "BGS", "10"],
+    ["Beckett 9.50", "BGS", "9.5"],
+    ["BGS Pristine 10", "BGS", "10"],
+    ["BGS 10 (Black Label)", "BGS", "10 Black Label"],
+    ["CGC 10 Gem Mint", "CGC", "10"],
+    ["cgc Pristine10", "CGC", "10 Pristine"],
+    ["CGC Perfect 10", "CGC", "10 Perfect"],
+    ["CGC 9.5", "CGC", "9.5"],
+    ["PSA 9 MINT", "PSA", "9"],
+    ["SGC 8", "SGC", "8"],
+  ])("normalizes the CSV condition %s", (condition, company, grade) => {
+    expect(parseCardLadderCondition(condition)).toEqual({ company, grade });
+  });
+
+  it.each(["BGS", "CGC"])("imports the full numeric %s range", company => {
+    for (let grade = 1; grade <= 10; grade += 0.5) {
+      expect(parseCardLadderCondition(`${company} ${grade.toFixed(1)}`)).toEqual({ company, grade: String(grade) });
+    }
+  });
+
+  it("retains unsupported source qualifiers without merging them into numeric grades", () => {
+    expect(parseCardLadderCondition("CGC 10 Unknown Label")).toEqual({ company: "CGC", grade: "10 Unknown Label" });
+    const card = { name: "Pikachu", set: "Base Set", number: "58", gradingCompany: "CGC", grade: "10" };
+    expect(cardLadderCompositeKey({ ...card, grade: "10 Unknown Label" })).not.toBe(cardLadderCompositeKey(card));
+  });
+
+  it("uses equivalent grade aliases while retaining separate company and label identities", () => {
+    const card = { name: "Pikachu", set: "Base Set", number: "58", gradingCompany: "BGS", grade: "10" };
+    expect(cardLadderCompositeKey({ ...card, gradingCompany: "Beckett", grade: "Pristine 10" })).toBe(cardLadderCompositeKey(card));
+    expect(cardLadderCompositeKey({ ...card, grade: 10 })).toBe(cardLadderCompositeKey(card));
+    const grades = [card, { ...card, grade: "10 Black Label" },
+      { ...card, gradingCompany: "CGC" }, { ...card, gradingCompany: "CGC", grade: "10 Pristine" },
+      { ...card, gradingCompany: "CGC", grade: "10 Perfect" }];
+    expect(new Set(grades.map(cardLadderCompositeKey)).size).toBe(grades.length);
+  });
+
+  it("does not deduplicate or reconcile identical certificate numbers across graders or tiers", () => {
+    const card = { name: "Pikachu", set: "Base Set", number: "58", gradingCompany: "BGS", grade: "10", cardladderData: { slabSerial: "123456" } };
+    const manual = { ...card, entryId: "manual", id: "manual-card", isManualEntry: true, buyPrice: 100, acquiredVia: "buy", acquisitionTransactionId: "purchase" };
+    const equivalent = { ...card, gradingCompany: "Beckett", grade: "Pristine 10" };
+    expect(cardLadderCertificateKey(card)).toBe(cardLadderCertificateKey(equivalent));
+    expect(manualDealCardMatchScore(equivalent, manual)).toBe(1000);
+    for (const other of [{ ...card, gradingCompany: "CGC" }, { ...card, grade: "10 Black Label" }, { ...card, grade: "9.5" }]) {
+      expect(cardLadderCertificateKey(other)).not.toBe(cardLadderCertificateKey(card));
+      expect(manualDealCardMatchScore(other, manual)).toBe(0);
+    }
+  });
+});
 
 describe("Card Ladder purchase prices", () => {
   it("parses Investment as a per-unit USD buy price", () => {

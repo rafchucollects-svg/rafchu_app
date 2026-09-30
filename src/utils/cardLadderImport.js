@@ -1,4 +1,36 @@
 import { convertCurrency } from "./cardHelpers";
+import { normalizeGrading, sameGrading } from "./grading";
+
+/** Normalize the grader and grade recorded in Card Ladder's Condition column. */
+export function parseCardLadderCondition(raw) {
+  const value = String(raw ?? "").trim();
+  const match = value.match(/^(PSA|BGS|BECKETT|SGC|CGC)(?:\s+|(?=\d))(.+)$/i);
+  if (!match) return { company: "", grade: value };
+
+  const company = match[1].toUpperCase() === "BECKETT" ? "BGS" : match[1].toUpperCase();
+  const grade = match[2].trim();
+  const normalized = normalizeGrading(company, grade);
+  // Keep an unrecognized label intact for review instead of silently losing a
+  // qualifier and turning it into a differently valued slab.
+  return normalized
+    ? { company: normalized.gradingCompany, grade: normalized.grade }
+    : { company, grade };
+}
+
+function gradingIdentity(item) {
+  const normalized = normalizeGrading(item?.gradingCompany, item?.grade);
+  return [
+    String(normalized?.gradingCompany ?? item?.gradingCompany ?? "").toLowerCase().trim(),
+    String(normalized?.grade ?? item?.grade ?? "").toLowerCase().trim(),
+  ];
+}
+
+/** Certificate numbers are scoped to a grader; keep different grades separate. */
+export function cardLadderCertificateKey(item) {
+  const certificate = String(item?.cardladderData?.slabSerial ?? "").replace(/\s+/g, "").toLowerCase();
+  const grading = gradingIdentity(item);
+  return certificate && grading.every(Boolean) ? JSON.stringify([...grading, certificate]) : "";
+}
 
 export function parseCardLadderMoney(raw) {
   const value = String(raw ?? "").trim();
@@ -106,12 +138,6 @@ const normalizeMatchNumber = (value) => {
     .replace(/^0+(?=\d)/, "");
 };
 
-const normalizeGrade = (value) => {
-  if (value == null || value === "") return "";
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? String(numeric) : normalizeText(value).trim();
-};
-
 const normalizeContextField = (value) => normalizeText(value)
   .replace(/\b(?:19|20)\d{2}\b/g, " ")
   .replace(/\bpokemon\b/g, " ")
@@ -155,6 +181,7 @@ export function manualDealCardMatchScore(cardLadderCard, inventoryCard) {
     String(inventoryCard?.id || inventoryCard?.cardId || "").startsWith("manual-");
   if (!isDealBacked || !hasRecordedCost || !isManual) return 0;
   if (Number(cardLadderCard?.quantity || 1) !== 1 || Number(inventoryCard?.quantity || 1) !== 1) return 0;
+  if (!sameGrading(cardLadderCard, inventoryCard)) return 0;
 
   const incomingCert = getCertNumber(cardLadderCard);
   const existingCert = getCertNumber(inventoryCard);
@@ -164,11 +191,6 @@ export function manualDealCardMatchScore(cardLadderCard, inventoryCard) {
 
   if (normalizeMatchName(cardLadderCard?.name) !== normalizeMatchName(inventoryCard?.name)) return 0;
   if (!normalizeMatchName(cardLadderCard?.name)) return 0;
-
-  const incomingCompany = normalizeText(cardLadderCard?.gradingCompany).trim();
-  const existingCompany = normalizeText(inventoryCard?.gradingCompany).trim();
-  if (!incomingCompany || incomingCompany !== existingCompany) return 0;
-  if (normalizeGrade(cardLadderCard?.grade) !== normalizeGrade(inventoryCard?.grade)) return 0;
 
   const incomingNumber = normalizeMatchNumber(cardLadderCard?.number);
   const existingNumber = normalizeMatchNumber(inventoryCard?.number);
@@ -273,8 +295,7 @@ export function cardLadderCompositeKey(item) {
     (item?.name || "").toLowerCase().trim(),
     (item?.set || "").toLowerCase().trim(),
     (item?.number || "").toLowerCase().trim(),
-    (item?.gradingCompany || "").toLowerCase().trim(),
-    (item?.grade || "").toLowerCase().trim(),
+    ...gradingIdentity(item),
   ].join("|");
 }
 

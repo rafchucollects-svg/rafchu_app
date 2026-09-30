@@ -1,5 +1,7 @@
 import { readAccountCurrency, readCollectionRows, readSalesRows, resultCount, textOf } from './dom.js';
-import { saleIdentity } from '../../src/utils/cardLadderSales.js';
+import { isComparableSale, saleIdentity } from '../../src/utils/cardLadderSales.js';
+import { normalizeGrading, sameGrading } from '../../src/utils/grading.js';
+import { readSalesDestination, salesGrading } from './grading.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const visible = element => Boolean(element && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
@@ -81,33 +83,65 @@ async function inventory({ currency }) {
   }
 }
 
-async function holding({ holdingId }) {
+const dropdownLabel = element => textOf(element).replace(/arrow_drop_down/g, '').replace(/\s+/g, ' ').trim();
+
+async function holding({ holdingId, gradingCompany, grade }) {
+  const expected = salesGrading({ gradingCompany, grade });
   await waitFor(() => new URL(location.href).searchParams.get('cardId') === holdingId && document.querySelector('h1.card-text'), 'collection card');
   const panel = document.querySelector('h1.card-text').closest('.panel') || document.querySelector('h1.card-text').parentElement.parentElement;
   const profile = await waitFor(() => panel.querySelector('.profile-list-item'), 'linked sales profile');
   profile.click();
-  await waitFor(() => /\/profiles\/(?:matched|psa)-\d+/.test(location.pathname), 'linked card profile');
-  // Wait for CardLadder's automatic PSA -> matched profile redirect to settle.
-  await pause(800);
-  return { profileUrl: location.href };
+  await waitFor(() => /^\/profiles\/(?:matched|psa|beckett|cgc)-\d+$/.test(location.pathname) && document.querySelector('.profile-sales-filters'), 'linked card profile');
+  // A matched profile has different underlying IDs for PSA, Beckett and CGC.
+  // Let CardLadder resolve them through its own rendered sales controls.
+  const controls = () => [...document.querySelectorAll('.profile-sales-filters .profile-sales-filter-dropdown')];
+  const graderDropdown = controls()[0];
+  if (dropdownLabel(graderDropdown?.querySelector('button')) !== expected.graderLabel) {
+    graderDropdown?.querySelector('button')?.click();
+    const option = await waitFor(() => find('li', expected.graderLabel, controls()[0]), 'profile grading company');
+    option.click();
+    await waitFor(() => dropdownLabel(controls()[0]?.querySelector('button')) === expected.graderLabel, 'selected profile grading company');
+  }
+  const exactGrade = element => sameGrading(expected, normalizeGrading(expected.gradingCompany, dropdownLabel(element)));
+  const gradeDropdown = controls()[1];
+  if (!gradeDropdown) throw new Error('The linked profile has no exact grade selector.');
+  if (!exactGrade(gradeDropdown.querySelector('button'))) {
+    gradeDropdown.querySelector('button')?.click();
+    const option = await waitFor(() => [...controls()[1].querySelectorAll('li')].find(el => visible(el) && exactGrade(el)), 'exact profile grade');
+    option.click();
+    await waitFor(() => exactGrade(controls()[1]?.querySelector('button')), 'selected exact profile grade');
+  }
+  const profileUrl = location.href;
+  const section = document.querySelector('.profile-sales-filters')?.closest('.profile-sales-row');
+  const link = [...(section?.querySelectorAll('a') || [])].find(el => visible(el) && textOf(el).replace(/chevron_right/g, '').trim() === 'View All Sales');
+  if (!link) throw new Error('The linked profile has no exact sales link.');
+  link.click();
+  await waitFor(() => location.pathname === '/sales-history', 'linked profile sales');
+  const destination = readSalesDestination(location.href, expected);
+  return { profileUrl, salesUrl: destination.salesUrl };
 }
 
-async function sales({ startDate, endDate, profileId, grade, currency }) {
+async function sales({ startDate, endDate, profileId, gradingCompany, grade, holding, currency }) {
+  const expectedGrading = salesGrading({ gradingCompany, grade });
+  const checkFilters = () => {
+    if (readSalesDestination(location.href, expectedGrading).profileId !== profileId) throw new Error('The selected sales profile changed during capture.');
+  };
+  checkFilters();
   const root = main();
   await waitFor(() => {
     const content = textOf(root);
     // High-volume profiles can omit the total. Visible sales still let us
     // prove completeness by paging past the cutoff; never infer an empty list.
     const loaded = resultCount(root) !== null || root.querySelector('a.list-item .sales-list-item-info');
-    return content.includes(`Profile: ${profileId}`) && content.includes('Grader: PSA') && new RegExp(`Grade: ${grade.replace('.', '\\.')}(?:[,\\s]|$)`).test(content) && loaded;
+    const label = expectedGrading.filterLabel.replace('.', '\\.');
+    return new RegExp(`Profile: ${profileId}(?:[,\\s]|$)`).test(content) && content.includes(`Grader: ${expectedGrading.graderLabel}`) && new RegExp(`Grade: ${label}(?:[,\\s]|$)`).test(content) && loaded;
   }, 'exact profile and grade filters');
-  const current = new URL(location.href);
-  const filters = new Set((current.searchParams.get('filters') || '').split('|'));
-  if (filters.size !== 3 || !filters.has(`profileId:${profileId}`) || !filters.has('grader:psa') || !filters.has(`grade:g${grade}`) || current.searchParams.get('sort') !== 'date' || current.searchParams.get('direction') !== 'desc') throw new Error('Unexpected sales filters or sorting.');
   const all = new Map();
+  let latestSale = null;
   let stalledAt = Date.now();
   while (true) {
     if (cancelled) throw new Error('Sync cancelled.');
+    checkFilters();
     const before = all.size;
     const page = readSalesRows(root, currency);
     for (let i = 1; i < page.length; i++) if (page[i].soldDate > page[i - 1].soldDate) throw new Error('Sales are not ordered newest first.');
@@ -116,14 +150,21 @@ async function sales({ startDate, endDate, profileId, grade, currency }) {
       const prior = all.get(key);
       if (prior && (prior.price !== sale.price || prior.soldDate !== sale.soldDate)) throw new Error('Conflicting duplicate sales.');
       all.set(key, sale);
+      if (sale.soldDate <= endDate && ['Auction', 'Fixed Price', 'Best Offer'].includes(sale.type) && isComparableSale(sale, holding) &&
+          (!latestSale || sale.soldDate > latestSale.soldDate)) latestSale = sale;
     }
     const expected = resultCount(root);
-    if (page.some(sale => sale.soldDate < startDate) || (expected !== null && all.size === expected)) {
-      return { complete: true, sales: [...all.values()].filter(sale => sale.soldDate >= startDate && sale.soldDate <= endDate) };
+    const exhausted = expected !== null && all.size === expected;
+    // The last comparable sale is useful even outside the pricing window.
+    // Preserve CardLadder's newest-first order when multiple sales share a date.
+    const pastWindow = page.some(sale => sale.soldDate < startDate);
+    if (exhausted || (pastWindow && latestSale)) {
+      return { complete: true, latestSale, sales: [...all.values()].filter(sale => sale.soldDate >= startDate && sale.soldDate <= endDate) };
     }
+    if (expected !== null && all.size > expected) throw new Error('Sales changed during capture. Run again.');
     if (all.size >= 10000) throw new Error('Over 10,000 sales loaded for one card. Capture stopped without changing its price.');
     if (all.size > before) stalledAt = Date.now();
-    if (Date.now() - stalledAt > 12000) throw new Error('Sales stopped loading before the 14-day cutoff. Price unchanged.');
+    if (Date.now() - stalledAt > 12000) throw new Error('Sales stopped loading before the pricing window and last comparable sale could be verified. Price unchanged.');
     scrollResults(root);
     await pause(900);
   }

@@ -1,5 +1,38 @@
 # Rafchu CardLadder Companion
 
+## Version 1.2.0 — BGS, CGC and last-sale context
+
+The reader supports numeric PSA, BGS and CGC grades, including half grades.
+BGS Pristine 10 (Gold Label) remains separate from BGS 10 Black Label. CGC 10
+Gem Mint, 10 Pristine and legacy 10 Perfect remain separate throughout capture,
+matching, additions and pricing. Unknown labels and AUTH grades are skipped.
+
+The reader follows each holding's linked profile, selects its exact grader and
+grade in CardLadder's rendered controls, and follows the resulting sales link.
+It does not convert a matched-profile number into a grader-profile number: those
+IDs can differ. Grader, grade, underlying profile and newest-first ordering are
+verified before and throughout the sales read. A missing exact grade or profile
+is reported as incomplete, without substituting another grade.
+
+The preview also shows the last qualifying comparable sale with its price, date
+and source link. The extension popup's **View captured sales** opens the same
+per-card comparison in a read-only report tab, without signing into Rafchu.
+When necessary, capture continues beyond the two-week cutoff
+to find that sale. Older sales are context only and never enter the two-week high
+or automatically replace a price. A capture must still establish completeness;
+an unreadable, stalled or excessive history is skipped.
+
+The profile controls and generated URLs were inspected read-only on September
+30, 2026. Observed encodings: BECKETT/BGS uses `beckett`, 10 P uses `g10p`, 10 B
+uses `g10b`, CGC 10 PRISTINE uses `g10pristine`, CGC 10 PERFECT uses `g10perfect`,
+and a half grade such as 9.5 uses `g9_5`. A live BGS profile redirected from
+`beckett-18399267` to `matched-2637208`; its generated BGS sales query correctly
+kept `beckett-18399267`, while CGC on that profile used `cgc-509150`.
+No CardLadder holding or Rafchu inventory price was changed during inspection.
+
+Update both the companion and Rafchu, then reload existing app tabs and run a
+fresh capture to include previously skipped grades and last-sale context.
+
 ## Version 1.1.1 — trusted app pages
 
 Capture reports are available only to the two Rafchu HTTPS sites in a top-level
@@ -36,8 +69,8 @@ purchase cost is entered in the explicitly displayed Rafchu inventory currency.
 
 
 This companion reads **Inventory** in your signed-in CardLadder account, follows
-each holding's linked PSA profile, loads individual sales newest first until the
-two-week cutoff, and prepares an inventory sync report for Rafchu. It reads rendered
+each holding's linked grading profile, loads individual sales newest first through
+the two-week cutoff and last comparable sale, and prepares an inventory sync report for Rafchu. It reads rendered
 pages, not private APIs, session cookies, passwords, or browser storage belonging
 to CardLadder. It does not change CardLadder values or holdings.
 
@@ -107,7 +140,8 @@ daily average, current value, or an active asking price. Auctions, fixed-price
 sales, and accepted offers are included. Verified and unverified results are
 included; verification status is retained on the selected sale. Titles must
 explicitly match the name, card number, grader, and grade. Bundles, conflicting
-grades, and special grading labels are excluded. These conservative title checks
+grades, and incompatible grading labels are excluded. Supported premium labels
+must match the holding's exact tier. These conservative title checks
 can exclude genuine sales with incomplete titles; the preview reports eligible
 counts rather than claiming universal market coverage.
 
@@ -128,7 +162,7 @@ CSV imports preserve the recorded high and its evidence for an unchanged grade.
 
 ## Adding missing cards
 
-The app can add selected, completely captured PSA holdings directly, including
+The app can add selected, completely captured PSA, BGS and CGC holdings directly, including
 into an empty inventory. Each new card receives its name, set, number, variation,
 grader, grade, and eligible highest-sale price. No qualifying sale means the
 estimated price stays unset until a later capture finds one. The current reader
@@ -172,9 +206,9 @@ summary of the statistics and high/low anomaly counts.
 
 ## Scope and reliability
 
-Version 1 supports **numeric PSA grades** and holdings with a linked PSA profile.
-BGS/CGC/SGC, AUTH grades, and missing profiles are reported as skipped. Support
-requires validating their profile navigation and label distinctions first.
+Version 1.2 supports **PSA, BGS and CGC grades** and holdings with a linked profile
+and matching grade selection. SGC, AUTH grades, unknown labels and missing exact
+profiles are reported as skipped.
 Collection limit: 1,000 holdings. Per-card scan limit: 10,000 sales. Import report
 limit: 50,000 sale records and 8 MB. Reports expire after 24 hours. Page layout
 changes, sign-in expiration, or loading stalls surface errors rather than values.

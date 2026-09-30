@@ -1,5 +1,6 @@
 import { parseSaleDate, safeSaleUrl, safeCardLadderImage } from '../../src/utils/cardLadderSales.js';
 import { currencyFromAccountLabel, isCardLadderCurrency, parseCardLadderMoney } from '../../src/utils/cardLadderCurrency.js';
+import { normalizeGrading } from '../../src/utils/grading.js';
 
 export const textOf = element => (element?.innerText ?? element?.textContent ?? '').trim();
 export function statValue(root, label) {
@@ -20,13 +21,14 @@ export function readCollectionRows(root, base = 'https://app.cardladder.com', cu
     const name = nameLine.replace(/\s*#[\w/-]+\s*$/, '').trim();
     const number = /#([\w/-]+)/.exec(nameLine)?.[1] || '';
     const gradeText = textOf(element.querySelector('.grade-variation-chip:not(.variation)')).replace(/arrow_drop_down/g, '').trim();
-    const gradeMatch = /^(PSA|BGS|CGC|SGC)\s+(\d+(?:\.\d+)?)$/i.exec(gradeText);
+    const gradeMatch = /^(PSA|BGS|BECKETT|CGC|SGC)\s+(.+)$/i.exec(gradeText);
+    const grading = gradeMatch && normalizeGrading(gradeMatch[1], gradeMatch[2]);
     const variation = textOf(element.querySelector('.grade-variation-chip.variation'));
     return { holdingId: url.searchParams.get('cardId'), collectionUrl: url.href, name, number,
       set: textOf(element.querySelector('.card-set')), variation,
       currency, cardLadderValue: parseCardLadderMoney(statValue(element, 'Value'), currency), cardLadderValueCurrency: currency,
       imageUrl: [...element.querySelectorAll('img')].flatMap(img => [img.getAttribute('data-src'), img.currentSrc, img.getAttribute('src')]).map(safeCardLadderImage).find(Boolean) || null,
-      gradingCompany: gradeMatch?.[1]?.toUpperCase() || gradeText || 'Unspecified', grade: gradeMatch?.[2] || 'unsupported',
+      gradingCompany: grading?.gradingCompany || gradeMatch?.[1]?.toUpperCase() || gradeText || 'Unspecified', grade: grading?.grade || gradeMatch?.[2] || 'unsupported',
       sales: [], complete: false };
   });
 }

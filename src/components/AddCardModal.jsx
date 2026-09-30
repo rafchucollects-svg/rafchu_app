@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
+import { getGradeOptions, getGradeLabel } from "@/utils/grading";
+import { useState, useEffect } from 'react';
 import { X, Star, Globe, Award, Loader2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -47,7 +48,6 @@ const GRADING_COMPANIES = [
 const formatProviderPrice = (value, providerCurrency) =>
   Number(value) > 0 ? formatCurrency(Number(value), providerCurrency || 'USD') : '–';
 
-const GRADES = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6', '5', '4', '3', '2', '1'];
 
 // Auto-detect language based on card data (Japanese cards have different set names/numbers)
 // Users should search for the specific card variant rather than manually selecting language
@@ -84,7 +84,7 @@ export function AddCardModal({
   const [gradedPriceUSD, setGradedPriceUSD] = useState(''); // Raw USD value for calculations
   const [fetchingGradedPrice, setFetchingGradedPrice] = useState(false);
   
-  // v2.1: Dynamic grade filtering - only show grades with available prices
+  // Annotate grade choices with available provider prices.
   const [availableGrades, setAvailableGrades] = useState(null); // null = not fetched yet, {} = fetched
   const [fetchingAvailableGrades, setFetchingAvailableGrades] = useState(false);
   
@@ -195,33 +195,25 @@ export function AddCardModal({
     fetchAvailableGrades();
   }, [isGraded, gradingCompany, card]);
 
-  // Filter grade options based on availability (v2.1)
-  const availableGradeOptions = useMemo(() => {
-    // If we haven't fetched yet or error occurred, show all grades
-    if (availableGrades === null) {
-      return GRADES;
-    }
-    
-    // If we fetched but no grades available, show all with warning
-    if (Object.keys(availableGrades).length === 0) {
-      return GRADES;
-    }
-    
-    // Show only available grades
-    return GRADES.filter(g => Object.prototype.hasOwnProperty.call(availableGrades, g));
-  }, [availableGrades]);
+  // All grades remain selectable even when a provider has no price for them.
+  const availableGradeOptions = getGradeOptions(gradingCompany);
 
   // Smart variant filtering based on card set
 
 
   // Resolve graded price from verified provider data when grade is selected.
   useEffect(() => {
+    setGradedPrice('');
+    setGradedPriceUSD('');
+    setFetchingGradedPrice(false);
     if (!isGraded || !gradingCompany || !grade || !card) return;
+    let cancelled = false;
     
     const fetchGradedPrice = async () => {
       setFetchingGradedPrice(true);
       try {
         const data = await apiFetchGradedPrices(card, gradingCompany, grade);
+        if (cancelled) return;
         
         if (!data.success || !data.graded) {
           console.warn('⚠️ No graded price data found');
@@ -247,17 +239,18 @@ export function AddCardModal({
           setGradedPriceUSD('');
         }
       } catch (error) {
+        if (cancelled) return;
         console.error('❌ Error fetching graded price:', error);
         setGradedPrice('');
         setGradedPriceUSD('');
       } finally {
-        setFetchingGradedPrice(false);
+        if (!cancelled) setFetchingGradedPrice(false);
       }
     };
     
     // Debounce the fetch
     const timer = setTimeout(fetchGradedPrice, 500);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [isGraded, gradingCompany, grade, card, currency]);
 
   if (!isOpen || !card) return null;
@@ -279,7 +272,7 @@ export function AddCardModal({
       // Graded info (v2.1)
       isGraded,
       gradingCompany: isGraded ? gradingCompany : null,
-      grade: isGraded ? parseFloat(grade) : null,
+      grade: isGraded ? grade : null,
       gradedPrice: isGraded && gradedPriceUSD ? parseFloat(gradedPriceUSD) : null, // Store USD value
       
       // Language info (v2.1)
@@ -560,7 +553,7 @@ export function AddCardModal({
                         ))}
                       </select>
                       <p className="text-xs text-muted-foreground mt-1">
-                        💡 All companies support grade 10 auto-pricing
+                        Choose the exact grade and label shown on the slab.
                       </p>
                     </div>
                     <div>
@@ -579,14 +572,14 @@ export function AddCardModal({
                         </option>
                         {availableGradeOptions.map(g => (
                           <option key={g} value={g}>
-                            {g}
+                            {getGradeLabel(gradingCompany, g)}
                             {availableGrades && availableGrades[g] ? ` ($${availableGrades[g].toFixed(2)})` : ''}
                           </option>
                         ))}
                       </select>
                       {availableGrades && Object.keys(availableGrades).length > 0 && (
                         <p className="text-xs text-green-600 mt-1">
-                          ✅ Showing {Object.keys(availableGrades).length} grade(s) with available pricing
+                          Pricing available for {Object.keys(availableGrades).length} grade(s); other grades can be entered manually.
                         </p>
                       )}
                       {availableGrades && Object.keys(availableGrades).length === 0 && (

@@ -1,11 +1,17 @@
 import { formatCardLadderMoney } from '../../src/utils/cardLadderCurrency.js';
 import { companionRequest } from '../../src/utils/cardLadderCompanion.js';
 import { summarizeSales, validateSalesReport } from '../../src/utils/cardLadderSales.js';
+const request = async action => {
+  if (location.protocol !== 'chrome-extension:') return companionRequest(action);
+  const result = await chrome.runtime.sendMessage({ channel: 'rafchu-companion', action });
+  if (!result?.ok) throw new Error(result?.error || 'The companion could not read its saved capture.');
+  return result.data;
+};
 const $ = id => document.getElementById(id);
 let reading = false;
 let shown = null;
 async function loadReport() {
-  const report = await companionRequest('report');
+  const report = await request('report');
   if (!report) throw new Error('There is no capture report yet.');
   const window = validateSalesReport(report);
   const rows = report.holdings.map(holding => ({ holding, summary: summarizeSales(holding, window) }));
@@ -15,17 +21,22 @@ async function loadReport() {
       const td = document.createElement('td'); td.textContent = String(value); tr.append(td);
     }
     if (summary.high) { const a = document.createElement('a'); a.href = summary.high.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = summary.high.soldDate; tr.lastChild.append(document.createElement('br'), a); }
+    const latest = document.createElement('td');
+    latest.textContent = summary.latestSale ? formatCardLadderMoney(summary.latestSale.price, summary.currency) : '—';
+    if (summary.latestSale) { const a = document.createElement('a'); a.href = summary.latestSale.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = summary.latestSale.soldDate; latest.append(document.createElement('br'), a); }
+    if (summary.latestSale?.soldDate < report.startDate) { const note = document.createElement('small'); note.textContent = 'Older than the 14-day window'; latest.append(note); }
+    tr.append(latest);
     return tr;
   }));
   $('summary').textContent = `${report.startDate} through ${report.endDate} · ${report.currency || 'USD'} · ${rows.length} holdings · ${rows.filter(row => row.holding.complete).length} complete · ${rows.filter(row => row.summary.high).length} with eligible sales`;
-  $('metadata').textContent = JSON.stringify({ runId: report.runId, capturedAt: report.capturedAt, currency: report.currency || 'USD', collectionComplete: report.collectionComplete, holdings: rows.map(({ holding: h, summary }) => ({ holdingId: h.holdingId, name: h.name, profileUrl: h.profileUrl, capturedSales: h.sales.length, eligibleSales: summary.saleCount, excludedSales: summary.excluded || 0, highSale: summary.high, imageUrl: h.imageUrl || null, cardLadderValue: h.cardLadderValue ?? null, cardLadderValueCurrency: h.cardLadderValueCurrency || null, statistics: summary.statistics, complete: h.complete, error: h.error })) }, null, 2);
+  $('metadata').textContent = JSON.stringify({ runId: report.runId, capturedAt: report.capturedAt, currency: report.currency || 'USD', collectionComplete: report.collectionComplete, holdings: rows.map(({ holding: h, summary }) => ({ holdingId: h.holdingId, name: h.name, profileUrl: h.profileUrl, capturedSales: h.sales.length, eligibleSales: summary.saleCount, excludedSales: summary.excluded || 0, highSale: summary.high, latestSale: summary.latestSale, imageUrl: h.imageUrl || null, cardLadderValue: h.cardLadderValue ?? null, cardLadderValueCurrency: h.cardLadderValueCurrency || null, statistics: summary.statistics, complete: h.complete, error: h.error })) }, null, 2);
   shown = report.runId;
 }
 async function refresh() {
   if (reading) return;
   reading = true;
   try {
-    const state = await companionRequest('status');
+    const state = await request('status');
     $('error').textContent = '';
     const progress = state.status?.total ? `${state.status.current}/${state.status.total} · ` : '';
     $('status').textContent = `${state.version} · ${progress}${state.status?.message || 'Companion connected and ready.'}`;
@@ -34,6 +45,6 @@ async function refresh() {
   } catch (error) { $('error').textContent = error.message; }
   finally { reading = false; }
 }
-for (const [id, action] of [['start','start'], ['stop','cancel']]) $(id).onclick = async () => { $('error').textContent = ''; try { await companionRequest(action); await refresh(); } catch(error) { $('error').textContent = error.message; } };
+for (const [id, action] of [['start','start'], ['stop','cancel']]) $(id).onclick = async () => { $('error').textContent = ''; try { await request(action); await refresh(); } catch(error) { $('error').textContent = error.message; } };
 $('report').onclick = async () => { try { await loadReport(); } catch(error) { $('error').textContent = error.message; } };
 void refresh(); setInterval(refresh, 2500);
