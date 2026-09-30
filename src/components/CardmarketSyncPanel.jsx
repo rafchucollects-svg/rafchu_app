@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useApp } from '@/contexts/AppContext';
 import { Button } from '@/components/ui/button';
 import { CardmarketPhoto } from '@/components/CardmarketPhoto';
@@ -9,24 +9,40 @@ import { cardmarketInventoryScope } from '@/utils/cardmarketInventory';
 import { materializeCardmarketDiscovery } from '@/utils/cardmarketDiscovery';
 import { cardmarketReviewReport } from '@/utils/cardmarketReview';
 import { formatSyncMoney, formatSyncStickerPrice } from '@/utils/syncCurrency';
+import { clearCardmarketMatchDraft, readCardmarketMatchDraft, writeCardmarketMatchDraft } from '@/utils/cardmarketMatchDraft';
 
 const basic = 'mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm';
-export function CardmarketMatchForm({ item, busy, candidates = [], previews = [], previewErrors = [], photos = {}, lookupError, lookupCode, displayPreferences = { currency: 'EUR' }, onSave }) {
+export function CardmarketMatchForm({ item, busy, saving = false, draftOwner, candidates = [], previews = [], previewErrors = [], photos = {}, lookupError, lookupCode, displayPreferences = { currency: 'EUR' }, onEdit, onSave }) {
   const money = value => formatSyncMoney(value, 'EUR', displayPreferences);
   const target = cardmarketTarget(item);
   const saved = item.cardmarketBinding?.inventoryKey === cardmarketInventoryKey(item) ? item.cardmarketBinding : null;
   const suggestions = suggestCardmarketProducts(item, candidates);
-  const [customUrl, setCustomUrl] = useState(null);
+  const [draft] = useState(() => readCardmarketMatchDraft(draftOwner, item));
+  const [draftStatus, setDraftStatus] = useState(draft ? 'saved' : null);
+  const [customUrl, setCustomUrl] = useState(draft?.customUrl ?? null);
   const productUrl = customUrl ?? saved?.productUrl ?? suggestions[0]?.productUrl ?? '';
   const suggestion = suggestions.find(row => row.productUrl === productUrl);
   const [confirmedUrl, setConfirmedUrl] = useState(null);
   const [form, setForm] = useState(() => {
     const firstEdition = saved?.firstEdition ?? target.firstEdition;
-    return { language: saved?.language || target.language || '', condition: saved?.condition || target.condition || '', finish: saved?.finish || target.finish || '', firstEdition: firstEdition === null ? '' : String(firstEdition), confirmed: false };
+    return { language: saved?.language || target.language || '', condition: saved?.condition || target.condition || '', finish: saved?.finish || target.finish || '', firstEdition: firstEdition === null ? '' : String(firstEdition), ...draft, confirmed: false };
   });
   const confirmed = form.confirmed && confirmedUrl === productUrl;
-  const set = (key, value) => setForm(current => ({ ...current, [key]: value, ...(key !== 'confirmed' ? { confirmed: false } : {}) }));
-  const changeUrl = value => { setCustomUrl(value); set('confirmed', false); };
+  const remember = (url, fields) => {
+    if (draftOwner) setDraftStatus(writeCardmarketMatchDraft(draftOwner, item, { ...fields, customUrl: url }) ? 'saved' : 'error');
+  };
+  const set = (key, value) => {
+    const next = { ...form, [key]: value, ...(key !== 'confirmed' ? { confirmed: false } : {}) };
+    setForm(next);
+    onEdit?.();
+    if (key !== 'confirmed') remember(customUrl, next);
+  };
+  const changeUrl = value => { setCustomUrl(value); setForm(current => ({ ...current, confirmed: false })); remember(value, form); onEdit?.(); };
+  const validUrl = safeCardmarketProduct(productUrl);
+  const matchesSaved = saved && validUrl === saved.productUrl && ['language', 'condition', 'finish'].every(key => form[key] === saved[key]) && form.firstEdition === String(saved.firstEdition);
+  const helpId = useId();
+  const missing = [!validUrl && 'enter a valid product URL', !form.language && 'choose card language', !form.condition && 'choose condition',
+    !form.finish && 'choose reverse holo', form.firstEdition === '' && 'choose first edition', !confirmed && 'check the confirmation box'].filter(Boolean);
   const preview = previews.find(row => row.scope === 'product-preview' && Array.isArray(row.offers) && row.inventoryKey === cardmarketInventoryKey(item) && row.entryId === item.entryId &&
     safeCardmarketProduct(row.productUrl) === safeCardmarketProduct(productUrl) && Date.now() - Date.parse(row.capturedAt) >= -300000 && Date.now() - Date.parse(row.capturedAt) < 86400000);
   const previewError = previewErrors.find(row => safeCardmarketProduct(row.productUrl) === safeCardmarketProduct(productUrl))?.error;
@@ -37,11 +53,14 @@ export function CardmarketMatchForm({ item, busy, candidates = [], previews = []
       <p className="font-medium">{saved && productUrl === saved.productUrl ? 'Saved product match' : customUrl !== null ? 'Your selected product' : 'Suggested product'}</p>
       <a className="mt-1 block text-blue-800 underline" href={productUrl} target="_blank" rel="noopener noreferrer">{suggestion ? `${suggestion.name} · ${suggestion.set} · #${suggestion.number}` : 'Open this Cardmarket product'}</a>
       <p className="mt-1 text-xs text-slate-600">{suggestion?.reason || 'Check the expansion, number and printing before saving.'}</p>
-      {suggestions.length > 1 && <label className="mt-2 block text-xs">Other product suggestions<select className={basic} value={suggestion ? productUrl : ''} onChange={e => changeUrl(e.target.value)}><option value="" disabled>Choose a suggestion…</option>{suggestions.map(row => <option key={row.productUrl} value={row.productUrl}>{row.name} · {row.set} · #{row.number} · {row.productUrl.split('/').pop()}</option>)}</select></label>}
+      {suggestions.length > 1 && <label className="mt-2 block text-xs">Other product suggestions<select disabled={busy} className={basic} value={suggestion ? productUrl : ''} onChange={e => changeUrl(e.target.value)}><option value="" disabled>Choose a suggestion…</option>{suggestions.map(row => <option key={row.productUrl} value={row.productUrl}>{row.name} · {row.set} · #{row.number} · {row.productUrl.split('/').pop()}</option>)}</select></label>}
     </div>}
     {!productUrl && <p className="mt-2 text-sm text-slate-600">Use the lookup button above to find this card and its listings.</p>}
     {lookupError && (lookupCode === 'search-incomplete' || !suggestions.some(row => row.score >= 100)) && <p className="mt-2 text-xs text-amber-800">{lookupError}</p>}
-    <label className="mt-3 block text-xs">Product URL — suggested automatically; replace it if needed<input aria-label={`Cardmarket URL for ${item.entryId}`} className={basic} type="url" value={productUrl} onChange={e => changeUrl(e.target.value)} /></label>
+    <label className="mt-3 block text-xs">Product URL — paste a link or use a suggestion<input aria-label={`Cardmarket URL for ${item.entryId}`} aria-invalid={Boolean(productUrl && !validUrl)} aria-describedby={productUrl && !validUrl ? `${helpId}-url` : undefined} disabled={busy} className={basic} type="url" value={productUrl} onChange={e => changeUrl(e.target.value)} /></label>
+    {productUrl && !validUrl && <p id={`${helpId}-url`} className="mt-2 text-xs text-amber-800">Paste an English Cardmarket Pokémon single-product URL: https://www.cardmarket.com/en/Pokemon/Products/Singles/Expansion/Card. Search and category pages cannot be matched.</p>}
+    {draftStatus === 'saved' && !matchesSaved && <p className="mt-2 text-xs text-slate-600">Draft saved in this browser. Complete the choices below and save the product match to link it to your inventory.</p>}
+    {draftStatus === 'error' && !matchesSaved && <p className="mt-2 text-xs text-amber-800" role="status">This browser could not keep your draft. Keep this panel open until you save the product match.</p>}
     <a className="mt-2 inline-block text-xs text-blue-800 underline" href={cardmarketSearchUrl(item)} target="_blank" rel="noopener noreferrer">Search Cardmarket yourself</a>
     {preview && <details className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3" aria-label={`Captured listing preview for ${item.entryId}`}>
       <summary className="cursor-pointer text-sm font-medium">{preview.offers.length} listings already captured · review prices</summary>
@@ -54,14 +73,15 @@ export function CardmarketMatchForm({ item, busy, candidates = [], previews = []
     </details>}
     {previewError && <p className="mt-2 text-xs text-amber-800">{previewError}</p>}
     <div className="mt-2 grid grid-cols-2 gap-3">
-      <label className="text-xs">Card language<select className={basic} value={form.language} onChange={e => set('language', e.target.value)}><option value="">Confirm…</option><option>English</option><option>Japanese</option></select></label>
-      <label className="text-xs">Cardmarket condition (Inventory: {item.condition || 'unknown'})<select className={basic} value={form.condition} onChange={e => set('condition', e.target.value)}><option value="">Confirm…</option>{CARDMARKET_CONDITIONS.map(c => <option key={c}>{c}</option>)}</select></label>
-      <label className="text-xs">Reverse holo<select className={basic} value={form.finish} onChange={e => set('finish', e.target.value)}><option value="">Confirm…</option><option value="reverse">Yes — Reverse Holo</option><option value="non-reverse">No — regular printing</option></select></label>
-      <label className="text-xs">First edition<select className={basic} value={form.firstEdition} onChange={e => set('firstEdition', e.target.value)}><option value="">Confirm…</option><option value="true">Yes — 1st Edition</option><option value="false">No — Unlimited / not first edition</option></select></label>
+      <label className="text-xs">Card language<select disabled={busy} className={basic} value={form.language} onChange={e => set('language', e.target.value)}><option value="">Confirm…</option><option>English</option><option>Japanese</option></select></label>
+      <label className="text-xs">Cardmarket condition (Inventory: {item.condition || 'unknown'})<select disabled={busy} className={basic} value={form.condition} onChange={e => set('condition', e.target.value)}><option value="">Confirm…</option>{CARDMARKET_CONDITIONS.map(c => <option key={c}>{c}</option>)}</select></label>
+      <label className="text-xs">Reverse holo<select disabled={busy} className={basic} value={form.finish} onChange={e => set('finish', e.target.value)}><option value="">Confirm…</option><option value="reverse">Yes — Reverse Holo</option><option value="non-reverse">No — regular printing</option></select></label>
+      <label className="text-xs">First edition<select disabled={busy} className={basic} value={form.firstEdition} onChange={e => set('firstEdition', e.target.value)}><option value="">Confirm…</option><option value="true">Yes — 1st Edition</option><option value="false">No — Unlimited / not first edition</option></select></label>
     </div>
     <p className="mt-2 text-xs text-slate-600">Uses your existing condition mapping. Only offers in the selected condition, language and printing will match. Listings already captured for these filters are reused when you confirm.</p>
-    <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" className="mt-0.5 h-4 w-4 appearance-auto accent-blue-700" checked={confirmed} onChange={e => { set('confirmed', e.target.checked); setConfirmedUrl(productUrl); }} />I checked the product, language, condition, reverse status and edition against my card.</label>
-    <Button className="mt-2" size="sm" disabled={busy || !confirmed || !safeCardmarketProduct(productUrl) || !form.language || !form.finish || !form.condition || form.firstEdition === ''} onClick={() => onSave({ ...form, productUrl, confirmed: true, firstEdition: form.firstEdition === 'true' })}>Save product match</Button>
+    <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" disabled={busy} className="mt-0.5 h-4 w-4 appearance-auto accent-blue-700" checked={confirmed} onChange={e => { set('confirmed', e.target.checked); setConfirmedUrl(productUrl); }} />I checked the product, language, condition, reverse status and edition against my card.</label>
+    {missing.length > 0 && <p id={helpId} className="mt-2 text-xs text-amber-800">To save this match: {missing.join(', ')}.</p>}
+    <Button className="mt-2" size="sm" aria-describedby={missing.length ? helpId : undefined} disabled={busy || missing.length > 0} onClick={() => onSave({ ...form, productUrl, confirmed: true, firstEdition: form.firstEdition === 'true' })}>{saving ? 'Saving product match…' : 'Save product match'}</Button>
   </details>;
 }
 
@@ -85,6 +105,7 @@ export function CardmarketSyncPanel({ onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [matchFeedback, setMatchFeedback] = useState({});
   const [savingPrices, setSavingPrices] = useState(false);
   const [priceFeedback, setPriceFeedback] = useState(null);
   useEffect(() => {
@@ -138,6 +159,23 @@ export function CardmarketSyncPanel({ onClose }) {
   const failedLinked = linked.filter(item => captureErrors[item.entryId]);
   const choices = items.filter(item => selected[item.entryId] && !excluded[item.entryId] && summaries[item.entryId].offers.some(offer => offer.offerId === selected[item.entryId] && (!professionalOnly || ['Professional', 'Powerseller'].includes(offer.sellerType)))).map(item => ({ entryId: item.entryId, method: 'selected-offer', offerId: selected[item.entryId], replaceManual }));
   const action = async callback => { setBusy(true); setError(''); setMessage(''); try { await callback(); } catch (err) { setError(err.message); } finally { setBusy(false); } };
+  const saveMatch = async (item, choice, productResult) => {
+    if (busy) return;
+    const submittedDraft = readCardmarketMatchDraft(user?.uid, item);
+    const feedback = value => setMatchFeedback(current => ({ ...current, [item.entryId]: { ...value, inventoryKey: cardmarketInventoryKey(item) } }));
+    setBusy(true); feedback({ type: 'saving', message: 'Saving product match…' });
+    try {
+      const binding = await saveCardmarketBinding(db, user?.uid, item, choice);
+      clearCardmarketMatchDraft(user?.uid, item, submittedDraft);
+      const cached = (productResult?.previews || []).map(snapshot => materializeCardmarketDiscovery(item, snapshot, binding)).filter(Boolean).sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt))[0];
+      const hasOffers = cached && summarizeCardmarketOffers({ ...item, cardmarketBinding: binding }, cached).status === 'ready';
+      feedback({ type: 'success', message: hasOffers ? `Saved ${item.name} product match. Its captured listings are ready to choose below; no new capture is needed.`
+        : cached ? `Saved ${item.name} product match. No captured offers match these filters. Your current price is unchanged.`
+          : `Saved ${item.name} product match. Refresh its listings to read offers for these filters.` });
+    } catch (err) {
+      feedback({ type: 'error', message: err.message || 'Could not save this product match. Your edits are kept; please retry.' });
+    } finally { setBusy(false); }
+  };
   const saveChosenPrices = async () => {
     if (busy || !choices.length || !user?.uid) return;
     setBusy(true); setSavingPrices(true); setPriceFeedback(null);
@@ -186,18 +224,13 @@ export function CardmarketSyncPanel({ onClose }) {
       const capture = reviewReport?.captures?.find(row => row.entryId === id);
       const captureError = captureErrors[id];
       const productResult = productResults.find(row => row.entryId === id && row.inventoryKey === cardmarketInventoryKey(item));
+      const feedback = matchFeedback[id]?.inventoryKey === cardmarketInventoryKey(item) ? matchFeedback[id] : null;
       const referenceImage = capture?.inventoryKey === cardmarketInventoryKey(item) && safeCardmarketProduct(capture.productUrl) === item.cardmarketBinding?.productUrl ? capture.productImageUrl : null;
       const selectedOffer = summary.offers.find(offer => offer.offerId === selected[id]);
       return <article className="rounded-xl border border-slate-200 p-4" key={id}>
         <div className="flex flex-wrap items-start gap-3"><CardmarketPhoto key={referenceImage} src={referenceImage} name={item.name} productUrl={capture?.filteredUrl || capture?.productUrl} /><div className="min-w-0 flex-1"><h3 className="font-semibold">{item.name} #{item.number}</h3><p className="text-xs text-slate-600">{target.set} · {target.language || 'Confirm language'} · {item.condition} → {item.cardmarketBinding?.condition || target.condition || 'confirm condition'}</p><p className="mt-1 text-xs font-medium text-blue-800">{[target.finish === 'reverse' ? 'Reverse Holo' : null, target.firstEdition === true ? '1st Edition' : target.firstEdition === false ? 'Unlimited' : null].filter(Boolean).join(' · ') || 'Confirm printing below'}</p></div><div className="flex flex-wrap gap-4 text-right text-xs text-slate-600"><div aria-label={`Current sticker price for ${id}`}>Current sticker price<p className="mt-1 text-base font-semibold text-slate-950">{formatSyncStickerPrice(item, displayPreferences)}</p></div>{selectedOffer && <div aria-label={`Selected offer price for ${id}`}>Selected offer<p className="mt-1 text-base font-semibold text-blue-800">{money(selectedOffer.price)}</p></div>}</div></div>
-        <CardmarketMatchForm displayPreferences={displayPreferences} candidates={productResult?.candidates || []} previews={productResult?.previews || []} previewErrors={productResult?.previewErrors || []} photos={productReport?.photos || {}} lookupError={productResult?.error} lookupCode={productResult?.errorCode} key={cardmarketInventoryKey(item) + JSON.stringify(item.cardmarketBinding || {})} item={item} busy={busy} onSave={choice => action(async () => {
-          const binding = await saveCardmarketBinding(db, user?.uid, item, choice);
-          const cached = (productResult?.previews || []).map(snapshot => materializeCardmarketDiscovery(item, snapshot, binding)).filter(Boolean).sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt))[0];
-          const hasOffers = cached && summarizeCardmarketOffers({ ...item, cardmarketBinding: binding }, cached).status === 'ready';
-          setMessage(hasOffers ? `Saved ${item.name} product match. Its captured listings are ready to choose below; no new capture is needed.`
-            : cached ? `Saved ${item.name} product match. No captured offers match these filters. Your current price is unchanged.`
-              : `Saved ${item.name} product match. Refresh its listings to read offers for these filters.`);
-        })} />
+        <CardmarketMatchForm displayPreferences={displayPreferences} draftOwner={user?.uid} saving={feedback?.type === 'saving'} candidates={productResult?.candidates || []} previews={productResult?.previews || []} previewErrors={productResult?.previewErrors || []} photos={productReport?.photos || {}} lookupError={productResult?.error} lookupCode={productResult?.errorCode} key={String(user?.uid) + cardmarketInventoryKey(item) + JSON.stringify(item.cardmarketBinding || {})} item={item} busy={busy} onEdit={() => setMatchFeedback(current => current[id] ? { ...current, [id]: null } : current)} onSave={choice => saveMatch(item, choice, productResult)} />
+        {feedback && <p className={`mt-2 rounded-lg p-3 text-sm ${feedback.type === 'error' ? 'bg-red-50 text-red-800' : feedback.type === 'success' ? 'bg-emerald-50 text-emerald-900' : 'bg-blue-50 text-blue-800'}`} role={feedback.type === 'error' ? 'alert' : 'status'}>{feedback.message}</p>}
         {captureError && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-950" role="alert"><strong className="block">Listings could not be refreshed</strong>{captureError.error} Current price preserved.{capturePending || searchPending ? ' Failed cards can be retried when the current task finishes.' : ' Retry this card using the failed-card button above.'}</p>}
         {reviewReport && <div className="mt-3">{(!captureError || capture) && <p className="text-sm">{!capture && capturePending ? 'Waiting for this card. Completed offers will appear here automatically.' : !capture ? 'No offers captured for this card yet.' : summary.status === 'ready' ? `${summary.offers.length} matching ${summary.offers.length === 1 ? 'offer' : 'offers'} from ${summary.sellerCount} ${summary.sellerCount === 1 ? 'seller' : 'sellers'}` : summary.reason || 'No matching offers. Current price stays unchanged.'}</p>}
           {capture?.photoWarning && <p className="mt-1 text-xs text-slate-600">{capture.photoWarning}</p>}
