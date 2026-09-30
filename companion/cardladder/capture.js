@@ -25,11 +25,12 @@ async function loadReport() {
     latest.textContent = summary.latestSale ? formatCardLadderMoney(summary.latestSale.price, summary.currency) : '—';
     if (summary.latestSale) { const a = document.createElement('a'); a.href = summary.latestSale.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = summary.latestSale.soldDate; latest.append(document.createElement('br'), a); }
     if (summary.latestSale?.soldDate < report.startDate) { const note = document.createElement('small'); note.textContent = 'Older than the 14-day window'; latest.append(note); }
+    if (holding.latestSaleComplete === false) { const note = document.createElement('small'); note.textContent = holding.latestSaleWarning || 'Last comparable sale unavailable; older history did not fully load.'; latest.append(note); }
     tr.append(latest);
     return tr;
   }));
   $('summary').textContent = `${report.startDate} through ${report.endDate} · ${report.currency || 'USD'} · ${rows.length} holdings · ${rows.filter(row => row.holding.complete).length} complete · ${rows.filter(row => row.summary.high).length} with eligible sales`;
-  $('metadata').textContent = JSON.stringify({ runId: report.runId, capturedAt: report.capturedAt, currency: report.currency || 'USD', collectionComplete: report.collectionComplete, holdings: rows.map(({ holding: h, summary }) => ({ holdingId: h.holdingId, name: h.name, profileUrl: h.profileUrl, capturedSales: h.sales.length, eligibleSales: summary.saleCount, excludedSales: summary.excluded || 0, highSale: summary.high, latestSale: summary.latestSale, imageUrl: h.imageUrl || null, cardLadderValue: h.cardLadderValue ?? null, cardLadderValueCurrency: h.cardLadderValueCurrency || null, statistics: summary.statistics, complete: h.complete, error: h.error })) }, null, 2);
+  $('metadata').textContent = JSON.stringify({ runId: report.runId, capturedAt: report.capturedAt, currency: report.currency || 'USD', collectionComplete: report.collectionComplete, holdings: rows.map(({ holding: h, summary }) => ({ holdingId: h.holdingId, name: h.name, profileUrl: h.profileUrl, capturedSales: h.sales.length, eligibleSales: summary.saleCount, excludedSales: summary.excluded || 0, highSale: summary.high, latestSale: summary.latestSale, latestSaleComplete: h.latestSaleComplete, latestSaleWarning: h.latestSaleWarning, imageUrl: h.imageUrl || null, cardLadderValue: h.cardLadderValue ?? null, cardLadderValueCurrency: h.cardLadderValueCurrency || null, statistics: summary.statistics, complete: h.complete, error: h.error })) }, null, 2);
   shown = report.runId;
 }
 async function refresh() {

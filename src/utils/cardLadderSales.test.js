@@ -134,11 +134,12 @@ describe('reviewed additions from captured holdings', () => {
     expect(retry.items).toEqual(first.items);
     expect(retry.addedCount).toBe(0);
   });
-  it('rejects invalid quantities, costs, unsupported cards and incomplete captures atomically', () => {
+  it('rejects invalid quantities, costs, unsupported cards and incomplete collection reports atomically', () => {
     for (const details of [{ quantity: 0 }, { quantity: 1.5 }, { quantity: '' }, { quantity: 1, buyPrice: -1 }, { quantity: 1, buyPrice: 'bad' }]) {
       expect(() => applySalesReport([], report([]), now, {}, { [holding.holdingId]: details })).toThrow();
     }
-    for (const changes of [{ complete: false }, { gradingCompany: 'SGC' }, { number: '' }]) {
+    expect(() => applySalesReport([], report([], { collectionComplete: false }), now, {}, { [holding.holdingId]: { quantity: 1 } })).toThrow();
+    for (const changes of [{ gradingCompany: 'SGC' }, { number: '' }]) {
       const input = report([]); Object.assign(input.holdings[0], changes);
       expect(() => applySalesReport([], input, now, {}, { [holding.holdingId]: { quantity: 1 } })).toThrow();
     }

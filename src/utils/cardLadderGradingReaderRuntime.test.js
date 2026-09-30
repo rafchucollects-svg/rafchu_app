@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readCollectionRows } from '../../companion/cardladder/dom.js';
+import { readCollectionRows, resultCount } from '../../companion/cardladder/dom.js';
 import { readSalesDestination, salesGrading } from '../../companion/cardladder/grading.js';
 
 const ORIGIN = 'https://app.cardladder.com';
@@ -8,6 +8,11 @@ const salesUrl = (grader, grade, id) => `${ORIGIN}/sales-history?filters=grader:
 
 beforeEach(() => { document.body.innerHTML = ''; vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules(); });
+
+it.each([['1 result', 1], ['0 results', 0], ['1,234 results', 1234]])('reads the rendered result count %s', (text, count) => {
+  document.body.textContent = text;
+  expect(resultCount(document.body)).toBe(count);
+});
 
 it.each([
   ['BGS 10 Pristine', 'BGS', '10'], ['BGS 10 Black Label', 'BGS', '10 Black Label'],
@@ -146,9 +151,14 @@ it('rejects a grade-filter change while paging for the last comparable sale', as
   delete document.documentElement.scrollTop;
 });
 
-it('does not declare a no-sale capture complete when older history stalls', async () => {
+it('keeps a proven two-week window when optional older history stalls and marks the last sale unavailable', async () => {
   const reader = await pageReader(salesUrl('beckett', 'g10p', 'beckett-18399267'), salesFixture([saleRow('123456789', 'Sep 10, 2026', 'Lugia V 186 BGS 9')], 2));
-  expect(await reader.read('sales', salesArgs)).toMatchObject({ ok: false, error: expect.stringMatching(/last comparable sale could be verified/) });
+  expect(await reader.read('sales', salesArgs)).toMatchObject({ ok: true, data: { complete: true, sales: [], latestSale: null, latestSaleComplete: false, latestSaleWarning: expect.stringMatching(/Older sales stopped loading/) } });
+});
+
+it('fails a stalled capture when the two-week window has not been proven complete', async () => {
+  const reader = await pageReader(salesUrl('beckett', 'g10p', 'beckett-18399267'), salesFixture([saleRow('123456789', 'Sep 20, 2026', 'Lugia V 186 BGS 9')], 2));
+  expect(await reader.read('sales', salesArgs)).toMatchObject({ ok: false, error: expect.stringMatching(/two-week pricing window could be verified/) });
 });
 
 it('retains the provider’s first sale when comparable sales share a date', async () => {
@@ -156,4 +166,19 @@ it('retains the provider’s first sale when comparable sales share a date', asy
     saleRow('923456789', 'Sep 25, 2026', undefined, 200), saleRow('123456789', 'Sep 25, 2026', undefined, 300),
   ]));
   expect(await reader.read('sales', salesArgs)).toMatchObject({ ok: true, data: { latestSale: { price: 200, url: 'https://www.ebay.com/itm/923456789' } } });
+});
+
+it('reads the observed single-result CGC 10 Rayquaza history without waiting for more pages', async () => {
+  const html = `<div class="sales-history-view"><div>1 result Grade: 10, Grader: CGC, Profile: cgc-516187 (Pop 5) </div>${saleRow('135032596323', 'Apr 27, 2024', 'GEM MINT CGC 10 Rayquaza 3/17 POP Series 1 Pokemon TCG', 130).replace('$130', '€114.40')}</div>`;
+  const reader = await pageReader(salesUrl('cgc', 'g10', 'cgc-516187'), html);
+  const rayquaza = { name: 'Rayquaza', number: '3/17', set: '2004 Pokemon POP Series 1', variation: '(Non Holo)', gradingCompany: 'CGC', grade: '10', currency: 'EUR' };
+  expect(await reader.read('sales', { ...salesArgs, profileId: 'cgc-516187', gradingCompany: 'CGC', grade: '10', currency: 'EUR', holding: rayquaza })).toMatchObject({ ok: true, data: {
+    complete: true, sales: [], latestSaleComplete: true, latestSaleWarning: null,
+    latestSale: { price: 114.4, soldDate: '2024-04-27', currency: 'EUR', title: 'GEM MINT CGC 10 Rayquaza 3/17 POP Series 1 Pokemon TCG' },
+  } });
+});
+
+it('establishes no comparable last sale when the single result has the wrong label', async () => {
+  const reader = await pageReader(salesUrl('beckett', 'g10p', 'beckett-18399267'), salesFixture([saleRow('123456789', 'Sep 10, 2026', 'Lugia V 186 BGS 10 Black Label')]).replace('1 results', '1 result'));
+  expect(await reader.read('sales', salesArgs)).toMatchObject({ ok: true, data: { complete: true, sales: [], latestSale: null, latestSaleComplete: true, latestSaleWarning: null } });
 });

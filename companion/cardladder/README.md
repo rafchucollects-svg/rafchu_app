@@ -1,5 +1,20 @@
 # Rafchu CardLadder Companion
 
+## Version 1.2.1 — complete pricing windows survive unavailable older history
+
+Cards with fractional card numbers such as Rayquaza `3/17` now match equivalent
+sale titles without losing the set-number denominator. The optional search for
+the last comparable sale also has its own completeness flag. Once all sales in
+the two-week pricing window have been read, a stall or history limit while
+searching older sales keeps that window usable. The report explicitly says the
+last comparable sale is unavailable; it does not claim that no sale exists.
+An incomplete two-week window, changed filters, conflicting evidence or
+unreadable prices still prevent sale-based pricing.
+
+Single-sale histories now recognize CardLadder's singular **1 result** count.
+This fixes the observed Rayquaza CGC 10 history, whose one available sale predates
+the two-week window, and also handles one-card Inventory collections correctly.
+
 ## Version 1.2.0 — BGS, CGC and last-sale context
 
 The reader supports numeric PSA, BGS and CGC grades, including half grades.
@@ -19,8 +34,9 @@ and source link. The extension popup's **View captured sales** opens the same
 per-card comparison in a read-only report tab, without signing into Rafchu.
 When necessary, capture continues beyond the two-week cutoff
 to find that sale. Older sales are context only and never enter the two-week high
-or automatically replace a price. A capture must still establish completeness;
-an unreadable, stalled or excessive history is skipped.
+or automatically replace a price. A capture must still establish completeness
+of its pricing window. Unavailable older history is labeled separately and does
+not invalidate a window already proven complete.
 
 The profile controls and generated URLs were inspected read-only on September
 30, 2026. Observed encodings: BECKETT/BGS uses `beckett`, 10 P uses `g10p`, 10 B

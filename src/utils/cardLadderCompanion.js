@@ -23,6 +23,7 @@ export async function saveCardLadderReport(db, uid, report, bindings = {}, addit
   if (options?.updateStickerPrices === true && automatic) throw new Error('Sticker price updates require manual review.');
   if (options?.updateStickerPrices === true && selectedHoldingIds === null) throw new Error('Sticker prices require an explicit checked selection.');
   if (automatic && valueHoldingIds.length) throw new Error('CardLadder Value requires manual review.');
+  if (automatic && Object.keys(additions).length) throw new Error('Adding cards requires manual review.');
   if (!uid) throw new Error('Sign in to update your Inventory.');
   return runTransaction(db, async transaction => {
     const ref = doc(db, 'collections', uid);
