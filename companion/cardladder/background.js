@@ -41,6 +41,13 @@ async function navigate(tabId, url) {
   throw new Error('CardLadder navigation did not finish. Run the capture again.');
 }
 
+function inventoryIds(read) {
+  if (!read || !Array.isArray(read.holdings) || !Number.isSafeInteger(read.total) || read.total !== read.holdings.length || read.total > 1000) throw new Error('Inventory membership could not be verified. Run the capture again.');
+  const ids = read.holdings.map(holding => holding?.holdingId);
+  if (ids.some(id => typeof id !== 'string' || !id.trim()) || new Set(ids).size !== ids.length) throw new Error('Inventory contains unreadable or duplicate holding identifiers.');
+  return ids.sort();
+}
+
 async function capture() {
   if (active) return { started: false };
   const job = { cancelled: false, tabId: null };
@@ -56,8 +63,11 @@ async function capture() {
     job.tabId = tab.id;
     report.currency = await command(tab.id, 'currency');
     if (!isCardLadderCurrency(report.currency)) throw new Error('Unsupported CardLadder display currency. No capture was saved.');
+    const initialAccountKey = await command(tab.id, 'accountKey');
     await navigate(tab.id, `${ORIGIN}/collection`);
-    const holdings = await command(tab.id, 'inventory', { currency: report.currency });
+    const initialInventory = await command(tab.id, 'inventory', { currency: report.currency });
+    const holdingIds = inventoryIds(initialInventory);
+    const holdings = initialInventory.holdings;
     report.collectionComplete = true;
     for (let index = 0; index < holdings.length; index++) {
       if (job.cancelled) throw new Error('Sync cancelled.');
@@ -76,8 +86,21 @@ async function capture() {
       report.holdings.push(holding);
     }
     if (job.cancelled) throw new Error('Sync cancelled.');
+    await saveStatus({ state: 'running', message: 'Verifying complete Inventory membership…', startedAt: capturedAt });
+    await navigate(tab.id, `${ORIGIN}/collection`);
+    const finalInventory = await command(tab.id, 'inventory', { currency: report.currency });
+    const finalIds = inventoryIds(finalInventory);
+    if (holdingIds.length !== finalIds.length || holdingIds.some((id, index) => id !== finalIds[index])) throw new Error('Inventory membership changed during capture. The previous report was kept. Run again.');
+    const finalRows = new Map(finalInventory.holdings.map(holding => [holding.holdingId, holding]));
+    if (holdings.some(holding => ['name', 'number', 'set', 'variation', 'gradingCompany', 'grade'].some(key => holding[key] !== finalRows.get(holding.holdingId)?.[key]))) throw new Error('An Inventory holding changed during capture. The previous report was kept. Run again.');
     await navigate(tab.id, `${ORIGIN}/account`);
     if (await command(tab.id, 'currency') !== report.currency) throw new Error('CardLadder’s display currency changed during capture. Run again without changing it. The previous report was kept.');
+    const finalAccountKey = await command(tab.id, 'accountKey');
+    if (initialAccountKey && finalAccountKey && initialAccountKey !== finalAccountKey) throw new Error('The CardLadder account changed during capture. The previous report was kept. Run again.');
+    if (/^[a-f0-9]{64}$/.test(initialAccountKey || '') && initialAccountKey === finalAccountKey) {
+      report.inventorySnapshot = { version: 1, collectionName: 'Inventory', accountKey: initialAccountKey,
+        holdingIds, total: holdingIds.length, verifiedAt: new Date().toISOString() };
+    } else report.inventorySnapshotWarning = 'The CardLadder source account could not be verified. This capture can update prices and add cards, but cannot reconcile removals.';
     if (job.cancelled) throw new Error('Sync cancelled.');
     // Keep the window fixed at capture start even if the run crosses UTC midnight.
     // Each sales command already excludes dates outside these fixed bounds.

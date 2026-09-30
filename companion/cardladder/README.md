@@ -1,5 +1,31 @@
 # Rafchu CardLadder Companion
 
+## Version 1.2.2 — verified Inventory membership
+
+New captures include a separate Inventory membership snapshot for reconciling
+previously linked cards that have disappeared from CardLadder. Every collection
+holding ID is included, even when its grade is unsupported or its sales fail.
+Sale completeness is never used to decide whether a holding is present.
+
+The companion reads the complete, unfiltered Inventory twice, using a fresh page
+after the sales capture. Both reads must have the same holding IDs, total and card
+identities. Counts and collection/search/filter state are checked while paging;
+stalled or partial lists cannot establish absence. Zero results must show the
+loaded empty-state UI with no list loader, and remain stable through both reads.
+Duplicate collections named Inventory are rejected as ambiguous.
+
+The Account page's explicitly rendered User ID is hashed locally with SHA-256,
+and the hash must match before and after capture. Only this opaque account key
+is saved in the membership snapshot; no raw User ID, email, password or session
+credential is stored. A source-account change discards the new capture. If the
+User ID cannot be read, prices and additions remain available, but the report
+does not authorize removals. Old reports also remain usable for prices and
+additions but lack the new removal evidence.
+
+Rafchu only considers cards already linked/synced to CardLadder for removal;
+unlinked inventory is preserved. Review proposed removals in the app. Automatic
+reconciliation requires a previously verified matching source-account scope.
+
 ## Version 1.2.1 — complete pricing windows survive unavailable older history
 
 Cards with fractional card numbers such as Rayquaza `3/17` now match equivalent
@@ -133,7 +159,8 @@ page starts captures and displays their results without applying inventory price
 - Opening a manual preview turns automatic application off on this browser origin
   so your selections control the save. Close the preview and enable automatic
   updates again when ready. Selections apply to this save, not future captures.
-- Automatic application updates existing cards only. New cards require an
+- Automatic application updates existing cards and can remove missing cards
+  previously linked to the verified source account. New cards require an
   explicit selection in the preview; after adding them, later captures can
   update their prices automatically.
 - Restart an interrupted capture using Sync Inventory. Partial reader failures
@@ -172,8 +199,9 @@ or malformed prices are rejected. Prices remain per card; inventory quantity
 is applied by Rafchu.
 
 No eligible sales: keep the previous value. Failed, stale, incomplete, unmatched,
-or ambiguous results: keep the previous value. Manual selling-price overrides,
-purchase costs, quantities, and inventory membership remain unchanged. Existing
+or ambiguous results: keep the previous value. Price updates preserve manual
+selling-price overrides, purchase costs and quantities. Inventory additions and
+verified removals follow their separate sync choices. Existing
 CSV imports preserve the recorded high and its evidence for an unchanged grade.
 
 ## Adding missing cards

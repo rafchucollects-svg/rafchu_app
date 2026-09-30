@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { saveItemChanges } from '../src/utils/inventoryStore.js';
+import { saveCardLadderReport } from '../src/utils/cardLadderCompanion.js';
+import { buildCardLadderRemovals, createSalesBinding, salesWindow } from '../src/utils/cardLadderSales.js';
 import { importReconciliationSources, finalizeReconciliation, automaticallyReconcile, saveReconciliationDraft, loadReconciliation } from '../src/utils/reconciliationStore.js';
 import { allocateReconciliationAmounts, reconciliationAdjustment } from '../src/utils/reconciliation.js';
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
@@ -117,6 +119,53 @@ beforeEach(async () => {
   await server.doc('collections/alice').set({ shareEnabled: true, cashData: { secret: 10 }, items: [{ entryId: 'a', name: 'Pikachu', quantity: 1, buyPrice: 10 }, { entryId: 'hidden', name: 'Hidden', excludeFromSale: true }] });
   await server.doc('conversations/chat').set({ participants: ['alice','bob'] });
 });
+
+function cardLadderRemovalFixture() {
+  const capturedAt = new Date().toISOString();
+  const accountKey = 'a'.repeat(64);
+  const holding = { holdingId: 'cl-rayquaza', name: 'Rayquaza', set: 'POP Series 1', number: '3/17', gradingCompany: 'CGC', grade: '10' };
+  const item = { entryId: 'cl-owned', name: holding.name, set: holding.set, number: holding.number, isGraded: true,
+    gradingCompany: holding.gradingCompany, grade: holding.grade, quantity: 2, buyPrice: 75, buyPriceCurrency: 'EUR', overridePrice: 120 };
+  const binding = createSalesBinding(item, holding);
+  item.cardladderData = { holdingId: holding.holdingId, holdingIdentityKey: binding.holdingIdentity,
+    inventoryIdentityKey: binding.itemIdentity, inventoryAccountKey: accountKey, linkedAt: Date.parse(capturedAt) - 60000 };
+  const report = { schemaVersion: 2, source: 'cardladder-browser', runId: 'empty-inventory', capturedAt, ...salesWindow(capturedAt),
+    collectionName: 'Inventory', collectionComplete: true, currency: 'EUR', holdings: [],
+    inventorySnapshot: { version: 1, collectionName: 'Inventory', holdingIds: [], total: 0, verifiedAt: capturedAt, accountKey } };
+  return { item, report };
+}
+
+test('CardLadder removals atomically preserve unlinked cards and create private recoverable trash', async () => {
+  const db = alice();
+  const { item, report } = cardLadderRemovalFixture();
+  const manual = { entryId: 'manual', name: 'Pikachu', quantity: 4, buyPrice: 5 };
+  await setDoc(doc(db, 'collections/alice'), { items: [item, manual], note: 'Keep metadata' });
+  const removals = buildCardLadderRemovals([item, manual], report);
+  assert.equal(removals.length, 1);
+  const result = await saveCardLadderReport(db, 'alice', report, {}, {}, [], false, [], { removals });
+  assert.equal(result.removedCount, 1);
+  const inventory = (await getDoc(doc(db, 'collections/alice'))).data();
+  assert.deepEqual(inventory.items, [manual]);
+  assert.equal(inventory.note, 'Keep metadata');
+  assert.equal(inventory.cardLadderLastSync.removedCount, 1);
+  const trash = (await getDoc(doc(db, 'collections/alice/trash/cl-owned'))).data();
+  assert.deepEqual(trash.item, item);
+  assert.ok(trash.deletedAt.toMillis() > 0);
+  await assertFails(getDoc(doc(bob(), 'collections/alice/trash/cl-owned')));
+});
+
+test('CardLadder removal review cannot erase an item edited after its preview', async () => {
+  const db = alice();
+  const { item, report } = cardLadderRemovalFixture();
+  const removals = buildCardLadderRemovals([item], report);
+  assert.equal(removals.length, 1);
+  const edited = { ...item, quantity: 3 };
+  await setDoc(doc(db, 'collections/alice'), { items: [edited] });
+  await assert.rejects(saveCardLadderReport(db, 'alice', report, {}, {}, [], false, [], { removals }), /changed|refresh|review/i);
+  assert.deepEqual((await getDoc(doc(db, 'collections/alice'))).data().items, [edited]);
+  assert.equal((await getDoc(doc(db, 'collections/alice/trash/cl-owned'))).exists(), false);
+});
+
 test('private profiles/inventory/wishlists are owner-only; public projection is allowlisted', async () => {
   await assertFails(getDoc(doc(guest(),'users','alice')));
   await assertFails(getDoc(doc(bob(),'collections','alice')));

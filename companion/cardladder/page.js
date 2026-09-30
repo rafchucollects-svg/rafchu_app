@@ -1,4 +1,4 @@
-import { readAccountCurrency, readCollectionRows, readSalesRows, resultCount, textOf } from './dom.js';
+import { readAccountCurrency, readAccountUserId, readCollectionRows, readSalesRows, resultCount, textOf } from './dom.js';
 import { isComparableSale, saleIdentity } from '../../src/utils/cardLadderSales.js';
 import { normalizeGrading, sameGrading } from '../../src/utils/grading.js';
 import { readSalesDestination, salesGrading } from './grading.js';
@@ -33,14 +33,31 @@ async function currency() {
   return waitFor(() => readAccountCurrency(document), 'display currency in Account → Display Settings');
 }
 
+async function accountKey() {
+  if (location.pathname !== '/account') throw new Error('Open CardLadder Account to verify the source account.');
+  let userId;
+  try { userId = await waitFor(() => readAccountUserId(document), 'the rendered CardLadder User ID', 5000); }
+  catch (error) { if (cancelled) throw error; return null; }
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`cardladder-user-id:${userId}`));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 async function inventory({ currency }) {
   const header = await waitFor(() => document.querySelector('h1.secondary-font'), 'collection name');
-  if (textOf(header).toLowerCase() !== 'inventory') {
-    header.parentElement.querySelector('.dropdown button')?.click();
-    const choice = await waitFor(() => [...header.parentElement.querySelectorAll('li')].find(el => visible(el) && [...el.querySelectorAll('span')].some(span => textOf(span).toLowerCase() === 'inventory')), 'Inventory collection');
-    choice.click();
+  const collectionDropdown = header.parentElement.querySelector('.dropdown');
+  const collectionButton = collectionDropdown?.querySelector('button');
+  if (!collectionButton) throw new Error('Could not verify the Inventory collection selector.');
+  collectionButton.click();
+  await waitFor(() => visible(collectionDropdown.querySelector('.dropdown-content')) || visible(collectionDropdown.querySelector('ul')), 'collection choices');
+  const choices = [...collectionDropdown.querySelectorAll('li')].filter(el => visible(el) && [...el.querySelectorAll('span')].some(span => textOf(span).toLowerCase() === 'inventory'));
+  const alreadySelected = textOf(header).toLowerCase() === 'inventory';
+  // The selected collection is omitted from CardLadder's menu. Another entry
+  // named Inventory would make the name-based source scope ambiguous.
+  if (choices.length !== (alreadySelected ? 0 : 1)) throw new Error('Could not identify one unique Inventory collection. Check for duplicate collection names.');
+  if (!alreadySelected) {
+    choices[0].click();
     await waitFor(() => textOf(header).toLowerCase() === 'inventory', 'Inventory selection');
-  }
+  } else collectionButton.click();
   // Clear collection filters through CardLadder's UI before measuring completeness.
   const root = main();
   const filterButton = find('button', 'tune', root);
@@ -59,22 +76,54 @@ async function inventory({ currency }) {
   }
   await waitFor(() => !visible(clear), 'cleared collection filters');
   await pause(700);
-  // A text search is separate from filters: never silently read a searched subset.
-  const search = [...root.querySelectorAll('[contenteditable="true"], input[type="search"]')].find(visible);
-  if (search && (search.value || textOf(search))) throw new Error('Clear the Inventory search before syncing.');
   const listButton = find('button', 'list', root);
-  listButton?.click();
-  await waitFor(() => resultCount(root) !== null, 'Inventory result count');
-  const expected = resultCount(root);
-  if (expected > 1000) throw new Error('This version supports up to 1,000 Inventory holdings.');
+  if (!listButton) throw new Error('Could not verify Inventory list view.');
+  listButton.click();
+  const cards = await waitFor(() => root.querySelector('.collection-cards-view'), 'Inventory list');
+  const checkState = () => {
+    if (location.pathname !== '/collection' || !document.contains(cards) || textOf(header).toLowerCase() !== 'inventory') throw new Error('The selected collection changed during capture.');
+    const searches = [...root.querySelectorAll('[contenteditable="true"], input[type="search"]')].filter(visible);
+    if (searches.some(search => String(search.value || textOf(search)).trim())) throw new Error('Clear the Inventory search before syncing.');
+    if ([...root.querySelectorAll('.modal')].some(visible)) throw new Error('Collection filter controls changed during capture. Run again.');
+    const summary = cards.querySelector('.filter-results');
+    if (!summary || !visible(summary)) return null;
+    const label = textOf(summary).replace(/\s+/g, ' ').trim();
+    if (!/^[\d,]+ results?$/.test(label)) throw new Error('Collection filters changed during capture. Run again.');
+    const count = resultCount(summary);
+    if (!Number.isSafeInteger(count) || count < 0 || count > 1000) throw new Error('This version supports up to 1,000 Inventory holdings.');
+    return count;
+  };
+  const loadedEmpty = () => visible(cards.querySelector('.results .empty-state')) &&
+    ![...cards.querySelectorAll('.results .spinner, .results [aria-busy="true"]')].some(visible);
+  // A transient "0 results" is rendered before the collection loads. Require
+  // its explicit empty state, then a stable count; a second hard-navigation
+  // enumeration in the worker independently verifies empty membership.
+  let stableCount = null;
+  let stableSince = Date.now();
+  const expected = await waitFor(() => {
+    const count = checkState();
+    if (count === null || (count === 0 && !loadedEmpty())) { stableCount = null; stableSince = Date.now(); return false; }
+    if (count !== stableCount) { stableCount = count; stableSince = Date.now(); }
+    return Date.now() - stableSince >= 1600 ? { count } : false;
+  }, 'stable unfiltered Inventory results');
   const rows = new Map();
   let stalledAt = Date.now();
+  let completeSince = null;
   while (true) {
-    if (textOf(header).toLowerCase() !== 'inventory') throw new Error('The selected collection changed during capture.');
+    if (checkState() !== expected.count) throw new Error('Collection count changed during capture. Run again.');
     const before = rows.size;
-    for (const row of readCollectionRows(root, location.origin, currency)) rows.set(row.holdingId, row);
-    if (rows.size === expected) return [...rows.values()];
-    if (rows.size > expected) throw new Error('Collection changed during capture. Run again.');
+    for (const row of readCollectionRows(cards, location.origin, currency)) {
+      if (!row.holdingId || new URL(row.collectionUrl).origin !== location.origin) throw new Error('An Inventory holding has an unreadable identifier.');
+      const previous = rows.get(row.holdingId);
+      if (previous && ['name', 'number', 'set', 'variation', 'gradingCompany', 'grade'].some(key => previous[key] !== row[key])) throw new Error('An Inventory holding changed during capture. Run again.');
+      rows.set(row.holdingId, row);
+    }
+    if (rows.size > expected.count) throw new Error('Collection changed during capture. Run again.');
+    const noLoader = ![...cards.querySelectorAll('.results .spinner, .results [aria-busy="true"]')].some(visible);
+    if (rows.size === expected.count && noLoader && (expected.count > 0 || loadedEmpty())) {
+      completeSince ??= Date.now();
+      if (Date.now() - completeSince >= 1600) return { holdings: [...rows.values()], total: expected.count, verifiedAt: new Date().toISOString() };
+    } else completeSince = null;
     if (rows.size > before) stalledAt = Date.now();
     if (Date.now() - stalledAt > 12000) throw new Error('Inventory did not fully load. No partial collection will be imported.');
     scrollResults(root);
@@ -186,7 +235,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message.channel !== 'rafchu-reader') return;
   if (message.command === 'cancel') { cancelled = true; respond({ ok: true }); return; }
   cancelled = false;
-  const commands = { currency, inventory, holding, sales };
+  const commands = { currency, accountKey, inventory, holding, sales };
   if (message.command === 'ping') { respond({ ok: true }); return; }
   const action = commands[message.command];
   if (!action) return;

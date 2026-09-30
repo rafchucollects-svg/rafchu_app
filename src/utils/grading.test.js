@@ -59,7 +59,8 @@ describe('grading identities', () => {
     const item = { gradingCompany: 'CGC', grade: '10', gradedPrice: 100, gradedPriceCurrency: 'EUR',
       calculatedSuggestedPrice: 100, cardladderPricing: { highSale: { price: 100 } },
       overridePrice: 120, overridePriceCurrency: 'EUR', buyPrice: 80,
-      cardladderData: { holdingId: 'old', holdingIdentityKey: 'old-key', ladderId: 'old-profile', currentValue: 100, investment: 80, variation: 'Holo' } };
+      cardladderData: { holdingId: 'old', holdingIdentityKey: 'old-key', inventoryAccountKey: 'previous-account', linkedAt: 123, membershipRestoredAt: 456,
+        ladderId: 'old-profile', currentValue: 100, investment: 80, variation: 'Holo' } };
     expect(updateItemGrading(item, 'CGC', '10 Pristine')).toMatchObject({
       gradingCompany: 'CGC', grade: '10 Pristine', gradedPrice: null, gradedPriceCurrency: null,
       calculatedSuggestedPrice: null, cardladderPricing: null,
@@ -67,6 +68,7 @@ describe('grading identities', () => {
       cardladderData: { investment: 80, variation: 'Holo' },
     });
     expect(updateItemGrading(item, 'CGC', '10 Pristine').cardladderData).not.toHaveProperty('holdingId');
+    expect(updateItemGrading(item, 'CGC', '10 Pristine').cardladderData).toEqual({ investment: 80, variation: 'Holo' });
     expect(updateItemGrading(item, 'CGC', 'Gem Mint10')).toEqual(item);
     expect(item.cardladderData.holdingId).toBe('old');
   });

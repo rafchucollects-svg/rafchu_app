@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Rafchu CardLadder Companion",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Read your CardLadder Inventory and calculate the highest matching sale in its two-week window.",
   "permissions": [
     "storage",

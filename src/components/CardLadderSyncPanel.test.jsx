@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({ request: vi.fn(), save: vi.fn(), items: [], pr
 vi.mock('@/contexts/AppContext', () => ({ useApp: () => ({ user: { uid: 'test' }, db: {}, collectionItems: mocks.items, ...mocks.preferences }) }));
 vi.mock('@/utils/cardLadderCompanion', () => ({ autoSyncKey: uid => `auto:${uid}`, companionRequest: mocks.request, saveCardLadderReport: mocks.save }));
 import { CardLadderSyncPanel } from './CardLadderSyncPanel';
-import { salesWindow } from '../utils/cardLadderSales';
+import { salesWindow, createSalesBinding, buildCardLadderRemovals } from '../utils/cardLadderSales';
 import { formatCurrency } from '../utils/cardHelpers';
 
 let root, host;
@@ -50,7 +50,7 @@ it.each(['1.1.0', '1.1.1'])('explains the BGS and CGC companion update for %s', 
   await act(async () => root.render(<CardLadderSyncPanel />));
   const warning = host.querySelector('[aria-label="CardLadder grading support update"]');
   expect(warning.textContent).toContain('sync BGS and CGC');
-  expect(warning.textContent).toContain('1.2.1');
+  expect(warning.textContent).toContain('1.2.2');
   expect(warning.textContent).toContain('run Sync Inventory again');
   expect(mocks.request).not.toHaveBeenCalledWith('start');
 });
@@ -65,7 +65,7 @@ it('shows the capture fix update for companion 1.2.0 and removes it after updati
   mocks.request.mockResolvedValue({ installed: true, version: '1.2.0' });
   await act(async () => root.render(<CardLadderSyncPanel />));
   const warning = host.querySelector('[aria-label="CardLadder capture fix update"]');
-  expect(warning.textContent).toContain('1.2.1');
+  expect(warning.textContent).toContain('1.2.2');
   expect(warning.textContent).toContain('single sale');
   expect(warning.textContent).toContain('3/17');
   expect(warning.querySelector('a').getAttribute('href')).toBe('/cardladder-companion.zip');
@@ -295,11 +295,11 @@ it('defaults to explicit sticker updates and can apply stickers from the same re
   expect(host.textContent).toContain('remains unchanged with this selection');
   mocks.save.mockResolvedValueOnce({ updatedCount: 1, stickerUpdatedCount: 0, addedCount: 0 });
   await act(async () => applyFooter().querySelector('button').click());
-  expect(mocks.save.mock.calls[0][8]).toEqual({ updateStickerPrices: false });
+  expect(mocks.save.mock.calls[0][8]).toEqual({ updateStickerPrices: false, removals: [] });
   expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Saved 1 market estimate. Your manual sticker prices are unchanged.');
   act(() => mode('Sticker prices and market estimates').click());
   await act(async () => applyFooter().querySelector('button').click());
-  expect(mocks.save.mock.calls[1][8]).toEqual({ updateStickerPrices: true });
+  expect(mocks.save.mock.calls[1][8]).toEqual({ updateStickerPrices: true, removals: [] });
   expect(mocks.save.mock.calls[1][2]).toBe(report);
   expect(mocks.save.mock.calls[1][5]).toEqual(['one']);
   expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Updated 1 existing sticker price and saved 1 market estimate.');
@@ -402,7 +402,7 @@ it('adds an incomplete CGC 10 Rayquaza capture with quantity and cost while sele
   expect(mocks.save).toHaveBeenCalledTimes(1);
   expect(mocks.save).toHaveBeenCalledWith({}, 'test', report, {}, {
     'rayquaza-cgc10': { quantity: '3', buyPrice: '149.95', buyPriceCurrency: 'EUR' },
-  }, ['rayquaza-cgc10'], false, [], { updateStickerPrices: true });
+  }, ['rayquaza-cgc10'], false, [], { updateStickerPrices: true, removals: [] });
   expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Updated 0 existing sticker prices and saved 0 market estimates. Added 1 new card.');
   expect(mocks.request).not.toHaveBeenCalledWith('start');
 });
@@ -435,5 +435,215 @@ it('explains that missing older sales leave a completed 14-day window usable', a
   const newOption = host.querySelector('[aria-label="Link Rayquaza rayquaza-cgc10"] option[value="__new__"]');
   expect(newOption.textContent).toBe('Add as new — I checked that it is missing');
   expect(host.querySelector('[aria-label="Use CardLadder Value for Rayquaza rayquaza-cgc10"]')).not.toBeNull();
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+const verifiedInventory = (holdings = []) => {
+  const report = { ...legacyReport(), schemaVersion: 2, currency: 'USD', runId: 'verified-membership', holdings: holdings.map(holding => ({ ...holding, currency: holding.currency || 'USD' })) };
+  report.inventorySnapshot = { version: 1, collectionName: 'Inventory', accountKey: 'a'.repeat(64),
+    total: holdings.length, holdingIds: holdings.map(holding => holding.holdingId), verifiedAt: report.capturedAt };
+  return report;
+};
+const linkedRayquaza = (overrides = {}) => {
+  const item = { entryId: 'linked-rayquaza', name: 'Rayquaza', set: '2004 Pokemon POP Series 1', number: '3/17',
+    isGraded: true, gradingCompany: 'CGC', grade: '10', quantity: 2, buyPrice: 100,
+    overridePrice: 450, overridePriceCurrency: 'EUR', ...overrides };
+  const binding = createSalesBinding(item, item);
+  return { ...item, cardladderData: { holdingId: 'absent-rayquaza', holdingIdentityKey: binding.holdingIdentity,
+    inventoryIdentityKey: binding.itemIdentity, inventoryAccountKey: 'a'.repeat(64), linkedAt: Date.now() - 60000 } };
+};
+const removalCheckbox = () => host.querySelector('[aria-label="Remove Rayquaza linked-rayquaza"]');
+const clickNamedButton = text => act(() => [...host.querySelectorAll('button')].find(button => button.textContent === text).click());
+
+it('reviews linked removals unchecked and supports a removal-only save without touching unlinked cards', async () => {
+  const linked = linkedRayquaza();
+  mocks.items.push(linked);
+  const report = verifiedInventory();
+  mocks.save.mockResolvedValue({ updatedCount: 0, stickerUpdatedCount: 0, addedCount: 0, removedCount: 1 });
+  await loadReport(report);
+  const removalPanel = host.querySelector('[aria-label="Cards missing from CardLadder Inventory"]');
+  expect(removalPanel.textContent).toContain('Missing from CardLadder Inventory · 1');
+  expect(removalPanel.textContent).toContain('Rayquaza #3/17');
+  expect(removalPanel.textContent).toContain('CGC 10');
+  expect(removalPanel.textContent).toContain('Quantity: 2');
+  expect(removalPanel.textContent).not.toContain('Lugia V');
+  expect(host.querySelector('[aria-label="CardLadder removal check needs fresh capture"]')).toBeNull();
+  expect(removalCheckbox().checked).toBe(false);
+  expect(applyFooter().querySelector('button').disabled).toBe(true);
+
+  act(() => removalCheckbox().click());
+  expect(host.textContent).toContain('0 new cards · 1 removal');
+  expect(applyFooter().textContent).toContain('Saving will remove 1 selected card from Rafchu Inventory.');
+  expect(applyFooter().querySelector('button').textContent).toBe('Remove 1 card from Inventory');
+  const reviewed = buildCardLadderRemovals(mocks.items, report);
+  expect(mocks.save).not.toHaveBeenCalled();
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(mocks.save).toHaveBeenCalledWith({}, 'test', report, {}, {}, [], false, [],
+    { updateStickerPrices: true, removals: reviewed });
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Removed 1 card from Inventory because it is no longer in CardLadder Inventory.');
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Recently deleted');
+  expect(removalCheckbox().checked).toBe(false);
+  expect(mocks.items[0].entryId).toBe('owned');
+});
+
+it('selects and deselects prices and removals together without implicitly selecting removals on load', async () => {
+  mocks.items.push(linkedRayquaza());
+  const report = verifiedInventory(legacyReport().holdings);
+  await loadReport(report);
+  expect(host.querySelector('[aria-label="Include Lugia V one"]').checked).toBe(true);
+  expect(removalCheckbox().checked).toBe(false);
+  clickNamedButton('Select all');
+  expect(removalCheckbox().checked).toBe(true);
+  expect(applyFooter().querySelector('button').textContent).toBe('Update 1 sticker price and remove 1 card from Inventory');
+  clickNamedButton('Deselect all');
+  expect(host.querySelector('[aria-label="Include Lugia V one"]').checked).toBe(false);
+  expect(removalCheckbox().checked).toBe(false);
+  expect(applyFooter().querySelector('button').disabled).toBe(true);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it.each(['old-reader', 'incomplete', 'cancelled', 'stale', 'invalid-total', 'missing-account'])('does not propose removals for a %s report', async kind => {
+  mocks.items.push(linkedRayquaza());
+  const report = verifiedInventory();
+  if (kind === 'old-reader') delete report.inventorySnapshot;
+  if (kind === 'incomplete') report.collectionComplete = false;
+  if (kind === 'cancelled') { report.cancelled = true; delete report.inventorySnapshot; }
+  if (kind === 'stale') {
+    report.capturedAt = new Date(Date.now() - 2 * 86400000).toISOString();
+    Object.assign(report, salesWindow(report.capturedAt));
+    report.inventorySnapshot.verifiedAt = report.capturedAt;
+  }
+  if (kind === 'invalid-total') report.inventorySnapshot.total = 1;
+  if (kind === 'missing-account') delete report.inventorySnapshot.accountKey;
+  await loadReport(report);
+  expect(removalCheckbox()).toBeNull();
+  const notice = host.querySelector('[aria-label="CardLadder removal check needs fresh capture"]');
+  expect(notice.textContent).toContain('No cards will be removed from this capture.');
+  expect(notice.textContent).toContain('companion 1.2.2');
+  expect(notice.textContent).toContain('run Sync Inventory again');
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('requires a changed inventory item to be selected again before removal', async () => {
+  mocks.items.push(linkedRayquaza());
+  await loadReport(verifiedInventory());
+  act(() => removalCheckbox().click());
+  expect(removalCheckbox().checked).toBe(true);
+  mocks.items = mocks.items.map(item => item.entryId === 'linked-rayquaza' ? { ...item, quantity: 5 } : item);
+  await act(async () => root.render(<CardLadderSyncPanel />));
+  expect(removalCheckbox().checked).toBe(false);
+  expect(applyFooter().querySelector('button').disabled).toBe(true);
+  expect(host.querySelector('[aria-label="Cards missing from CardLadder Inventory"]').textContent).toContain('Quantity: 5');
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('retains explicit removal choices after a failed save so they can be retried', async () => {
+  mocks.items.push(linkedRayquaza());
+  let failSave;
+  mocks.save.mockImplementationOnce(() => new Promise((_resolve, reject) => { failSave = reject; }));
+  await loadReport(verifiedInventory());
+  act(() => removalCheckbox().click());
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(applyFooter().querySelector('button').textContent).toBe('Saving inventory changes…');
+  expect(removalCheckbox().disabled).toBe(true);
+  await act(async () => failSave(new Error('Could not save. Please retry.')));
+  expect(applyFooter().querySelector('[role="alert"]').textContent).toBe('Could not save. Please retry.');
+  expect(removalCheckbox().checked).toBe(true);
+  expect(removalCheckbox().disabled).toBe(false);
+  expect(applyFooter().querySelector('button').textContent).toBe('Remove 1 card from Inventory');
+});
+
+it.each([true, false])('saves an explicit link independently of pricing when sales complete is %s', async complete => {
+  const holding = rayquazaCapture({ complete }).holdings[0];
+  holding.sales = [];
+  holding.currency = 'USD';
+  holding.cardLadderValueCurrency = 'USD';
+  const localCard = { ...linkedRayquaza(), entryId: 'local-rayquaza', name: 'Rayquaza (Holo)', cardladderData: undefined };
+  mocks.items = [localCard];
+  mocks.save.mockResolvedValue({ updatedCount: 0, stickerUpdatedCount: 0, addedCount: 0, linkedCount: 1 });
+  const report = verifiedInventory([holding]);
+  await loadReport(report);
+  clickNamedButton('Deselect all');
+  const selector = host.querySelector('[aria-label="Link Rayquaza rayquaza-cgc10"]');
+  act(() => { selector.value = localCard.entryId; selector.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(host.querySelector('[aria-label="Include Rayquaza rayquaza-cgc10"]').checked).toBe(true);
+  expect(applyFooter().querySelector('button').textContent).toBe('Save 1 link');
+  expect(host.textContent).toContain('Save CardLadder link · price unchanged');
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(mocks.save).toHaveBeenCalledWith({}, 'test', report,
+    { 'rayquaza-cgc10': createSalesBinding(localCard, holding) }, {}, ['rayquaza-cgc10'], false, [],
+    { updateStickerPrices: true, removals: [] });
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Saved 1 CardLadder link.');
+});
+
+it('explains that automatic updates remove confirmed linked cards and preserve unlinked cards', async () => {
+  localStorage.removeItem('auto:test');
+  mocks.request.mockResolvedValue({ installed: true, version: '1.2.2' });
+  await act(async () => root.render(<CardLadderSyncPanel />));
+  const autoLabel = [...host.querySelectorAll('label')].find(label => label.textContent.includes('Automatically update existing cards'));
+  expect(autoLabel.textContent).toContain('remove previously linked cards');
+  expect(autoLabel.textContent).toContain('complete, verified CardLadder Inventory capture');
+  expect(autoLabel.textContent).toContain('Manually added cards without a CardLadder link are kept.');
+  expect(autoLabel.querySelector('input').checked).toBe(false);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it.each(['1.2.1', '1.2.2'])('shows the inventory membership update only for companion 1.2.1 (installed %s)', async version => {
+  mocks.request.mockResolvedValue({ installed: true, version });
+  await act(async () => root.render(<CardLadderSyncPanel />));
+  const notice = host.querySelector('[aria-label="CardLadder inventory removal update"]');
+  if (version === '1.2.1') {
+    expect(notice.textContent).toContain('Update to companion 1.2.2');
+    expect(notice.textContent).toContain('run a fresh Sync Inventory');
+    expect(notice.textContent).toContain('Existing captures cannot identify missing cards.');
+  } else expect(notice).toBeNull();
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('does not offer cards linked to a different CardLadder account for manual matching', async () => {
+  const holding = { ...rayquazaCapture().holdings[0], currency: 'USD', cardLadderValueCurrency: 'USD', sales: [] };
+  const foreign = linkedRayquaza({ entryId: 'foreign', name: 'Rayquaza (foreign)' });
+  foreign.cardladderData.inventoryAccountKey = 'b'.repeat(64);
+  const local = { ...linkedRayquaza({ entryId: 'local', name: 'Rayquaza (local)' }), cardladderData: undefined };
+  mocks.items = [foreign, local];
+  await loadReport(verifiedInventory([holding]));
+  const options = [...host.querySelector('[aria-label="Link Rayquaza rayquaza-cgc10"]').options].map(option => option.value);
+  expect(options).toContain('local');
+  expect(options).not.toContain('foreign');
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('removes a pending removal from the review when the same card is explicitly linked to a current holding', async () => {
+  const local = linkedRayquaza({ name: 'Rayquaza (Holo)' });
+  mocks.items = [local];
+  const holding = { ...rayquazaCapture().holdings[0], currency: 'USD', cardLadderValueCurrency: 'USD', sales: [] };
+  await loadReport(verifiedInventory([holding]));
+  const checkbox = host.querySelector('[aria-label="Remove Rayquaza (Holo) linked-rayquaza"]');
+  expect(checkbox).not.toBeNull();
+  act(() => checkbox.click());
+  const selector = host.querySelector('[aria-label="Link Rayquaza rayquaza-cgc10"]');
+  act(() => { selector.value = local.entryId; selector.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(host.querySelector('[aria-label="Cards missing from CardLadder Inventory"]')).toBeNull();
+  clickNamedButton('Select all');
+  expect(applyFooter().querySelector('button').textContent).toBe('Save 1 link');
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(mocks.save.mock.calls[0][8].removals).toEqual([]);
+});
+
+it('limits Select all to 400 removals and allows the reviewed batch to be reduced', async () => {
+  const base = linkedRayquaza();
+  mocks.items = Array.from({ length: 401 }, (_, index) => ({ ...base, entryId: `linked-${index}`,
+    cardladderData: { ...base.cardladderData, holdingId: `absent-${index}` } }));
+  await loadReport(verifiedInventory());
+  expect(host.textContent).toContain('You can remove up to 400 cards per save.');
+  clickNamedButton('Select all');
+  const checkboxes = [...host.querySelectorAll('[aria-label^="Remove Rayquaza "]')];
+  expect(checkboxes.filter(input => input.checked)).toHaveLength(400);
+  expect(checkboxes[400].checked).toBe(false);
+  expect(checkboxes[400].disabled).toBe(true);
+  expect(applyFooter().querySelector('button').textContent).toBe('Remove 400 cards from Inventory');
+  act(() => checkboxes[0].click());
+  expect(checkboxes[400].disabled).toBe(false);
+  expect(applyFooter().querySelector('button').textContent).toBe('Remove 399 cards from Inventory');
   expect(mocks.save).not.toHaveBeenCalled();
 });

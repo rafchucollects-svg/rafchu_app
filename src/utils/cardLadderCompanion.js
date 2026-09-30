@@ -1,5 +1,5 @@
-import { doc, runTransaction } from 'firebase/firestore';
-import { applySalesReport } from './cardLadderSales';
+import { doc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { applySalesReport, buildCardLadderRemovals } from './cardLadderSales.js';
 
 export function companionRequest(action, timeout = 4000) {
   const requestId = crypto.randomUUID();
@@ -32,13 +32,17 @@ export async function saveCardLadderReport(db, uid, report, bindings = {}, addit
     const data = snapshot.exists() ? snapshot.data() : {};
     const last = data.cardLadderLastSync;
     if (last && (Date.parse(last.capturedAt) > Date.parse(report.capturedAt) ||
-        (last.runId === report.runId && !Object.keys(bindings).length && !Object.keys(additions).length && selectedHoldingIds === null))) return { updatedCount: 0, stickerUpdatedCount: 0, addedCount: 0, alreadyApplied: true };
-    const result = applySalesReport(data.items || [], report, Date.now(), bindings, additions, selectedHoldingIds, valueHoldingIds, options);
+        (last.runId === report.runId && !Object.keys(bindings).length && !Object.keys(additions).length && selectedHoldingIds === null && !options.removals?.length))) return { updatedCount: 0, stickerUpdatedCount: 0, addedCount: 0, removedCount: 0, linkedCount: 0, alreadyApplied: true };
+    const now = Date.now();
+    const applyOptions = automatic ? { ...options, removals: buildCardLadderRemovals(data.items || [], report, now)
+      .filter(row => row.item.cardladderData.inventoryAccountKey === report.inventorySnapshot?.accountKey) } : options;
+    const result = applySalesReport(data.items || [], report, now, bindings, additions, selectedHoldingIds, valueHoldingIds, applyOptions);
     if (automatic && localStorage.getItem(autoSyncKey(uid)) !== 'true') throw new Error('Automatic updates paused for manual review.');
+    for (const item of result.removedItems) transaction.set(doc(ref, 'trash', item.entryId), { item, deletedAt: serverTimestamp() });
     const write = { items: result.items,
-      cardLadderLastSync: { runId: report.runId, capturedAt: report.capturedAt, appliedAt: new Date().toISOString(), updatedCount: result.updatedCount, stickerUpdatedCount: result.stickerUpdatedCount, addedCount: result.addedCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount } };
+      cardLadderLastSync: { runId: report.runId, capturedAt: report.capturedAt, appliedAt: new Date().toISOString(), updatedCount: result.updatedCount, stickerUpdatedCount: result.stickerUpdatedCount, addedCount: result.addedCount, removedCount: result.removedCount, linkedCount: result.linkedCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount } };
     if (snapshot.exists()) transaction.update(ref, write);
     else transaction.set(ref, write, { merge: true });
-    return { updatedCount: result.updatedCount, stickerUpdatedCount: result.stickerUpdatedCount, addedCount: result.addedCount, skippedAddCount: result.skippedAddCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount, alreadyApplied: false };
+    return { updatedCount: result.updatedCount, stickerUpdatedCount: result.stickerUpdatedCount, addedCount: result.addedCount, removedCount: result.removedCount, linkedCount: result.linkedCount, skippedAddCount: result.skippedAddCount, imageUpdatedCount: result.imageUpdatedCount, anomalySkippedCount: result.anomalySkippedCount, alreadyApplied: false };
   });
 }

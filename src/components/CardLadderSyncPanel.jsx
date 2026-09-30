@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '@/contexts/AppContext';
 import { Button } from '@/components/ui/button';
 import { autoSyncKey, companionRequest, saveCardLadderReport } from '@/utils/cardLadderCompanion';
-import { buildSalesPreview, canAddCardLadderHolding, createSalesBinding, safeCardLadderImage } from '@/utils/cardLadderSales';
+import { buildSalesPreview, buildCardLadderRemovals, hasVerifiedCardLadderInventory, canAddCardLadderHolding, createSalesBinding, safeCardLadderImage } from '@/utils/cardLadderSales';
 import { sameGrading } from '@/utils/grading';
 
 import { convertSyncAmount, formatSyncMoney, formatSyncStickerPrice } from '@/utils/syncCurrency';
@@ -17,6 +17,7 @@ export function CardLadderSyncPanel() {
   const [additions, setAdditions] = useState({});
   const [valueChoices, setValueChoices] = useState({});
   const [excluded, setExcluded] = useState({});
+  const [removalSelections, setRemovalSelections] = useState({});
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -29,14 +30,24 @@ export function CardLadderSyncPanel() {
   }, []);
   useEffect(() => { void refresh(); const timer = setInterval(refresh, 3000); return () => clearInterval(timer); }, [refresh]);
   const preview = useMemo(() => {
-    if (!report) return { rows: [], error: '' };
-    try { return { rows: buildSalesPreview(collectionItems, report, Date.now(), bindings), error: '' }; }
-    catch (err) { return { rows: [], error: err.message }; }
+    if (!report) return { rows: [], removals: [], verifiedInventory: false, error: '' };
+    try {
+      const now = Date.now();
+      return { rows: buildSalesPreview(collectionItems, report, now, bindings),
+        removals: buildCardLadderRemovals(collectionItems, report, now),
+        verifiedInventory: hasVerifiedCardLadderInventory(report, now), error: '' };
+    } catch (err) { return { rows: [], removals: [], verifiedInventory: false, error: err.message }; }
   }, [collectionItems, report, bindings]);
   const isExcluded = row => excluded[row.holding.holdingId] ?? Boolean(row.statistics?.highIsAnomaly);
   const usesValue = row => row.fallbackValue != null && Boolean(valueChoices[row.holding.holdingId]);
   const ready = preview.rows.filter(row => (row.status === 'ready' || (['no-sales', 'image-only'].includes(row.status) && usesValue(row))) && !isExcluded(row));
   const imageOnly = preview.rows.filter(row => row.status === 'image-only' && !usesValue(row) && !isExcluded(row));
+  const linksOnly = preview.rows.filter(row => bindings[row.holding.holdingId] && row.item && row.status !== 'ambiguous' &&
+    !isExcluded(row) && !ready.includes(row) && !imageOnly.includes(row));
+  // Keep the reviewed fingerprint. A changed item must be selected again.
+  const removalCandidates = preview.removals.filter(row => !Object.values(bindings).some(binding => binding.entryId === row.entryId));
+  const selectedRemovals = removalCandidates.filter(row => removalSelections[row.entryId]?.itemIdentity === row.itemIdentity &&
+    removalSelections[row.entryId]?.holdingId === row.holdingId);
   const action = async callback => {
     setBusy(true); setError(''); setMessage('');
     try { await callback(); } catch (err) { setError(err.message); } finally { setBusy(false); }
@@ -45,7 +56,7 @@ export function CardLadderSyncPanel() {
     if (!data) throw new Error('No report yet. Run Sync Inventory first.');
     // Manual review takes control across this browser's Rafchu tabs.
     if (user?.uid) { localStorage.setItem(autoSyncKey(user.uid), 'false'); window.dispatchEvent(new Event('cardladder-preference')); }
-    setAuto(false); setReport(data); setBindings({}); setAdditions({}); setExcluded({}); setValueChoices({}); setUpdateStickerPrices(true); setSaveFeedback(null);
+    setAuto(false); setReport(data); setBindings({}); setAdditions({}); setExcluded({}); setRemovalSelections({}); setValueChoices({}); setUpdateStickerPrices(true); setSaveFeedback(null);
   };
   const selectedAdditions = Object.fromEntries(Object.entries(additions).filter(([id]) => { const row = preview.rows.find(row => row.holding.holdingId === id); return row && !isExcluded(row); }));
   const addCount = Object.keys(selectedAdditions).length;
@@ -53,45 +64,56 @@ export function CardLadderSyncPanel() {
   const needsCurrencyUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 1));
   const needsGradingUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 2));
   const needsCaptureUpdate = status?.installed && /^1\.2\.0$/.test(status.version || '');
+  const needsMembershipUpdate = status?.installed && /^1\.2\.1$/.test(status.version || '');
   const legacyGradingFailure = report?.holdings?.some(holding => holding?.complete !== true && /supports numeric PSA grades|exact PSA profile/i.test(holding?.error || ''));
   const legacyCurrencyFailure = report?.schemaVersion === 1 && Array.isArray(report.holdings) && report.holdings.some(holding =>
     holding?.complete !== true && typeof holding?.error === 'string' && holding.error.includes('A sale has an unreadable date, currency, price, or link.'));
   const priceAction = updateStickerPrices ? `Update ${ready.length} sticker ${ready.length === 1 ? 'price' : 'prices'}` : `Save ${ready.length} market ${ready.length === 1 ? 'estimate' : 'estimates'}`;
-  const applyLabel = [ready.length || (!addCount && !imageOnly.length) ? priceAction : null,
+  const hasChanges = Boolean(ready.length || addCount || imageOnly.length || linksOnly.length || selectedRemovals.length);
+  const applyLabel = [ready.length || !hasChanges ? priceAction : null,
     addCount ? `${ready.length ? 'add' : 'Add'} ${addCount} new ${addCount === 1 ? 'card' : 'cards'}` : null,
-    imageOnly.length ? `${ready.length || addCount ? 'fill' : 'Fill'} ${imageOnly.length} missing ${imageOnly.length === 1 ? 'image' : 'images'}` : null].filter(Boolean).join(' and ');
+    imageOnly.length ? `${ready.length || addCount ? 'fill' : 'Fill'} ${imageOnly.length} missing ${imageOnly.length === 1 ? 'image' : 'images'}` : null,
+    linksOnly.length ? `${ready.length || addCount || imageOnly.length ? 'save' : 'Save'} ${linksOnly.length} ${linksOnly.length === 1 ? 'link' : 'links'}` : null,
+    selectedRemovals.length ? `${ready.length || addCount || imageOnly.length || linksOnly.length ? 'remove' : 'Remove'} ${selectedRemovals.length} ${selectedRemovals.length === 1 ? 'card' : 'cards'} from Inventory` : null].filter(Boolean).join(' and ');
+  const savingLabel = linksOnly.length || selectedRemovals.length ? 'Saving inventory changes…' : 'Saving selected prices…';
   const saveSelected = async () => {
-    if (busy || (!ready.length && !addCount && !imageOnly.length) || !user?.uid) return;
+    if (busy || !hasChanges || !user?.uid) return;
     setBusy(true); setSavingPrices(true); setSaveFeedback(null); setError(''); setMessage('');
     try {
-      const selectedIds = [...ready.map(row => row.holding.holdingId), ...imageOnly.map(row => row.holding.holdingId), ...Object.keys(selectedAdditions)];
-      const result = await saveCardLadderReport(db, user.uid, report, bindings, selectedAdditions, selectedIds, false,
-        preview.rows.filter(row => usesValue(row) && selectedIds.includes(row.holding.holdingId)).map(row => row.holding.holdingId), { updateStickerPrices });
+      const selectedIds = [...new Set([...ready, ...imageOnly, ...linksOnly].map(row => row.holding.holdingId).concat(Object.keys(selectedAdditions)))];
+      const selectedBindings = Object.fromEntries(Object.entries(bindings).filter(([id]) => selectedIds.includes(id)));
+      const result = await saveCardLadderReport(db, user.uid, report, selectedBindings, selectedAdditions, selectedIds, false,
+        preview.rows.filter(row => usesValue(row) && selectedIds.includes(row.holding.holdingId)).map(row => row.holding.holdingId),
+        { updateStickerPrices, removals: selectedRemovals.map(row => removalSelections[row.entryId]) });
       const priceCount = result.updatedCount || 0;
       const stickerCount = result.stickerUpdatedCount || 0;
       setSaveFeedback({ type: 'success', message: result.alreadyApplied ? 'This capture was already applied.'
-        : `${updateStickerPrices ? `Updated ${stickerCount} existing sticker ${stickerCount === 1 ? 'price' : 'prices'} and saved ${priceCount} market ${priceCount === 1 ? 'estimate' : 'estimates'}.` : `Saved ${priceCount} market ${priceCount === 1 ? 'estimate' : 'estimates'}. Your manual sticker prices are unchanged.`}${result.addedCount ? ` Added ${result.addedCount} new ${result.addedCount === 1 ? 'card' : 'cards'}.` : ''}${result.imageUpdatedCount ? ` Filled ${result.imageUpdatedCount} missing ${result.imageUpdatedCount === 1 ? 'image' : 'images'}.` : ''}${result.skippedAddCount ? ` Skipped ${result.skippedAddCount} additions already in Inventory.` : ''} Existing quantities and purchase costs were preserved.` });
-      setAdditions({});
+        : `${updateStickerPrices ? `Updated ${stickerCount} existing sticker ${stickerCount === 1 ? 'price' : 'prices'} and saved ${priceCount} market ${priceCount === 1 ? 'estimate' : 'estimates'}.` : `Saved ${priceCount} market ${priceCount === 1 ? 'estimate' : 'estimates'}. Your manual sticker prices are unchanged.`}${result.addedCount ? ` Added ${result.addedCount} new ${result.addedCount === 1 ? 'card' : 'cards'}.` : ''}${result.imageUpdatedCount ? ` Filled ${result.imageUpdatedCount} missing ${result.imageUpdatedCount === 1 ? 'image' : 'images'}.` : ''}${result.linkedCount ? ` Saved ${result.linkedCount} CardLadder ${result.linkedCount === 1 ? 'link' : 'links'}.` : ''}${result.removedCount ? ` Removed ${result.removedCount} ${result.removedCount === 1 ? 'card' : 'cards'} from Inventory because ${result.removedCount === 1 ? 'it is' : 'they are'} no longer in CardLadder Inventory. You can restore removed cards in Recently deleted.` : ''}${result.skippedAddCount ? ` Skipped ${result.skippedAddCount} additions already in Inventory.` : ''} Quantities and purchase costs of cards kept in Inventory were preserved.` });
+      setAdditions({}); setBindings({}); setRemovalSelections({});
     } catch (err) { setSaveFeedback({ type: 'error', message: err.message || 'Could not save your selected prices. Your selections are kept; please retry.' }); }
     finally { setBusy(false); setSavingPrices(false); }
   };
 
   return <section className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4" aria-label="CardLadder price sync">
     <h3 className="font-semibold text-emerald-950">Highest sale · last 14 days</h3>
-    <p className="mt-1 text-sm text-emerald-900">Update graded cards or add missing cards from your CardLadder Inventory. Matches use card identity and grade; certificate numbers are ignored.</p>
+    <p className="mt-1 text-sm text-emerald-900">Review prices, add missing cards, and remove previously linked cards that are no longer in CardLadder Inventory. Matches use card identity and grade; certificate numbers are ignored.</p>
     <p className="mt-2 text-sm" role="status">{status?.status?.message || (status?.installed ? 'Companion connected.' : 'Install the browser companion, then reload this app tab.')}</p>
     {status?.installed && status.version && <p className="mt-1 text-xs text-slate-600">Connected CardLadder companion: {status.version}</p>}
     {needsCurrencyUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder companion update">
       <p className="font-medium">Update the CardLadder companion to capture your display currency.</p>
-      <p className="mt-1">Your installed version only supports USD. <a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.1</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again.</p>
+      <p className="mt-1">Your installed version only supports USD. <a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.2</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again.</p>
     </aside>}
     {needsGradingUpdate && !needsCurrencyUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder grading support update">
       <p className="font-medium">Update the companion to sync BGS and CGC cards.</p>
-      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.1</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again. The previous capture will not gain the skipped cards until you run a new capture.</p>
+      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.2</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again. The previous capture will not gain the skipped cards until you run a new capture.</p>
     </aside>}
     {needsCaptureUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder capture fix update">
-      <p className="font-medium">Companion 1.2.1 fixes captures with a single sale and card numbers such as 3/17.</p>
+      <p className="font-medium">Companion 1.2.2 fixes captures with a single sale and card numbers such as 3/17.</p>
       <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download the update</a>, replace its files and reload it in Chrome, then run a fresh sync. You can already add cards from incomplete captures without a price below.</p>
+    </aside>}
+    {needsMembershipUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder inventory removal update">
+      <p className="font-medium">Update to companion 1.2.2 to check for cards removed from CardLadder Inventory.</p>
+      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download the update</a>, replace its files, and reload it in Chrome. Refresh Rafchu and CardLadder, then run a fresh Sync Inventory. Existing captures cannot identify missing cards.</p>
     </aside>}
     <div className="mt-3 flex flex-wrap gap-2">
       <Button size="sm" disabled={busy || !status?.installed || status?.status?.state === 'running'} onClick={() => action(async () => { await companionRequest('start'); await refresh(); })}>Sync Inventory</Button>
@@ -105,7 +127,7 @@ export function CardLadderSyncPanel() {
         <li>In Chrome’s Extensions page, enable Developer mode, choose Load unpacked, and select the unzipped folder.</li>
         <li>Sign in to CardLadder and select Inventory. Keep your preferred display currency; the companion reads it from Account automatically. Clear Inventory search, then reload this Rafchu tab.</li>
       </ol>
-      <p className="mt-2">Enable daily capture in the extension popup. Chrome must be running and CardLadder signed in; leave the reader tab visible while it works. Companion 1.2.1 supports PSA, BGS, and CGC numeric grades, including their distinct Pristine, Perfect, and Black Label variants. Cards without a supported grade or exact linked profile are skipped.</p>
+      <p className="mt-2">Enable daily capture in the extension popup. Chrome must be running and CardLadder signed in; leave the reader tab visible while it works. Companion 1.2.2 supports PSA, BGS, and CGC numeric grades, including their distinct Pristine, Perfect, and Black Label variants. Cards without a supported grade or exact linked profile are skipped for pricing but retained in the inventory membership check.</p>
       <label className="mt-3 block">Or upload a companion JSON report:
         <input className="mt-1 block w-full" type="file" accept=".json,application/json" onChange={event => {
           const file = event.target.files?.[0];
@@ -117,13 +139,17 @@ export function CardLadderSyncPanel() {
       <input className="mt-1 h-4 w-4 flex-shrink-0 appearance-auto accent-emerald-700" type="checkbox" checked={auto} disabled={!user?.uid || Boolean(report)} onChange={event => {
         const enabled = event.target.checked; setAuto(enabled); localStorage.setItem(autoSyncKey(user.uid), String(enabled)); window.dispatchEvent(new Event('cardladder-preference'));
       }} />
-      <span>{report ? 'Automatic updates are off while you review. Close the preview to enable them again.' : 'Automatically update existing cards from fresh captures, including the latest, while Rafchu is open on this browser. Adding new cards requires review below. Manual selling-price overrides stay unchanged.'}</span>
+      <span>{report ? 'Automatic updates are off while you review. Close the preview to enable them again.' : 'Automatically update existing cards from fresh captures and remove previously linked cards that are missing from a complete, verified CardLadder Inventory capture while Rafchu is open. Manually added cards without a CardLadder link are kept. Adding new cards requires review below. Manual selling-price overrides on retained cards stay unchanged.'}</span>
     </label>
     {(error || preview.error) && <p role="alert" className="mt-3 text-sm text-red-700">{error || preview.error}</p>}
+    {report && !preview.verifiedInventory && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder removal check needs fresh capture">
+      <p className="font-medium">No cards will be removed from this capture.</p>
+      <p className="mt-1">Removal checks require a fresh, complete, unfiltered CardLadder Inventory capture with companion 1.2.2. Update the companion, reload it in Chrome, and run Sync Inventory again. Older, cancelled, or incomplete inventory captures cannot identify missing cards.</p>
+    </aside>}
     {message && <p role="status" className="mt-3 text-sm font-medium text-emerald-800">{message}</p>}
     {legacyGradingFailure && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="Older CardLadder grades need recapture">
       <p className="font-medium">This capture skipped BGS or CGC cards using the older PSA-only reader.</p>
-      <p className="mt-1">Update the CardLadder companion to 1.2.1 and run a fresh Sync Inventory to include those cards. Opening the previous report cannot recover their missing sales.</p>
+      <p className="mt-1">Update the CardLadder companion to 1.2.2 and run a fresh Sync Inventory to include those cards. Opening the previous report cannot recover their missing sales.</p>
     </aside>}
     {legacyCurrencyFailure && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="Older CardLadder capture needs refresh">
       <p className="font-medium">This failed capture came from an older reader that only supported USD.</p>
@@ -133,20 +159,25 @@ export function CardLadderSyncPanel() {
     {report && !preview.error && <div className="mt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div><h4 className="font-semibold text-slate-950">Review inventory changes</h4><p className="text-xs text-slate-600">{report.startDate} – {report.endDate} · {currency} per card{secondaryCurrency && secondaryCurrency !== currency ? ` (${secondaryCurrency} in parentheses)` : ''}</p><p className="mt-1 text-xs text-slate-600">Captured <time dateTime={report.capturedAt}>{new Date(report.capturedAt).toLocaleString()}</time></p><details className="mt-1 text-xs text-slate-600"><summary className="cursor-pointer underline">Capture details</summary><p>Source prices were recorded in {report.currency || 'USD'}{report.schemaVersion === 1 ? ' · legacy USD report' : ''}. Saving preserves that source currency; the amounts above use your display preferences.</p></details></div>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setReport(null); setBindings({}); setAdditions({}); setExcluded({}); setValueChoices({}); }}>Close preview</Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setReport(null); setBindings({}); setAdditions({}); setExcluded({}); setRemovalSelections({}); setValueChoices({}); }}>Close preview</Button>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">Uses CardLadder’s date-only two-week window (UTC). Includes auctions, fixed prices, and accepted offers. Titles must match the card number, name, and grade; bundles and conflicting grades are excluded.</p>
       <div className="my-3 flex flex-wrap items-center gap-2 text-sm">
-        <span className="mr-auto font-medium">Selected: {ready.length} price {ready.length === 1 ? 'update' : 'updates'} · {addCount} new {addCount === 1 ? 'card' : 'cards'}{imageOnly.length ? ` · ${imageOnly.length} image-only ${imageOnly.length === 1 ? 'update' : 'updates'}` : ''}</span>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => setExcluded(Object.fromEntries(preview.rows.map(row => [row.holding.holdingId, false])))}>Select all</Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => setExcluded(Object.fromEntries(preview.rows.map(row => [row.holding.holdingId, true])))}>Deselect all</Button>
+        <span className="mr-auto font-medium">Selected: {ready.length} price {ready.length === 1 ? 'update' : 'updates'} · {addCount} new {addCount === 1 ? 'card' : 'cards'}{imageOnly.length ? ` · ${imageOnly.length} image-only ${imageOnly.length === 1 ? 'update' : 'updates'}` : ''}{linksOnly.length ? ` · ${linksOnly.length} ${linksOnly.length === 1 ? 'link' : 'links'}` : ''} · {selectedRemovals.length} {selectedRemovals.length === 1 ? 'removal' : 'removals'}</span>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => {
+          setExcluded(Object.fromEntries(preview.rows.map(row => [row.holding.holdingId, false])));
+          setRemovalSelections(Object.fromEntries(removalCandidates.slice(0, 400).map(row => [row.entryId, row])));
+        }}>Select all</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => {
+          setExcluded(Object.fromEntries(preview.rows.map(row => [row.holding.holdingId, true]))); setRemovalSelections({});
+        }}>Deselect all</Button>
       </div>
-      <p className="mb-3 text-xs text-slate-600">Uncheck any card to leave it unchanged. Flagged high prices start unchecked and need review. Cards needing a match won’t apply until you link them or choose Add as new.</p>
+      <p className="mb-3 text-xs text-slate-600">Uncheck any card to leave it unchanged. Flagged high prices and removals start unchecked and need review. Select all includes the proposed removals. Cards needing a match won’t apply until you link them or choose Add as new.</p>
       <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
         {preview.rows.map(row => {
           const id = row.holding.holdingId;
           const money = (value, sourceCurrency = row.currency) => formatSyncMoney(value, sourceCurrency, displayPreferences);
-          const selectable = Boolean(row.high || usesValue(row) || row.status === 'image-only' || canAddCardLadderHolding(collectionItems, row.holding) || additions[id]);
+          const selectable = Boolean(row.high || usesValue(row) || row.status === 'image-only' || canAddCardLadderHolding(collectionItems, row.holding) || additions[id] || (bindings[id] && row.item && row.status !== 'ambiguous'));
           const checked = selectable && !isExcluded(row);
           const cardImage = safeCardLadderImage(row.holding.imageUrl);
           const proposedPrice = usesValue(row) ? row.fallbackValue : row.high?.price;
@@ -173,7 +204,7 @@ export function CardLadderSyncPanel() {
             <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs text-slate-600">Market estimate change</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{change == null ? '—' : `${change > 0 ? '+' : ''}${money(change, currency)}`}</p></div>
           </div>
           {updateStickerPrices && ready.includes(row) && <p className="mb-2 text-xs font-medium text-amber-900">New sticker price: {formatSyncStickerPrice({ ...row.item, overridePrice: proposedPrice, overridePriceCurrency: row.currency }, displayPreferences)} when you update selected sticker prices.</p>}
-          <p className={`text-xs font-medium ${checked && (row.status === 'unmatched' || row.status === 'ambiguous') && !additions[id] ? 'text-amber-800' : 'text-slate-600'}`}>{isExcluded(row) ? row.statistics?.highIsAnomaly ? 'Unusual high — unchecked until you review it' : 'Excluded from this save' : additions[id] ? 'Add as new card' : usesValue(row) && row.item && row.status !== 'ambiguous' ? 'Use CardLadder Value · ready' : labels[row.status]}</p>
+          <p className={`text-xs font-medium ${checked && (row.status === 'unmatched' || row.status === 'ambiguous') && !additions[id] ? 'text-amber-800' : 'text-slate-600'}`}>{isExcluded(row) ? row.statistics?.highIsAnomaly ? 'Unusual high — unchecked until you review it' : 'Excluded from this save' : additions[id] ? 'Add as new card' : usesValue(row) && row.item && row.status !== 'ambiguous' ? 'Use CardLadder Value · ready' : linksOnly.includes(row) ? 'Save CardLadder link · price unchanged' : labels[row.status]}</p>
           {!row.high && row.holding.complete && <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
             <p className="text-xs text-blue-900">CardLadder Value · current provider estimate</p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-blue-950">{money(row.fallbackValue)}</p>
@@ -216,13 +247,16 @@ export function CardLadderSyncPanel() {
               const addNew = event.target.value === '__new__';
               setBindings(current => { const next = { ...current }; if (item) next[row.holding.holdingId] = createSalesBinding(item, row.holding); else delete next[row.holding.holdingId]; return next; });
               setAdditions(current => { const next = { ...current }; if (addNew) next[row.holding.holdingId] = { quantity: 1, buyPrice: '', buyPriceCurrency: currency }; else delete next[row.holding.holdingId]; return next; });
-              if (addNew) setExcluded(current => ({ ...current, [row.holding.holdingId]: false }));
+              if (addNew || item) setExcluded(current => ({ ...current, [row.holding.holdingId]: false }));
             }}>
               <option value="">Choose a matching card or add as new…</option>
               {canAddCardLadderHolding(collectionItems, row.holding) && <option value="__new__">{row.holding.complete ? 'Add as new — I checked that it is missing' : 'Add as new without a price — I checked that it is missing'}</option>}
-              {collectionItems.filter(item => item.isGraded && sameGrading(item, row.holding)).map(item => <option key={item.entryId} value={item.entryId}>{item.name} #{item.number} · {typeof item.set === 'string' ? item.set : item.set?.name} · {item.rarity || ''} · {item.entryId.slice(-6)}</option>)}
+              {collectionItems.filter(item => item.isGraded && sameGrading(item, row.holding) &&
+                (!preview.verifiedInventory || !item.cardladderData?.inventoryAccountKey || item.cardladderData.inventoryAccountKey === report.inventorySnapshot.accountKey))
+                .map(item => <option key={item.entryId} value={item.entryId}>{item.name} #{item.number} · {typeof item.set === 'string' ? item.set : item.set?.name} · {item.rarity || ''} · {item.entryId.slice(-6)}</option>)}
             </select>
           </label>}
+          {bindings[id] && row.item && row.status !== 'ambiguous' && <p className="mt-2 text-xs text-slate-600">Saving this link keeps the card connected to CardLadder even without a market price. It can then be removed from Rafchu when a future complete capture confirms it is missing from CardLadder Inventory.</p>}
           {additions[row.holding.holdingId] && <div className="mt-2 rounded bg-emerald-50 p-2">
             {!row.holding.complete && <p className="mb-2 text-xs font-medium text-emerald-950">You can add this card now. Its market and sticker prices will stay blank because the sales capture is incomplete. Run a fresh capture later to get pricing, or enter your own sticker price in Inventory.</p>}
             <p className="mb-2 text-xs">Confirm how many you own. The capture does not provide quantity or purchase cost. Available CardLadder reference images are included; certificate number stays blank.</p>
@@ -232,6 +266,27 @@ export function CardLadderSyncPanel() {
             </div>
           </div>}
         </div>; })}
+        {removalCandidates.length > 0 && <section aria-label="Cards missing from CardLadder Inventory" className="rounded-xl border border-red-200 bg-red-50/60 p-4">
+          <h5 className="font-semibold text-red-950">Missing from CardLadder Inventory · {removalCandidates.length}</h5>
+          <p className="mt-1 text-xs text-red-900">These previously linked cards are absent from this complete capture. Check cards to remove them from Rafchu Inventory. Manually added cards without a CardLadder link are kept.</p>
+          <p className="mt-1 text-xs text-red-900">Older links may need this manual review before automatic removals can apply.</p>
+          <p className="mt-1 text-xs text-red-900">Removed cards can be restored from Recently deleted in Inventory, including their quantity and purchase cost.</p>
+          {removalCandidates.length > 400 && <p className="mt-2 text-xs font-medium text-red-950">You can remove up to 400 cards per save. Select all includes the first 400 removals; save those, then review the remaining cards.</p>}
+          <div className="mt-3 space-y-2">{removalCandidates.map(row => {
+            const checked = selectedRemovals.includes(row);
+            return <label key={row.entryId} className={`flex items-start gap-3 rounded-lg border bg-white p-3 text-sm ${checked ? 'border-red-400' : 'border-red-100'}`}>
+              <input aria-label={`Remove ${row.item.name} ${row.entryId}`} className="mt-1 h-5 w-5 shrink-0 appearance-auto accent-red-700" type="checkbox" checked={checked} disabled={busy || (!checked && selectedRemovals.length >= 400)} onChange={event => {
+                const selected = event.target.checked;
+                setRemovalSelections(current => { const next = { ...current }; if (selected) next[row.entryId] = row; else delete next[row.entryId]; return next; });
+              }} />
+              <span className="min-w-0 flex-1"><span className="block font-semibold text-red-950">{row.item.name} #{row.item.number}</span>
+                <span className="mt-0.5 block text-xs text-slate-600">{typeof row.item.set === 'string' ? row.item.set : row.item.set?.name} · {row.item.gradingCompany} {row.item.grade}</span>
+                <span className="mt-1 block text-xs text-slate-700">Quantity: {row.item.quantity || 1} · Current sticker: {formatSyncStickerPrice(row.item, displayPreferences)}</span>
+                <span className="mt-1 block text-xs font-medium text-red-800">{checked ? 'Will be removed from Rafchu Inventory when you save.' : 'Unchecked · stays in Rafchu Inventory.'}</span>
+              </span>
+            </label>;
+          })}</div>
+        </section>}
       </div>
       <section aria-label="Apply selected CardLadder prices" aria-busy={savingPrices} className="mt-4 border-t border-emerald-200 pt-3">
         <fieldset disabled={busy} className="space-y-2 text-sm"><legend className="mb-2 font-semibold">Apply selected prices to</legend>
@@ -239,8 +294,9 @@ export function CardLadderSyncPanel() {
           <label className="flex items-center gap-2"><input className="h-4 w-4 shrink-0 appearance-auto accent-emerald-700" type="radio" name="cardladder-price-target" checked={!updateStickerPrices} onChange={() => { setUpdateStickerPrices(false); setSaveFeedback(null); }} />Market estimates only</label>
         </fieldset>
         <p className="mt-2 text-xs text-slate-600">{updateStickerPrices ? 'Selected recommendations replace your current sticker prices and update market estimates. Priced new cards also receive the selected sticker price.' : 'Selected recommendations update market estimates. Manual sticker prices stay unchanged; suggested stickers still follow market estimates.'} Automatic sync always preserves manual sticker prices.</p>
-        <Button className="mt-3" size="sm" disabled={busy || (!ready.length && !addCount && !imageOnly.length) || !user?.uid} onClick={saveSelected}>{savingPrices ? 'Saving selected prices…' : applyLabel}</Button>
-        {savingPrices && <p className="mt-2 text-sm text-emerald-800" role="status">Saving your selected prices…</p>}
+        {selectedRemovals.length > 0 && <p className="mt-2 text-sm font-semibold text-red-900">Saving will remove {selectedRemovals.length} selected {selectedRemovals.length === 1 ? 'card' : 'cards'} from Rafchu Inventory. You can restore them in Recently deleted.</p>}
+        <Button className="mt-3 h-auto min-h-9 max-w-full py-2" size="sm" disabled={busy || !hasChanges || !user?.uid} onClick={saveSelected}><span className="whitespace-normal">{savingPrices ? savingLabel : applyLabel}</span></Button>
+        {savingPrices && <p className="mt-2 text-sm text-emerald-800" role="status">{selectedRemovals.length || linksOnly.length ? 'Saving your selected inventory changes…' : 'Saving your selected prices…'}</p>}
         {saveFeedback && <p className={`mt-2 rounded-lg p-3 text-sm ${saveFeedback.type === 'error' ? 'bg-red-50 text-red-800' : 'bg-emerald-100 text-emerald-900'}`} role={saveFeedback.type === 'error' ? 'alert' : 'status'}>{saveFeedback.message}</p>}
       </section>
     </div>}

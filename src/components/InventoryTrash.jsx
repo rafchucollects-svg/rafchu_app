@@ -29,7 +29,11 @@ export function InventoryTrash({ collectionName }) {
         if (!removed.exists()) throw new Error("This card has already been restored.");
         const latest = inventory.data()?.items || [];
         if (latest.some(item => item.entryId === id)) throw new Error("This card is already in your inventory.");
-        transaction.set(inventoryRef, { items: [...latest, removed.data().item] }, { merge: true });
+        const item = removed.data().item;
+        const restored = item.cardladderData?.holdingId
+          ? { ...item, cardladderData: { ...item.cardladderData, membershipRestoredAt: Date.now() } }
+          : item;
+        transaction.set(inventoryRef, { items: [...latest, restored] }, { merge: true });
         transaction.delete(trashRef);
       });
       setItems(previous => previous.filter(item => item.id !== id));
