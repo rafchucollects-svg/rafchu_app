@@ -108,3 +108,49 @@ describe('last matching sale as pricing context', () => {
     expect(summarizeSales({ ...holding, complete: false, sales: [], latestSale: sale('CGC 9.5') }, window).latestSale).toBeNull();
   });
 });
+
+describe('Rayquaza fractional card numbers and unpriced additions', () => {
+  const rayquaza = { ...base, holdingId: 'rayquaza', name: 'Rayquaza', number: '3/17', set: '2004 Pokemon POP Series 1', variation: 'Non Holo', gradingCompany: 'CGC', grade: '10' };
+  const raySale = title => ({ ...sale('CGC 10', 114.40, '2024-04-27', '135032596323'), title });
+  it.each([
+    'GEM MINT CGC 10 Rayquaza 3/17 POP Series 1 Pokemon TCG',
+    'Rayquaza #003/017 CGC 10',
+    'Rayquaza #3 CGC 10',
+  ])('recognizes the card number in %s', title => {
+    expect(isComparableSale(raySale(title), rayquaza)).toBe(true);
+  });
+  it.each([
+    'Rayquaza 17/3 CGC 10', 'Rayquaza 3/18 CGC 10', 'Rayquaza 4/17 CGC 10',
+    'Rayquaza 17 CGC 10', 'Rayquaza CGC 10', 'Rayquaza 3/17 CGC 9.5',
+  ])('rejects a different or missing number/grade in %s', title => {
+    expect(isComparableSale(raySale(title), rayquaza)).toBe(false);
+  });
+  it('does not mistake the grade for a card number and preserves alphanumeric numbers', () => {
+    expect(isComparableSale(raySale('Rayquaza #9 CGC 3'), { ...rayquaza, grade: '3' })).toBe(false);
+    for (const title of ['Rayquaza TG03 CGC 10', 'Rayquaza TG3/TG30 CGC 10']) {
+      expect(isComparableSale(raySale(title), { ...rayquaza, number: 'TG03' })).toBe(true);
+    }
+  });
+  it('adds an explicitly selected incomplete capture without any market/sticker evidence', () => {
+    const partial = { ...rayquaza, complete: false, sales: [raySale('Rayquaza 3/17 CGC 10')], latestSale: raySale('Rayquaza 3/17 CGC 10'), cardLadderValue: 999, cardLadderValueCurrency: 'EUR' };
+    const report = capture(partial);
+    const details = { rayquaza: { quantity: 2, buyPrice: 80, buyPriceCurrency: 'EUR' } };
+    const result = applySalesReport([], report, now, {}, details, ['rayquaza'], [], { updateStickerPrices: true });
+    expect(result).toMatchObject({ addedCount: 1, updatedCount: 0, stickerUpdatedCount: 0 });
+    const item = result.items[0];
+    expect(item).toMatchObject({ name: 'Rayquaza', number: '3/17', gradingCompany: 'CGC', grade: '10', gradedPrice: null, quantity: 2, buyPrice: 80 });
+    expect(item).not.toHaveProperty('overridePrice');
+    expect(item).not.toHaveProperty('cardladderPricing');
+    expect(buildSalesPreview(result.items, report, now)[0]).toMatchObject({ status: 'incomplete', high: null, latestSale: null, fallbackValue: null });
+    expect(applySalesReport([], report, now, {}, details, []).items).toEqual([]);
+    const retry = applySalesReport(result.items, report, now, {}, details, ['rayquaza']);
+    expect(retry).toMatchObject({ addedCount: 0, skippedAddCount: 1, items: result.items });
+    const fresh = capture({ ...partial, complete: true, latestSale: null, sales: [{ ...raySale('Rayquaza 3/17 CGC 10'), soldDate: '2026-09-29' }] });
+    const priced = applySalesReport(result.items, fresh, now);
+    expect(priced.items[0]).toMatchObject({ entryId: item.entryId, gradedPrice: 114.40, quantity: 2, buyPrice: 80 });
+    expect(priced.addedCount).toBe(0);
+  });
+  it('retains the distinction between a complete pricing window and incomplete older history', () => {
+    expect(summarizeSales({ ...rayquaza, sales: [], latestSale: null, latestSaleComplete: false }, window)).toMatchObject({ status: 'no-sales', latestSale: null, latestSaleComplete: false, high: null });
+  });
+});

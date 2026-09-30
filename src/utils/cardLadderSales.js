@@ -112,6 +112,17 @@ export function saleIdentity(sale) {
   return url.href;
 }
 
+function matchesSaleNumber(title, number, titleWithoutGrades) {
+  const part = value => String(value || '').toLowerCase().replace(/^#/, '').replace(/\s+/g, '').replace(/^([a-z]*)0+(?=\d)/, '$1');
+  const [wanted, total] = String(number || '').trim().replace(/[⁄／]/g, '/').split('/').map(part);
+  if (!wanted || !/^[a-z]*\d+[a-z]?$/.test(wanted) || (total && !/^[a-z]*\d+[a-z]?$/.test(total))) return false;
+  const fractions = [...String(title || '').replace(/[⁄／]/g, '/').matchAll(/\b([a-z]*\d+[a-z]?)\s*\/\s*([a-z]*\d+[a-z]?)(?![a-z0-9])/gi)];
+  // Never match the denominator as the card number or accept a conflicting set
+  // total. Listings without a total may still identify the card as "#3".
+  if (fractions.length) return fractions.every(match => part(match[1]) === wanted && (!total || part(match[2]) === total));
+  return titleWithoutGrades.split(/[^a-z0-9.]+/).some(token => part(token) === wanted);
+}
+
 export function isComparableSale(sale, holding) {
   const title = ` ${normalize(sale.title)} `;
   if (/\b(lot|bundle|reprint|replica|proxy|signed|autograph|qualifier|oc|mk)\b/.test(title)) return false;
@@ -124,15 +135,16 @@ export function isComparableSale(sale, holding) {
   const normalizeLabel = label => /^(?:black\s*label|black|bl)$/.test(label) ? 'black label' : label;
   const qualifiers = [...new Set((gradeTitle.match(/\b(?:black\s*label|bl|pristine|perfect|gold\s+label|gem\s+(?:mint|mt))\b/g) || [])
     .map(normalizeLabel))];
-  const grades = [...gradeTitle.matchAll(/\b(psa|bgs|beckett|cgc|sgc)\s*(?:(black\s*label|black|bl|gold\s+label|pristine|perfect|gem\s+(?:mint|mt)|p|b)\s*)?(\d+(?:\.\d+)?)(?![\d.])(?:\s*(black|p|b)\b)?/g)];
+  const gradeStatement = /\b(psa|bgs|beckett|cgc|sgc)\s*(?:(black\s*label|black|bl|gold\s+label|pristine|perfect|gem\s+(?:mint|mt)|p|b)\s*)?(\d+(?:\.\d+)?)(?![\d.])(?:\s*(black|p|b)\b)?/g;
+  const grades = [...gradeTitle.matchAll(gradeStatement)];
   if (!grades.length || grades.some(match => {
     const labels = [...new Set([...qualifiers, ...[match[2], match[4]].filter(Boolean).map(normalizeLabel)])];
     return !sameGrading(holding, { gradingCompany: match[1], grade: `${match[3]} ${labels.join(' ')}`.trim() });
   })) return false;
   const name = normalize(holding.name).split(' ').filter(word => !['full','art','fa','holo'].includes(word));
   if (!name.length || !name.every(word => title.includes(` ${word} `))) return false;
-  const number = numberOf(holding.number);
-  if (!number || !normalize(sale.title).split(' ').some(word => numberOf(word) === number)) return false;
+  const numberTitle = String(sale.title || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').replace(gradeStatement, ' ');
+  if (!matchesSaleNumber(sale.title, holding.number, numberTitle)) return false;
   if (/\b(1st edition|first edition)\b/.test(title) && !/\b(1st|first)\b/.test(normalize(holding.variation))) return false;
   if (/\b(japanese|japan|jpn|jp)\b/.test(title) && !/japanese|japan/.test(normalize(holding.set))) return false;
   return true;
@@ -178,7 +190,8 @@ export function summarizeSales(holding, window) {
     if (!latestSale || sale.soldDate > latestSale.soldDate) latestSale = sale;
   }
   const sales = [...eligible.values()].sort((a, b) => b.price - a.price || b.soldDate.localeCompare(a.soldDate));
-  return { status: sales.length ? 'ready' : 'no-sales', currency, saleCount: sales.length, excluded, high: sales[0] || null, latestSale, statistics: saleStatistics(sales) };
+  return { status: sales.length ? 'ready' : 'no-sales', currency, saleCount: sales.length, excluded, high: sales[0] || null, latestSale,
+    latestSaleComplete: holding.latestSaleComplete !== false, statistics: saleStatistics(sales) };
 }
 
 export function validateSalesReport(report, now = Date.now()) {
@@ -238,7 +251,9 @@ export function buildSalesPreview(items, report, now = Date.now(), bindings = {}
 }
 
 export function canAddCardLadderHolding(items, holding) {
-  return holding.complete === true && isSupportedCardLadderGrading(holding) &&
+  // Card identity comes from the fully captured collection. A failed sales
+  // lookup must not stop a reviewed addition; its market price remains unknown.
+  return isSupportedCardLadderGrading(holding) &&
     ['name', 'number', 'set'].every(key => typeof holding[key] === 'string' && holding[key].trim()) &&
     !items.some(item => item.cardladderData?.holdingId === holding.holdingId ||
       item.entryId === `cardladder-holding-${encodeURIComponent(holding.holdingId)}` ||
@@ -288,10 +303,11 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
   for (const [holdingId, details] of Object.entries(additions)) {
     if (selected && !selected.has(holdingId)) continue;
     const holding = report.holdings.find(candidate => candidate.holdingId === holdingId);
-    if (!holding || holding.complete !== true) throw new Error('Only completely captured holdings can be added.');
+    if (!holding) throw new Error('Choose a holding from this captured collection.');
     if (bindings[holdingId]) throw new Error('Choose either an existing card or a new card for each holding.');
     if (!canAddCardLadderHolding(merged, holding)) {
       if (merged.some(item => item.cardladderData?.holdingId === holdingId ||
+          item.entryId === `cardladder-holding-${encodeURIComponent(holdingId)}` ||
           (item.isGraded && cardLadderIdentity(item) === cardLadderIdentity(holding, true)))) { skippedAddCount++; continue; }
       throw new Error('This holding cannot be added. Refresh the preview and check its card identity.');
     }

@@ -52,6 +52,7 @@ export function CardLadderSyncPanel() {
   const version = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(status?.version || '');
   const needsCurrencyUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 1));
   const needsGradingUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 2));
+  const needsCaptureUpdate = status?.installed && /^1\.2\.0$/.test(status.version || '');
   const legacyGradingFailure = report?.holdings?.some(holding => holding?.complete !== true && /supports numeric PSA grades|exact PSA profile/i.test(holding?.error || ''));
   const legacyCurrencyFailure = report?.schemaVersion === 1 && Array.isArray(report.holdings) && report.holdings.some(holding =>
     holding?.complete !== true && typeof holding?.error === 'string' && holding.error.includes('A sale has an unreadable date, currency, price, or link.'));
@@ -82,11 +83,15 @@ export function CardLadderSyncPanel() {
     {status?.installed && status.version && <p className="mt-1 text-xs text-slate-600">Connected CardLadder companion: {status.version}</p>}
     {needsCurrencyUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder companion update">
       <p className="font-medium">Update the CardLadder companion to capture your display currency.</p>
-      <p className="mt-1">Your installed version only supports USD. <a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.0</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again.</p>
+      <p className="mt-1">Your installed version only supports USD. <a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.1</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again.</p>
     </aside>}
     {needsGradingUpdate && !needsCurrencyUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder grading support update">
       <p className="font-medium">Update the companion to sync BGS and CGC cards.</p>
-      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.0</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again. The previous capture will not gain the skipped cards until you run a new capture.</p>
+      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.1</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again. The previous capture will not gain the skipped cards until you run a new capture.</p>
+    </aside>}
+    {needsCaptureUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder capture fix update">
+      <p className="font-medium">Companion 1.2.1 fixes captures with a single sale and card numbers such as 3/17.</p>
+      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download the update</a>, replace its files and reload it in Chrome, then run a fresh sync. You can already add cards from incomplete captures without a price below.</p>
     </aside>}
     <div className="mt-3 flex flex-wrap gap-2">
       <Button size="sm" disabled={busy || !status?.installed || status?.status?.state === 'running'} onClick={() => action(async () => { await companionRequest('start'); await refresh(); })}>Sync Inventory</Button>
@@ -100,7 +105,7 @@ export function CardLadderSyncPanel() {
         <li>In Chrome’s Extensions page, enable Developer mode, choose Load unpacked, and select the unzipped folder.</li>
         <li>Sign in to CardLadder and select Inventory. Keep your preferred display currency; the companion reads it from Account automatically. Clear Inventory search, then reload this Rafchu tab.</li>
       </ol>
-      <p className="mt-2">Enable daily capture in the extension popup. Chrome must be running and CardLadder signed in; leave the reader tab visible while it works. Companion 1.2.0 supports PSA, BGS, and CGC numeric grades, including their distinct Pristine, Perfect, and Black Label variants. Cards without a supported grade or exact linked profile are skipped.</p>
+      <p className="mt-2">Enable daily capture in the extension popup. Chrome must be running and CardLadder signed in; leave the reader tab visible while it works. Companion 1.2.1 supports PSA, BGS, and CGC numeric grades, including their distinct Pristine, Perfect, and Black Label variants. Cards without a supported grade or exact linked profile are skipped.</p>
       <label className="mt-3 block">Or upload a companion JSON report:
         <input className="mt-1 block w-full" type="file" accept=".json,application/json" onChange={event => {
           const file = event.target.files?.[0];
@@ -118,7 +123,7 @@ export function CardLadderSyncPanel() {
     {message && <p role="status" className="mt-3 text-sm font-medium text-emerald-800">{message}</p>}
     {legacyGradingFailure && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="Older CardLadder grades need recapture">
       <p className="font-medium">This capture skipped BGS or CGC cards using the older PSA-only reader.</p>
-      <p className="mt-1">Update the CardLadder companion to 1.2.0 and run a fresh Sync Inventory to include those cards. Opening the previous report cannot recover their missing sales.</p>
+      <p className="mt-1">Update the CardLadder companion to 1.2.1 and run a fresh Sync Inventory to include those cards. Opening the previous report cannot recover their missing sales.</p>
     </aside>}
     {legacyCurrencyFailure && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="Older CardLadder capture needs refresh">
       <p className="font-medium">This failed capture came from an older reader that only supported USD.</p>
@@ -163,7 +168,7 @@ export function CardLadderSyncPanel() {
             <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs text-slate-600">Current market estimate</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{row.item ? money(row.previousPrice, row.previousCurrency) : additions[id] ? 'New card' : 'Not linked'}</p></div>
             <div className="rounded-lg bg-emerald-50 p-2.5"><p className="text-xs text-emerald-900">14-day high</p><p className="mt-1 text-lg font-semibold tabular-nums text-emerald-950">{row.high ? money(row.high.price) : !row.holding.complete ? 'Unavailable' : 'No recent sales'}</p><p className="text-xs text-emerald-900">{row.high ? `${row.saleCount} eligible ${row.saleCount === 1 ? 'sale' : 'sales'}` : row.status === 'incomplete' || !row.holding.complete ? 'Capture incomplete' : usesValue(row) ? 'CardLadder Value selected below' : additions[id] ? 'Added without a price' : 'Price stays unchanged'}</p></div>
             <div className="rounded-lg border border-blue-100 bg-blue-50 p-2.5"><p className="text-xs text-blue-900">Last matching sale</p><p className="mt-1 text-lg font-semibold tabular-nums text-blue-950">{row.latestSale ? money(row.latestSale.price, row.latestSale.currency) : 'Unavailable'}</p>
-              {row.latestSale ? <><a className="mt-1 inline-block text-xs text-blue-900 underline" href={row.latestSale.url} target="_blank" rel="noopener noreferrer">View last sale · {row.latestSale.soldDate}</a><p className="text-xs text-blue-900">{row.latestSale.type}{row.latestSale.verified ? ' · CardLadder verified' : ''}</p><p className="mt-1 text-xs text-blue-900">{row.latestSale.soldDate < report.startDate ? 'Older than 14 days · for reference only' : 'For comparison with the 14-day high'}</p></> : <p className="text-xs text-blue-900">{row.holding.complete ? 'No matching sale captured. Older reports may need a fresh sync.' : 'Capture incomplete'}</p>}
+              {row.latestSale ? <><a className="mt-1 inline-block text-xs text-blue-900 underline" href={row.latestSale.url} target="_blank" rel="noopener noreferrer">View last sale · {row.latestSale.soldDate}</a><p className="text-xs text-blue-900">{row.latestSale.type}{row.latestSale.verified ? ' · CardLadder verified' : ''}</p><p className="mt-1 text-xs text-blue-900">{row.latestSale.soldDate < report.startDate ? 'Older than 14 days · for reference only' : 'For comparison with the 14-day high'}</p></> : <p className="text-xs text-blue-900">{row.latestSaleComplete === false ? 'Older sales did not finish loading. The 14-day window is complete.' : row.holding.complete ? 'No matching sale captured. Older reports may need a fresh sync.' : 'Capture incomplete'}</p>}
             </div>
             <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs text-slate-600">Market estimate change</p><p className="mt-1 font-semibold tabular-nums text-slate-900">{change == null ? '—' : `${change > 0 ? '+' : ''}${money(change, currency)}`}</p></div>
           </div>
@@ -211,13 +216,15 @@ export function CardLadderSyncPanel() {
               const addNew = event.target.value === '__new__';
               setBindings(current => { const next = { ...current }; if (item) next[row.holding.holdingId] = createSalesBinding(item, row.holding); else delete next[row.holding.holdingId]; return next; });
               setAdditions(current => { const next = { ...current }; if (addNew) next[row.holding.holdingId] = { quantity: 1, buyPrice: '', buyPriceCurrency: currency }; else delete next[row.holding.holdingId]; return next; });
+              if (addNew) setExcluded(current => ({ ...current, [row.holding.holdingId]: false }));
             }}>
               <option value="">Choose a matching card or add as new…</option>
-              {canAddCardLadderHolding(collectionItems, row.holding) && <option value="__new__">Add as new — I checked that it is missing</option>}
+              {canAddCardLadderHolding(collectionItems, row.holding) && <option value="__new__">{row.holding.complete ? 'Add as new — I checked that it is missing' : 'Add as new without a price — I checked that it is missing'}</option>}
               {collectionItems.filter(item => item.isGraded && sameGrading(item, row.holding)).map(item => <option key={item.entryId} value={item.entryId}>{item.name} #{item.number} · {typeof item.set === 'string' ? item.set : item.set?.name} · {item.rarity || ''} · {item.entryId.slice(-6)}</option>)}
             </select>
           </label>}
           {additions[row.holding.holdingId] && <div className="mt-2 rounded bg-emerald-50 p-2">
+            {!row.holding.complete && <p className="mb-2 text-xs font-medium text-emerald-950">You can add this card now. Its market and sticker prices will stay blank because the sales capture is incomplete. Run a fresh capture later to get pricing, or enter your own sticker price in Inventory.</p>}
             <p className="mb-2 text-xs">Confirm how many you own. The capture does not provide quantity or purchase cost. Available CardLadder reference images are included; certificate number stays blank.</p>
             <div className="flex flex-wrap gap-3">
               <label className="text-xs">Quantity<input aria-label={`Quantity for ${row.holding.name} ${row.holding.holdingId}`} className="mt-1 block w-24 rounded border p-2" type="number" min="1" max="100000" step="1" value={additions[row.holding.holdingId].quantity} onChange={event => setAdditions(current => ({ ...current, [row.holding.holdingId]: { ...current[row.holding.holdingId], quantity: event.target.value } }))} /></label>

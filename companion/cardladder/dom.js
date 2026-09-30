@@ -48,6 +48,6 @@ export function readSalesRows(root, currency) {
 }
 
 export function resultCount(root) {
-  const match = /\b([\d,]+)\s+results\b/i.exec(textOf(root));
+  const match = /\b([\d,]+)\s+results?\b/i.exec(textOf(root));
   return match ? Number(match[1].replace(/,/g, '')) : null;
 }

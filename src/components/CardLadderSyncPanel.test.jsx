@@ -50,15 +50,33 @@ it.each(['1.1.0', '1.1.1'])('explains the BGS and CGC companion update for %s', 
   await act(async () => root.render(<CardLadderSyncPanel />));
   const warning = host.querySelector('[aria-label="CardLadder grading support update"]');
   expect(warning.textContent).toContain('sync BGS and CGC');
-  expect(warning.textContent).toContain('1.2.0');
+  expect(warning.textContent).toContain('1.2.1');
   expect(warning.textContent).toContain('run Sync Inventory again');
   expect(mocks.request).not.toHaveBeenCalledWith('start');
 });
 
-it.each(['1.2.0', '1.10.0', '2.0.0'])('does not show a grading update notice for %s', async version => {
+it.each(['1.2.0', '1.2.1', '1.10.0', '2.0.0'])('does not show a grading update notice for %s', async version => {
   mocks.request.mockResolvedValue({ installed: true, version });
   await act(async () => root.render(<CardLadderSyncPanel />));
   expect(host.querySelector('[aria-label="CardLadder grading support update"]')).toBeNull();
+});
+
+it('shows the capture fix update for companion 1.2.0 and removes it after updating to 1.2.1', async () => {
+  mocks.request.mockResolvedValue({ installed: true, version: '1.2.0' });
+  await act(async () => root.render(<CardLadderSyncPanel />));
+  const warning = host.querySelector('[aria-label="CardLadder capture fix update"]');
+  expect(warning.textContent).toContain('1.2.1');
+  expect(warning.textContent).toContain('single sale');
+  expect(warning.textContent).toContain('3/17');
+  expect(warning.querySelector('a').getAttribute('href')).toBe('/cardladder-companion.zip');
+  expect(mocks.request).not.toHaveBeenCalledWith('start');
+
+  mocks.request.mockResolvedValue({ installed: true, version: '1.2.1' });
+  await act(async () => root.render(<CardLadderSyncPanel key="updated-companion" />));
+  expect(host.textContent).toContain('Connected CardLadder companion: 1.2.1');
+  expect(host.querySelector('[aria-label="CardLadder capture fix update"]')).toBeNull();
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(mocks.request).not.toHaveBeenCalledWith('start');
 });
 
 const legacyReport = (failed = false) => {
@@ -328,5 +346,94 @@ it('does not promise to preserve a legacy manual field that does not control the
   expect(host.textContent).toContain('Without a sticker override, the sticker price follows the market estimate.');
   expect(host.textContent).not.toContain(`Your current sticker price (${formatCurrency(1380, 'EUR')}) remains unchanged with this selection.`);
   expect(applyFooter().querySelector('button').textContent).toBe('Save 1 market estimate');
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+const rayquazaCapture = ({ complete = false, latestSaleComplete = true } = {}) => {
+  const capturedAt = new Date().toISOString();
+  return {
+    schemaVersion: 2, source: 'cardladder-browser', currency: 'EUR', runId: 'rayquaza-unpriced',
+    capturedAt, ...salesWindow(capturedAt), collectionName: 'Inventory', collectionComplete: true,
+    holdings: [{
+      holdingId: 'rayquaza-cgc10', name: 'Rayquaza', set: '2004 Pokemon POP Series 1', number: '3/17',
+      gradingCompany: 'CGC', grade: '10', currency: 'EUR', complete, latestSaleComplete,
+      cardLadderValue: 450, cardLadderValueCurrency: 'EUR',
+      error: complete ? null : 'Some sales did not finish loading. No price will be applied for this card.',
+      sales: complete ? [] : [{ title: 'Rayquaza 3/17 CGC 10', soldDate: capturedAt.slice(0, 10),
+        price: 500, currency: 'EUR', type: 'Auction', url: 'https://www.ebay.com/itm/12345678' }],
+    }],
+  };
+};
+
+const chooseNewRayquaza = () => {
+  const selector = host.querySelector('[aria-label="Link Rayquaza rayquaza-cgc10"]');
+  act(() => { selector.value = '__new__'; selector.dispatchEvent(new Event('change', { bubbles: true })); });
+};
+const setInputValue = (input, value) => act(() => {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+});
+
+it('adds an incomplete CGC 10 Rayquaza capture with quantity and cost while selecting no market or provider price', async () => {
+  const report = rayquazaCapture();
+  mocks.items = [];
+  mocks.save.mockResolvedValue({ updatedCount: 0, stickerUpdatedCount: 0, addedCount: 1 });
+  await loadReport(report);
+
+  expect(host.textContent).toContain('Rayquaza #3/17');
+  expect(host.textContent).toContain('CGC 10');
+  expect(amountBeside('14-day high')).toBe('Unavailable');
+  expect(applyFooter().querySelector('button').disabled).toBe(true);
+  const newOption = host.querySelector('[aria-label="Link Rayquaza rayquaza-cgc10"] option[value="__new__"]');
+  expect(newOption.textContent).toBe('Add as new without a price — I checked that it is missing');
+  expect(host.querySelector('[aria-label="Use CardLadder Value for Rayquaza rayquaza-cgc10"]')).toBeNull();
+
+  chooseNewRayquaza();
+  expect(host.textContent).toContain('Its market and sticker prices will stay blank because the sales capture is incomplete.');
+  setInputValue(host.querySelector('[aria-label="Quantity for Rayquaza rayquaza-cgc10"]'), '3');
+  setInputValue(host.querySelector('[aria-label="Purchase cost for Rayquaza rayquaza-cgc10"]'), '149.95');
+  const apply = applyFooter().querySelector('button');
+  expect(apply.textContent).toBe('Add 1 new card');
+  expect(apply.disabled).toBe(false);
+  expect(host.textContent).toContain('Selected: 0 price updates · 1 new card');
+  expect(mocks.save).not.toHaveBeenCalled();
+  await act(async () => apply.click());
+
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  expect(mocks.save).toHaveBeenCalledWith({}, 'test', report, {}, {
+    'rayquaza-cgc10': { quantity: '3', buyPrice: '149.95', buyPriceCurrency: 'EUR' },
+  }, ['rayquaza-cgc10'], false, [], { updateStickerPrices: true });
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Updated 0 existing sticker prices and saved 0 market estimates. Added 1 new card.');
+  expect(mocks.request).not.toHaveBeenCalledWith('start');
+});
+
+it('selects an incomplete card when Add as new is chosen after Deselect all', async () => {
+  mocks.items = [];
+  await loadReport(rayquazaCapture());
+  act(() => [...host.querySelectorAll('button')].find(button => button.textContent === 'Deselect all').click());
+  const include = host.querySelector('[aria-label="Include Rayquaza rayquaza-cgc10"]');
+  expect(include.checked).toBe(false);
+  chooseNewRayquaza();
+  expect(include.checked).toBe(true);
+  expect(applyFooter().querySelector('button').textContent).toBe('Add 1 new card');
+  expect(applyFooter().querySelector('button').disabled).toBe(false);
+  act(() => include.click());
+  expect(include.checked).toBe(false);
+  expect(applyFooter().querySelector('button').disabled).toBe(true);
+  expect(host.textContent).toContain('Selected: 0 price updates · 0 new cards');
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('explains that missing older sales leave a completed 14-day window usable', async () => {
+  mocks.items = [];
+  const report = rayquazaCapture({ complete: true, latestSaleComplete: false });
+  await loadReport(report);
+  expect(amountBeside('Last matching sale')).toBe('Unavailable');
+  expect(amountBeside('14-day high')).toBe('No recent sales');
+  expect(host.textContent).toContain('Older sales did not finish loading. The 14-day window is complete.');
+  expect(host.textContent).not.toContain('Capture incomplete');
+  const newOption = host.querySelector('[aria-label="Link Rayquaza rayquaza-cgc10"] option[value="__new__"]');
+  expect(newOption.textContent).toBe('Add as new — I checked that it is missing');
+  expect(host.querySelector('[aria-label="Use CardLadder Value for Rayquaza rayquaza-cgc10"]')).not.toBeNull();
   expect(mocks.save).not.toHaveBeenCalled();
 });

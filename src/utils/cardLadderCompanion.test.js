@@ -64,6 +64,69 @@ describe('transactional Inventory application', () => {
   });
 });
 
+describe('reviewed additions after incomplete sales capture', () => {
+  const partialSale = { ...report.holdings[0].sales[0], title: 'Rayquaza 3/17 CGC 10', price: 9000, url: 'https://www.ebay.com/itm/987654321' };
+  const incomplete = { holdingId: 'cl-rayquaza', name: 'Rayquaza', set: 'Dragon Vault', number: '3/17', variation: '',
+    gradingCompany: 'CGC', grade: '10', complete: false, sales: [partialSale], latestSale: partialSale,
+    cardLadderValue: 8000, cardLadderValueCurrency: 'USD', error: 'Sales stopped loading.' };
+  const input = { ...report, holdings: [...report.holdings, incomplete] };
+  const additions = { [incomplete.holdingId]: { quantity: 2, buyPrice: '125', buyPriceCurrency: 'EUR' } };
+  const selected = [incomplete.holdingId];
+  const options = { updateStickerPrices: true };
+
+  it('requires manual review for additions before starting an automatic transaction', async () => {
+    localStorage.setItem(autoSyncKey('user-1'), 'true');
+    await expect(saveCardLadderReport({}, 'user-1', input, {}, additions, selected, true)).rejects.toThrow(/Adding cards requires manual review/);
+    expect(firestore.transaction.get).not.toHaveBeenCalled();
+    expect(firestore.transaction.update).not.toHaveBeenCalled();
+    expect(firestore.transaction.set).not.toHaveBeenCalled();
+  });
+
+  it('allows an unpriced manual addition after the same capture was applied automatically, then safely retries', async () => {
+    const latest = { ...item, overridePrice: 1900, buyPrice: 777, quantity: 3 };
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [latest] }) });
+    localStorage.setItem(autoSyncKey('user-1'), 'true');
+    expect(await saveCardLadderReport({}, 'user-1', input, {}, {}, null, true)).toMatchObject({ updatedCount: 1, addedCount: 0 });
+    const automaticWrite = firestore.transaction.update.mock.calls[0][1];
+
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => automaticWrite });
+    expect(await saveCardLadderReport({}, 'user-1', input, {}, additions, selected, false, [], options)).toMatchObject({
+      addedCount: 1, updatedCount: 0, stickerUpdatedCount: 0, alreadyApplied: false,
+    });
+    const manualWrite = firestore.transaction.update.mock.calls[1][1];
+    expect(manualWrite.items[0]).toEqual(automaticWrite.items[0]);
+    expect(manualWrite.items).toHaveLength(2);
+    const added = manualWrite.items[1];
+    expect(added).toMatchObject({ gradingCompany: 'CGC', grade: '10', gradedPrice: null, quantity: 2,
+      buyPrice: 125, buyPriceCurrency: 'EUR', cardladderData: { holdingId: incomplete.holdingId } });
+    expect(added).not.toHaveProperty('overridePrice');
+    expect(added).not.toHaveProperty('cardladderPricing');
+
+    // A repeat save reads any intervening manual changes and keeps those values.
+    const changed = { ...added, quantity: 4, buyPrice: 130, gradedPrice: 300, overridePrice: 350 };
+    const concurrentWrite = { ...manualWrite, items: [manualWrite.items[0], changed] };
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => concurrentWrite });
+    expect(await saveCardLadderReport({}, 'user-1', input, {}, additions, selected, false, [], options)).toMatchObject({
+      addedCount: 0, skippedAddCount: 1, updatedCount: 0, stickerUpdatedCount: 0,
+    });
+    expect(firestore.transaction.update.mock.calls[2][1].items).toEqual(concurrentWrite.items);
+  });
+
+  it.each(['holding-id', 'card-identity'])('deduplicates a concurrent incomplete addition by %s without changing prices or costs', async match => {
+    const concurrent = { entryId: 'added-by-another-tab', name: incomplete.name, set: incomplete.set, number: incomplete.number,
+      variation: '', isGraded: true, gradingCompany: 'CGC', grade: '10', quantity: 5,
+      gradedPrice: 400, gradedPriceCurrency: 'EUR', overridePrice: 450, buyPrice: 200,
+      ...(match === 'holding-id' ? { cardladderData: { holdingId: incomplete.holdingId } } : {}) };
+    const latestItems = [item, concurrent];
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: latestItems,
+      cardLadderLastSync: { runId: input.runId, capturedAt: input.capturedAt } }) });
+    expect(await saveCardLadderReport({}, 'user-1', input, {}, additions, selected, false, [], options)).toMatchObject({
+      addedCount: 0, skippedAddCount: 1, updatedCount: 0, stickerUpdatedCount: 0,
+    });
+    expect(firestore.transaction.update.mock.calls[0][1].items).toEqual(latestItems);
+  });
+});
+
 describe('browser bridge boundaries', () => {
   it('ignores messages from another origin and times out without a companion', async () => {
     vi.useFakeTimers();

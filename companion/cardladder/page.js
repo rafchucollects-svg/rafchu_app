@@ -138,7 +138,12 @@ async function sales({ startDate, endDate, profileId, gradingCompany, grade, hol
   }, 'exact profile and grade filters');
   const all = new Map();
   let latestSale = null;
+  let windowComplete = false;
   let stalledAt = Date.now();
+  const result = (latestSaleComplete = true, latestSaleWarning = null) => ({
+    complete: true, latestSale, latestSaleComplete, latestSaleWarning,
+    sales: [...all.values()].filter(sale => sale.soldDate >= startDate && sale.soldDate <= endDate),
+  });
   while (true) {
     if (cancelled) throw new Error('Sync cancelled.');
     checkFilters();
@@ -158,13 +163,20 @@ async function sales({ startDate, endDate, profileId, gradingCompany, grade, hol
     // The last comparable sale is useful even outside the pricing window.
     // Preserve CardLadder's newest-first order when multiple sales share a date.
     const pastWindow = page.some(sale => sale.soldDate < startDate);
+    windowComplete ||= exhausted || pastWindow;
     if (exhausted || (pastWindow && latestSale)) {
-      return { complete: true, latestSale, sales: [...all.values()].filter(sale => sale.soldDate >= startDate && sale.soldDate <= endDate) };
+      return result();
     }
     if (expected !== null && all.size > expected) throw new Error('Sales changed during capture. Run again.');
-    if (all.size >= 10000) throw new Error('Over 10,000 sales loaded for one card. Capture stopped without changing its price.');
+    if (all.size >= 10000) {
+      if (windowComplete) return result(false, 'The two-week sales window is complete. The last comparable sale could not be verified within the 10,000-sale history limit.');
+      throw new Error('Over 10,000 sales loaded for one card. Capture stopped without changing its price.');
+    }
     if (all.size > before) stalledAt = Date.now();
-    if (Date.now() - stalledAt > 12000) throw new Error('Sales stopped loading before the pricing window and last comparable sale could be verified. Price unchanged.');
+    if (Date.now() - stalledAt > 12000) {
+      if (windowComplete) return result(false, 'The two-week sales window is complete. Older sales stopped loading before the last comparable sale could be verified.');
+      throw new Error('Sales stopped loading before the two-week pricing window could be verified. Price unchanged.');
+    }
     scrollResults(root);
     await pause(900);
   }
