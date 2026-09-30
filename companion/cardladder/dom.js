@@ -13,6 +13,14 @@ export function readAccountCurrency(root) {
   return currencyFromAccountLabel(textOf(label?.parentElement.querySelector('.value')));
 }
 
+// CardLadder renders this explicit User ID on Account. It is distinct from
+// display names, email addresses and authentication/session credentials.
+export function readAccountUserId(root) {
+  const heading = [...root.querySelectorAll('.account h4')].find(element => textOf(element) === 'User ID');
+  const value = textOf(heading?.nextElementSibling?.querySelector(':scope > span'));
+  return /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : null;
+}
+
 export function readCollectionRows(root, base = 'https://app.cardladder.com', currency) {
   if (!isCardLadderCurrency(currency)) throw new Error('Could not read CardLadder’s display currency. Open Account → Display Settings and retry.');
   return [...root.querySelectorAll('a.card-list-item[href*="cardId="]')].map(element => {

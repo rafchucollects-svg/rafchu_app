@@ -29,6 +29,46 @@ function inventoryFingerprint(item) {
     normalize(typeof item.set === 'string' ? item.set : item.set?.name), normalize(item.rarity), normalize(item.variant), normalize(item.language)]);
 }
 
+const removalFingerprint = item => JSON.stringify(item, (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value);
+
+export function hasVerifiedCardLadderInventory(report, now = Date.now()) {
+  try { validateSalesReport(report, now); } catch { return false; }
+  const snapshot = report.inventorySnapshot;
+  if (!snapshot || snapshot.version !== 1 || snapshot.collectionName !== 'Inventory' ||
+      !/^[a-f0-9]{64}$/.test(snapshot.accountKey || '') ||
+      !Number.isSafeInteger(snapshot.total) || snapshot.total !== report.holdings.length ||
+      !Array.isArray(snapshot.holdingIds) || snapshot.holdingIds.length !== snapshot.total) return false;
+  const verified = Date.parse(snapshot.verifiedAt);
+  if (!Number.isFinite(verified) || verified < Date.parse(report.capturedAt) || verified > now + 5 * 60000) return false;
+  const ids = new Set(snapshot.holdingIds);
+  return ids.size === snapshot.total && snapshot.holdingIds.every(id => typeof id === 'string' && id.trim()) &&
+    report.holdings.every(holding => ids.has(holding.holdingId));
+}
+
+/** Membership includes every captured holding, even when its sales were skipped. */
+export function buildCardLadderRemovals(items, report, now = Date.now()) {
+  if (!hasVerifiedCardLadderInventory(report, now)) return [];
+  const present = new Set(report.inventorySnapshot.holdingIds);
+  // CardLadder can assign a new holding ID after a card is removed and readded.
+  // Its exact card identity still proves presence, including failed sales rows.
+  const presentIdentities = new Set(report.holdings.map(holding => cardLadderIdentity(holding, true)));
+  const capturedAt = Date.parse(report.capturedAt);
+  return items.flatMap(item => {
+    const link = item.cardladderData;
+    if (!item.entryId || !link?.holdingId || !link.holdingIdentityKey || !link.inventoryIdentityKey ||
+        present.has(link.holdingId) || link.inventoryIdentityKey !== inventoryFingerprint(item)) return [];
+    if (presentIdentities.has(link.holdingIdentityKey) || presentIdentities.has(cardLadderIdentity(item))) return [];
+    if (link.inventoryAccountKey && link.inventoryAccountKey !== report.inventorySnapshot.accountKey) return [];
+    for (const value of [link.importedAt, link.linkedAt, link.membershipRestoredAt]) {
+      if (value == null) continue;
+      const time = typeof value === 'number' ? value : Date.parse(value);
+      if (!Number.isFinite(time) || time > capturedAt) return [];
+    }
+    return [{ item, entryId: item.entryId, holdingId: link.holdingId, itemIdentity: removalFingerprint(item) }];
+  });
+}
+
 export function salesWindow(now = Date.now()) {
   const end = new Date(now);
   if (!Number.isFinite(end.getTime())) throw new Error('Invalid capture date.');
@@ -230,12 +270,15 @@ export function cardLadderFallbackValue(holding, summary) {
 
 export function buildSalesPreview(items, report, now = Date.now(), bindings = {}) {
   const window = validateSalesReport(report, now);
+  const accountKey = hasVerifiedCardLadderInventory(report, now) ? report.inventorySnapshot.accountKey : null;
   const used = new Set();
   return report.holdings.map(holding => {
     const summary = summarizeSales(holding, window);
-    const sameGrade = item => item.isGraded && sameGrading(item, holding);
+    const sameAccount = item => !accountKey || !item.cardladderData?.inventoryAccountKey || item.cardladderData.inventoryAccountKey === accountKey;
+    const sameGrade = item => item.isGraded && sameGrading(item, holding) && sameAccount(item);
     const identity = cardLadderIdentity(holding, true);
     const binding = bindings[holding.holdingId];
+    if (binding && items.some(item => item.entryId === binding.entryId && !sameAccount(item))) throw new Error('This card is linked to a different CardLadder account. Unlink it before linking this capture.');
     const previouslyLinked = items.filter(item => item.cardladderData?.holdingId === holding.holdingId);
     let candidates = binding ? items.filter(item => sameGrade(item) && item.entryId === binding.entryId &&
       inventoryFingerprint(item) === binding.itemIdentity && identity === binding.holdingIdentity) : [];
@@ -285,6 +328,28 @@ function newCardLadderItem(holding, details, now) {
 export function applySalesReport(items, report, now = Date.now(), bindings = {}, additions = {}, selectedHoldingIds = null, valueHoldingIds = [], options = {}) {
   validateSalesReport(report, now);
   if (!options || typeof options !== 'object' || Array.isArray(options) || (options.updateStickerPrices !== undefined && typeof options.updateStickerPrices !== 'boolean')) throw new Error('Choose a valid CardLadder price application mode.');
+  const removals = options.removals ?? [];
+  if (!Array.isArray(removals) || removals.length > 400) throw new Error('Select at most 400 cards to remove in one save.');
+  if (removals.length && !hasVerifiedCardLadderInventory(report, now)) throw new Error('The inventory snapshot is not verified. Run a fresh capture before removing cards.');
+  const candidates = new Map(buildCardLadderRemovals(items, report, now).map(row => [row.entryId, row]));
+  const removedIds = new Set();
+  const requestedIds = new Set();
+  for (const removal of removals) {
+    if (!removal || typeof removal.entryId !== 'string' || !removal.entryId || typeof removal.holdingId !== 'string' ||
+        !removal.holdingId || typeof removal.itemIdentity !== 'string' || !removal.itemIdentity || requestedIds.has(removal.entryId)) throw new Error('Invalid or duplicate removal selection.');
+    requestedIds.add(removal.entryId);
+    if (Object.values(bindings).some(binding => binding?.entryId === removal.entryId)) throw new Error('Choose either linking or removing this card.');
+    // A completed retry must not overwrite the original restorable trash copy.
+    if (!items.some(item => item.entryId === removal.entryId)) continue;
+    const candidate = candidates.get(removal?.entryId);
+    if (!candidate || removedIds.has(removal.entryId) || candidate.holdingId !== removal.holdingId || candidate.itemIdentity !== removal.itemIdentity) {
+      throw new Error('A selected removal changed or its absence is not verified. Refresh the preview before removing cards.');
+    }
+    removedIds.add(removal.entryId);
+  }
+  const removedItems = items.filter(item => removedIds.has(item.entryId));
+  const inventoryAccountKey = hasVerifiedCardLadderInventory(report, now) ? report.inventorySnapshot.accountKey : null;
+  const presentHoldingIdentities = new Map(report.holdings.map(holding => [holding.holdingId, cardLadderIdentity(holding, true)]));
   const updateStickerPrices = options.updateStickerPrices === true;
   if (updateStickerPrices && selectedHoldingIds === null) throw new Error('Sticker prices require an explicit checked selection.');
   if (selectedHoldingIds !== null && !Array.isArray(selectedHoldingIds)) throw new Error('Invalid selection. Reload the preview.');
@@ -297,7 +362,7 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
     const holding = report.holdings.find(h => h.holdingId === id);
     if (!holding || cardLadderFallbackValue(holding, summarizeSales(holding, salesWindow(report.capturedAt))) == null) throw new Error('CardLadder Value is only available after a complete capture with no qualifying sales.');
   }
-  const merged = [...items];
+  const merged = items.filter(item => !removedIds.has(item.entryId));
   const addedIds = new Set();
   let skippedAddCount = 0;
   for (const [holdingId, details] of Object.entries(additions)) {
@@ -320,12 +385,27 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
   for (const row of rows) if (row.item) claims.set(row.item.entryId, (claims.get(row.item.entryId) || 0) + 1);
   const updates = new Map(rows.filter(row => (row.status === 'ready' || (['no-sales', 'image-only'].includes(row.status) && valueSelection.has(row.holding.holdingId))) && (selected ? selected.has(row.holding.holdingId) : !row.statistics?.highIsAnomaly) && claims.get(row.item.entryId) === 1).map(row => [row.item.entryId, row]));
   const imageUpdates = new Map(rows.filter(row => ['ready', 'image-only', 'no-sales'].includes(row.status) && (!selected || selected.has(row.holding.holdingId)) && !row.item.image && safeCardLadderImage(row.holding.imageUrl) && claims.get(row.item.entryId) === 1).map(row => [row.item.entryId, safeCardLadderImage(row.holding.imageUrl)]));
+  const links = new Map(rows.filter(row => row.item && row.status !== 'ambiguous' && bindings[row.holding.holdingId] &&
+    (!selected || selected.has(row.holding.holdingId)) && claims.get(row.item.entryId) === 1).map(row => [row.item.entryId, row]));
   return {
+    removedCount: removedItems.length, removedItems, linkedCount: links.size,
     updatedCount: [...updates.keys()].filter(id => !addedIds.has(id)).length,
     stickerUpdatedCount: updateStickerPrices ? [...updates.keys()].filter(id => !addedIds.has(id)).length : 0,
     addedCount: addedIds.size, skippedAddCount, imageUpdatedCount: imageUpdates.size,
     anomalySkippedCount: rows.filter(row => row.status === 'ready' && row.statistics?.highIsAnomaly && !selected).length,
     items: merged.map(item => {
+      const linked = links.get(item.entryId);
+      if (linked && inventoryAccountKey && item.cardladderData?.inventoryAccountKey && item.cardladderData.inventoryAccountKey !== inventoryAccountKey) {
+        throw new Error('This card is linked to a different CardLadder account. Unlink it before linking this capture.');
+      }
+      if (linked) item = { ...item, cardladderData: { ...item.cardladderData, holdingId: linked.holding.holdingId,
+        holdingIdentityKey: cardLadderIdentity(linked.holding, true), inventoryIdentityKey: inventoryFingerprint(item), linkedAt: now } };
+      if (inventoryAccountKey && item.cardladderData?.holdingId &&
+          presentHoldingIdentities.get(item.cardladderData.holdingId) === item.cardladderData.holdingIdentityKey &&
+          item.cardladderData.inventoryIdentityKey === inventoryFingerprint(item) &&
+          (!item.cardladderData.inventoryAccountKey || item.cardladderData.inventoryAccountKey === inventoryAccountKey)) {
+        item = { ...item, cardladderData: { ...item.cardladderData, inventoryAccountKey } };
+      }
       if (imageUpdates.has(item.entryId)) item = { ...item, image: imageUpdates.get(item.entryId) };
       const row = updates.get(item.entryId);
       if (!row) return item;
@@ -334,7 +414,9 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
       return { ...item, gradedPrice: price, gradedPriceCurrency: row.currency,
         ...(updateStickerPrices ? { overridePrice: price, overridePriceCurrency: row.currency } : {}),
         cardladderData: { ...item.cardladderData, holdingId: row.holding.holdingId,
-          holdingIdentityKey: cardLadderIdentity(row.holding, true), inventoryIdentityKey: inventoryFingerprint(item) },
+          holdingIdentityKey: cardLadderIdentity(row.holding, true), inventoryIdentityKey: inventoryFingerprint(item),
+          ...(inventoryAccountKey ? { inventoryAccountKey } : {}),
+          ...(item.cardladderData?.holdingId !== row.holding.holdingId ? { linkedAt: now } : {}) },
         cardladderPricing: { ...(updateStickerPrices ? { stickerUpdated: true, stickerAppliedAt: new Date(now).toISOString(), previousOverride: { overridePrice: item.overridePrice ?? null, overridePriceCurrency: item.overridePriceCurrency ?? null } } : {}), method: usesValue ? 'cardladder-value' : 'highest-sale-14d', providerValue: usesValue ? row.fallbackValue : null, source: 'cardladder-browser', currency: row.currency,
           runId: report.runId, capturedAt: report.capturedAt, startDate: report.startDate, endDate: report.endDate,
           saleCount: row.saleCount, excludedCount: row.excluded, profileUrl: row.holding.profileUrl || null,
@@ -346,11 +428,14 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
 }
 
 export function preserveCardLadderSalesPrice(incoming, existing) {
-  if (!['highest-sale-14d', 'cardladder-value'].includes(existing?.cardladderPricing?.method) ||
-      cardLadderIdentity(incoming) !== cardLadderIdentity(existing)) return incoming;
-  return { ...incoming, gradedPrice: existing.gradedPrice, gradedPriceCurrency: existing.gradedPriceCurrency,
-    cardladderPricing: existing.cardladderPricing,
+  const preservePrice = ['highest-sale-14d', 'cardladder-value'].includes(existing?.cardladderPricing?.method);
+  if ((!preservePrice && !existing?.cardladderData?.holdingId) || cardLadderIdentity(incoming) !== cardLadderIdentity(existing)) return incoming;
+  return { ...incoming, ...(preservePrice ? { gradedPrice: existing.gradedPrice, gradedPriceCurrency: existing.gradedPriceCurrency,
+    cardladderPricing: existing.cardladderPricing } : {}),
     cardladderData: { ...incoming.cardladderData, ...(existing.cardladderData?.holdingId ? {
       holdingId: existing.cardladderData.holdingId, holdingIdentityKey: existing.cardladderData.holdingIdentityKey || null,
-      inventoryIdentityKey: existing.cardladderData.inventoryIdentityKey || null } : {}) } };
+      inventoryIdentityKey: existing.cardladderData.inventoryIdentityKey || null,
+      inventoryAccountKey: existing.cardladderData.inventoryAccountKey || null,
+      linkedAt: existing.cardladderData.linkedAt ?? null,
+      membershipRestoredAt: existing.cardladderData.membershipRestoredAt ?? null } : {}) } };
 }

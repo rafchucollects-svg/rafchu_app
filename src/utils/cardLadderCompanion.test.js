@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const firestore = vi.hoisted(() => ({ transaction: { get: vi.fn(), update: vi.fn(), set: vi.fn() } }));
-vi.mock('firebase/firestore', () => ({ doc: (_db, collection, uid) => ({ collection, uid }), runTransaction: (_db, callback) => callback(firestore.transaction) }));
+vi.mock('firebase/firestore', () => ({ doc: (_db, collection, uid) => ({ collection, uid }), serverTimestamp: () => 'SERVER_TIME', runTransaction: (_db, callback) => callback(firestore.transaction) }));
 import { autoSyncKey, companionRequest, saveCardLadderReport } from './cardLadderCompanion';
-import { salesWindow } from './cardLadderSales';
+import { applySalesReport, buildCardLadderRemovals, salesWindow } from './cardLadderSales';
 
 const now = new Date();
 const item = { entryId: 'owned', name: 'Lugia V', set: '2022 Pokemon Silver Tempest', number: '186', variation: '', gradingCompany: 'PSA', grade: '10', isGraded: true, gradedPrice: 1230, quantity: 2, buyPrice: 800 };
@@ -193,5 +193,64 @@ describe('transactional sticker-price application', () => {
     const input = { ...report, holdings: [{ ...report.holdings[0], sales: [], cardLadderValue: 1100, cardLadderValueCurrency: 'USD' }] };
     expect(await saveCardLadderReport({}, 'user-1', input, {}, {}, ['cl-one'], false, ['cl-one'], mode)).toMatchObject({ stickerUpdatedCount: 1 });
     expect(firestore.transaction.update.mock.calls[0][1].items[0]).toMatchObject({ gradedPrice: 1100, overridePrice: 1100, overridePriceCurrency: 'USD', cardladderPricing: { method: 'cardladder-value' } });
+  });
+});
+
+describe('transactional CardLadder membership reconciliation', () => {
+  const accountKey = 'a'.repeat(64);
+  const proof = input => ({ ...input, inventorySnapshot: { version: 1, collectionName: 'Inventory', accountKey,
+    holdingIds: input.holdings.map(holding => holding.holdingId).sort(), total: input.holdings.length, verifiedAt: input.capturedAt } });
+  const present = proof(report);
+  const missing = proof({ ...report, runId: 'membership-next', holdings: [] });
+  const linked = () => applySalesReport([], present, now.getTime() - 1000, {}, { 'cl-one': { quantity: 2, buyPrice: 75 } }).items[0];
+
+  it('moves a manually selected absent link to restorable trash in the same transaction', async () => {
+    const card = { ...linked(), overridePrice: 1800, notes: 'Preserve this evidence' };
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [card, item] }) });
+    const removals = buildCardLadderRemovals([card, item], missing);
+    expect(removals).toHaveLength(1);
+    expect(await saveCardLadderReport({}, 'user-1', missing, {}, {}, [], false, [], { removals })).toMatchObject({ removedCount: 1 });
+    expect(firestore.transaction.set).toHaveBeenCalledWith({ collection: 'trash', uid: card.entryId }, { item: card, deletedAt: 'SERVER_TIME' });
+    const write = firestore.transaction.update.mock.calls[0][1];
+    expect(write.items).toEqual([item]);
+    expect(write.cardLadderLastSync.removedCount).toBe(1);
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => write });
+    expect(await saveCardLadderReport({}, 'user-1', missing, {}, {}, [], false, [], { removals })).toMatchObject({ removedCount: 0 });
+    expect(firestore.transaction.set).toHaveBeenCalledTimes(1);
+    expect(firestore.transaction.update.mock.calls[1][1].items).toEqual([item]);
+    // Restoring or reusing the ID is different from an already absent row.
+    const restored = { ...card, cardladderData: { ...card.cardladderData, membershipRestoredAt: Date.now() + 1 } };
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ ...write, items: [item, restored] }) });
+    await expect(saveCardLadderReport({}, 'user-1', missing, {}, {}, [], false, [], { removals })).rejects.toThrow(/selected removal changed/);
+    expect(firestore.transaction.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('automatically removes matching scoped links once, preserving unscoped and other-account cards', async () => {
+    const scoped = linked();
+    const legacy = { ...scoped, entryId: 'legacy', cardladderData: { ...scoped.cardladderData, inventoryAccountKey: undefined } };
+    const other = { ...scoped, entryId: 'other', cardladderData: { ...scoped.cardladderData, inventoryAccountKey: 'b'.repeat(64) } };
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [scoped, legacy, other] }) });
+    localStorage.setItem(autoSyncKey('user-1'), 'true');
+    expect(await saveCardLadderReport({}, 'user-1', missing, {}, {}, null, true)).toMatchObject({ removedCount: 1 });
+    const write = firestore.transaction.update.mock.calls[0][1];
+    expect(write.items).toEqual([legacy, other]);
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => write });
+    expect(await saveCardLadderReport({}, 'user-1', missing, {}, {}, null, true)).toMatchObject({ alreadyApplied: true, removedCount: 0 });
+    expect(firestore.transaction.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects concurrent edits before any inventory or trash write', async () => {
+    const card = linked();
+    const removals = buildCardLadderRemovals([card], missing);
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [{ ...card, buyPrice: 95 }] }) });
+    await expect(saveCardLadderReport({}, 'user-1', missing, {}, {}, [], false, [], { removals })).rejects.toThrow(/selected removal changed/);
+    expect(firestore.transaction.update).not.toHaveBeenCalled();
+    expect(firestore.transaction.set).not.toHaveBeenCalled();
+  });
+
+  it('permits reviewed removal after a price-only save from the same run', async () => {
+    const card = linked();
+    firestore.transaction.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [card], cardLadderLastSync: { runId: missing.runId, capturedAt: missing.capturedAt } }) });
+    expect(await saveCardLadderReport({}, 'user-1', missing, {}, {}, null, false, [], { removals: buildCardLadderRemovals([card], missing) })).toMatchObject({ removedCount: 1, alreadyApplied: false });
   });
 });

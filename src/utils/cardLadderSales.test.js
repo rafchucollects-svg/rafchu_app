@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applySalesReport, buildSalesPreview, cardLadderIdentity, createSalesBinding, isComparableSale, parseSaleDate, parseSaleMoney, preserveCardLadderSalesPrice, salesWindow, saleStatistics, safeCardLadderImage, summarizeSales, validateSalesReport } from './cardLadderSales';
+import { applySalesReport, buildCardLadderRemovals, hasVerifiedCardLadderInventory, buildSalesPreview, cardLadderIdentity, createSalesBinding, isComparableSale, parseSaleDate, parseSaleMoney, preserveCardLadderSalesPrice, salesWindow, saleStatistics, safeCardLadderImage, summarizeSales, validateSalesReport } from './cardLadderSales';
 import { readCollectionRows, readSalesRows, resultCount } from '../../companion/cardladder/dom';
 
 const now = Date.parse('2026-09-06T21:00:00Z');
@@ -342,5 +342,121 @@ describe('explicit CardLadder sticker application', () => {
     const result = apply([item, other], input);
     expect(result.stickerUpdatedCount).toBe(1);
     expect(result.items[1]).toEqual(other);
+  });
+});
+
+describe('verified Inventory membership', () => {
+  const accountKey = 'a'.repeat(64);
+  const proof = input => ({ ...input, inventorySnapshot: { version: 1, collectionName: 'Inventory', accountKey,
+    holdingIds: input.holdings.map(row => row.holdingId).sort(), total: input.holdings.length, verifiedAt: input.capturedAt } });
+  const linked = () => applySalesReport([], proof(report([])), now - 1000, {}, { [holding.holdingId]: { quantity: 2, buyPrice: 75 } }).items[0];
+  const absent = () => proof(report([], { holdings: [] }));
+
+  it('requires fresh, scoped, complete inventory evidence with exactly the captured IDs', () => {
+    const input = proof(report([]));
+    expect(hasVerifiedCardLadderInventory(input, now)).toBe(true);
+    expect(hasVerifiedCardLadderInventory(report([]), now)).toBe(false);
+    for (const change of [{ total: 0 }, { holdingIds: ['different'] }, { accountKey: '' }, { version: 2 },
+      { verifiedAt: new Date(now - 1).toISOString() }, { verifiedAt: new Date(now + 6 * 60000).toISOString() }]) {
+      expect(hasVerifiedCardLadderInventory({ ...input, inventorySnapshot: { ...input.inventorySnapshot, ...change } }, now)).toBe(false);
+    }
+    expect(hasVerifiedCardLadderInventory({ ...input, collectionComplete: false }, now)).toBe(false);
+    expect(hasVerifiedCardLadderInventory(input, now + 86400001)).toBe(false);
+  });
+
+  it('uses every holding ID for presence even when grading or sales cannot be read', () => {
+    const card = linked();
+    const input = proof(report([], { holdings: [{ ...holding, gradingCompany: 'Unspecified', grade: 'unsupported', complete: false, sales: [], error: 'No linked sales profile' }] }));
+    expect(buildCardLadderRemovals([card], input, now)).toEqual([]);
+    const legacy = { ...card, cardladderData: { ...card.cardladderData, inventoryAccountKey: undefined } };
+    expect(applySalesReport([legacy], input, now).items[0].cardladderData.inventoryAccountKey).toBeUndefined();
+    const sameIdentity = proof(report([], { holdings: [{ ...holding, complete: false, sales: [], error: 'Sales unavailable' }] }));
+    expect(applySalesReport([legacy], sameIdentity, now).items[0].cardladderData.inventoryAccountKey).toBe(accountKey);
+  });
+
+  it('does not establish account scope from a matching holding ID whose source identity changed', () => {
+    const card = linked();
+    const legacy = { ...card, cardladderData: { ...card.cardladderData, inventoryAccountKey: undefined } };
+    const changed = proof(report([], { holdings: [{ ...holding, name: 'Different card', complete: false, sales: [] }] }));
+    expect(applySalesReport([legacy], changed, now).items).toEqual([legacy]);
+    expect(buildCardLadderRemovals([legacy], changed, now)).toEqual([]);
+  });
+
+  it.each([true, false])('preserves a readded holding under a new ID when sales completion is %s', complete => {
+    const card = linked();
+    const replacement = { ...holding, holdingId: 'replacement-holding', complete,
+      sales: complete ? [sale(1525, '2026-08-29')] : [], ...(!complete ? { error: 'Sales unavailable' } : {}) };
+    const input = proof(report([], { holdings: [replacement] }));
+    expect(buildCardLadderRemovals([card], input, now)).toEqual([]);
+    const result = applySalesReport([card], input, now);
+    expect(result.removedCount).toBe(0);
+    expect(result.items).toHaveLength(1);
+    if (complete) {
+      expect(result.items[0]).toMatchObject({ gradedPrice: 1525, cardladderData: { holdingId: 'replacement-holding', inventoryAccountKey: accountKey } });
+    } else expect(result.items).toEqual([card]);
+  });
+
+  it('preserves a manually linked naming variant through source holding-ID replacement', () => {
+    const original = proof(report([], { holdings: [{ ...holding, complete: false, sales: [] }] }));
+    const manual = { ...item, name: 'My Lugia', set: 'My inventory label', cardladderData: undefined };
+    const bound = applySalesReport([manual], original, now - 1000,
+      { [holding.holdingId]: createSalesBinding(manual, original.holdings[0]) }, {}, [holding.holdingId]).items[0];
+    const replacement = proof(report([], { holdings: [{ ...holding, holdingId: 'replacement', complete: false, sales: [] }] }));
+    expect(cardLadderIdentity(bound)).not.toBe(cardLadderIdentity(replacement.holdings[0], true));
+    expect(buildCardLadderRemovals([bound], replacement, now)).toEqual([]);
+  });
+
+  it('preserves manual, unlinked, changed, newer, restored and other-account inventory rows', () => {
+    const card = linked();
+    const variations = [item, { ...card, cardladderData: {} }, { ...card, name: 'Edited name' },
+      ...['importedAt', 'linkedAt', 'membershipRestoredAt'].map(key => ({ ...card, cardladderData: { ...card.cardladderData, [key]: now + 1 } })),
+      { ...card, cardladderData: { ...card.cardladderData, inventoryAccountKey: 'b'.repeat(64) } }];
+    for (const changed of variations) expect(buildCardLadderRemovals([changed], absent(), now)).toEqual([]);
+    expect(buildCardLadderRemovals([card], absent(), now)).toHaveLength(1);
+    const legacy = { ...card, cardladderData: { ...card.cardladderData, inventoryAccountKey: undefined } };
+    expect(buildCardLadderRemovals([legacy], absent(), now)).toHaveLength(1);
+  });
+
+  it('only removes explicitly selected candidates and rechecks full item and link identity', () => {
+    const card = linked(), input = absent();
+    expect(applySalesReport([card], input, now).items).toEqual([card]);
+    const removals = buildCardLadderRemovals([card], input, now);
+    const result = applySalesReport([card], input, now, {}, {}, [], [], { removals });
+    expect(result).toMatchObject({ removedCount: 1, removedItems: [card], items: [] });
+    for (const changed of [{ ...card, quantity: 5 }, { ...card, overridePrice: 999 }, { ...card, cardladderData: { ...card.cardladderData, holdingId: 'relinked' } }]) {
+      expect(() => applySalesReport([changed], input, now, {}, {}, [], [], { removals })).toThrow(/selected removal changed/);
+    }
+    expect(() => applySalesReport([card], report([]), now, {}, {}, [], [], { removals })).toThrow(/not verified/);
+  });
+
+  it('persists explicit no-price bindings and scopes them without applying incomplete sales', () => {
+    const input = proof(report([], { holdings: [{ ...holding, complete: false, sales: [] }] }));
+    const bindings = { [holding.holdingId]: createSalesBinding(item, input.holdings[0]) };
+    const result = applySalesReport([item], input, now, bindings, {}, [holding.holdingId]);
+    expect(result).toMatchObject({ linkedCount: 1, updatedCount: 0, stickerUpdatedCount: 0 });
+    expect(result.items[0]).toMatchObject({ gradedPrice: item.gradedPrice, overridePrice: item.overridePrice, quantity: item.quantity,
+      cardladderData: { holdingId: holding.holdingId, inventoryAccountKey: accountKey, linkedAt: now } });
+    const reimported = preserveCardLadderSalesPrice({ ...item, gradedPrice: 1200 }, result.items[0]);
+    expect(reimported).toMatchObject({ gradedPrice: 1200, cardladderData: { holdingId: holding.holdingId, inventoryAccountKey: accountKey, linkedAt: now } });
+    expect(applySalesReport([item], input, now, bindings, {}, []).items).toEqual([item]);
+    const mismatched = { ...item, cardladderData: { ...item.cardladderData, inventoryAccountKey: 'b'.repeat(64) } };
+    expect(() => applySalesReport([mismatched], input, now, { [holding.holdingId]: createSalesBinding(mismatched, input.holdings[0]) }, {}, [holding.holdingId])).toThrow(/different CardLadder account/);
+  });
+
+  it('scopes new price-based links immediately and preserves scope during CSV price preservation', () => {
+    const input = proof(report([sale(1525, '2026-08-29')]));
+    const result = applySalesReport([item], input, now);
+    expect(result.items[0].cardladderData).toMatchObject({ holdingId: holding.holdingId, inventoryAccountKey: accountKey, linkedAt: now });
+    const existing = { ...result.items[0], cardladderData: { ...result.items[0].cardladderData, membershipRestoredAt: now - 1000 } };
+    const preserved = preserveCardLadderSalesPrice(item, existing);
+    expect(preserved.cardladderData).toMatchObject({ inventoryAccountKey: accountKey, linkedAt: now, membershipRestoredAt: now - 1000 });
+  });
+
+  it('does not update or relink a matching card owned by another CardLadder account', () => {
+    const input = proof(report([sale(1525, '2026-08-29')]));
+    const other = { ...item, cardladderData: { ...item.cardladderData, inventoryAccountKey: 'b'.repeat(64), holdingId: 'other-account-holding' } };
+    expect(buildSalesPreview([other], input, now)[0].status).toBe('unmatched');
+    expect(applySalesReport([other], input, now).items).toEqual([other]);
+    expect(() => applySalesReport([other], input, now, { [holding.holdingId]: createSalesBinding(other, input.holdings[0]) })).toThrow(/different CardLadder account/);
   });
 });

@@ -78,7 +78,7 @@ export function updateItemGrading(item, company, grade) {
   const grading = normalizeGrading(company, grade);
   if (!grading) throw new Error('Select a supported grading company and exact grade.');
   if (sameGrading(item, grading)) return { ...item, ...grading };
-  const staleKeys = new Set(['holdingId', 'holdingIdentityKey', 'inventoryIdentityKey', 'ladderId',
+  const staleKeys = new Set(['holdingId', 'holdingIdentityKey', 'inventoryIdentityKey', 'inventoryAccountKey', 'linkedAt', 'membershipRestoredAt', 'ladderId',
     'slabSerial', 'fullCard', 'currentValue', 'totalValue', 'potentialProfit', 'population']);
   return {
     ...item, ...grading, gradedPrice: null, gradedPriceCurrency: null,
