@@ -1,3 +1,4 @@
+import { getGradeOptions, getGradeLabel, gradeForCompany, sameGrading } from "@/utils/grading";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
@@ -565,14 +566,14 @@ export function CardSearch({ mode = "collector" }) {
       return;
     }
     
-    // If in graded mode with a price, add directly with graded info
-    if (isGradedFilter && gradedPrice?.success && gradedPrice?.graded?.price > 0) {
+    // The selected grade remains valid even when market pricing is unavailable.
+    if (isGradedFilter) {
       // Store graded price in USD (will be converted on display)
-      const priceInUSD = convertCurrency(
+      const priceInUSD = gradedPrice?.success && gradedPrice?.graded?.price > 0 ? convertCurrency(
         gradedPrice.graded.price,
         'USD',
         gradedPrice.graded.currency || 'USD',
-      );
+      ) : null;
       
       const newItem = await addToCollection(activeCard, {
         condition: 'NM',
@@ -581,6 +582,7 @@ export function CardSearch({ mode = "collector" }) {
         gradingCompany: selectedGradingCompany,
         grade: selectedGrade,
         gradedPrice: priceInUSD, // Store in USD, convert on display
+        gradedPriceCurrency: 'USD',
         mode: mode, // Pass the mode explicitly
       });
       
@@ -615,9 +617,9 @@ export function CardSearch({ mode = "collector" }) {
   const handleAddToBuy = useCallback(() => {
     if (!activeCard) return;
     
-    // If in graded mode with a price, add directly with graded info
-    if (isGradedFilter && gradedPrice?.success && gradedPrice?.graded?.price > 0) {
-      const exists = buyItems.find(it => it.id === activeCard.id && it.isGraded && it.gradingCompany === selectedGradingCompany && it.grade === selectedGrade);
+    // Preserve the selected grade when no verified quote exists.
+    if (isGradedFilter) {
+      const exists = buyItems.find(it => it.id === activeCard.id && it.isGraded && sameGrading(it, { gradingCompany: selectedGradingCompany, grade: selectedGrade }));
       if (exists) {
         const newQty = (exists.quantity || 1) + 1;
         setBuyItems(prev => prev.map(it =>
@@ -627,11 +629,11 @@ export function CardSearch({ mode = "collector" }) {
         return;
       }
       
-      const priceInUSD = convertCurrency(
+      const priceInUSD = gradedPrice?.success && gradedPrice?.graded?.price > 0 ? convertCurrency(
         gradedPrice.graded.price,
         'USD',
         gradedPrice.graded.currency || 'USD',
-      );
+      ) : null;
       
       setBuyItems(prev => [...prev, {
         entryId: crypto.randomUUID(),
@@ -650,6 +652,7 @@ export function CardSearch({ mode = "collector" }) {
         gradingCompany: selectedGradingCompany,
         grade: selectedGrade,
         gradedPrice: priceInUSD, // Store in USD
+        gradedPriceCurrency: 'USD',
       }]);
       
       triggerQuickAddFeedback(`${activeCard.name} (${selectedGradingCompany} ${selectedGrade}) added to deal`);
@@ -737,7 +740,9 @@ export function CardSearch({ mode = "collector" }) {
   
   // Fetch graded price when company or grade changes
   useEffect(() => {
+    setGradedPrice(null);
     if (!isGradedFilter || !activeCard || !selectedGradingCompany || !selectedGrade) {
+      setLoadingGradedPrice(false);
       return;
     }
     
@@ -750,20 +755,22 @@ export function CardSearch({ mode = "collector" }) {
       return;
     }
     
+    let cancelled = false;
     const fetchGraded = async () => {
       setLoadingGradedPrice(true);
       try {
         const result = await apiFetchGradedPrices(activeCard, selectedGradingCompany, selectedGrade);
-        setGradedPrice(result);
+        if (!cancelled) setGradedPrice(result);
       } catch (error) {
         console.error("Error fetching graded price:", error);
-        setGradedPrice({ success: false, error: error.message });
+        if (!cancelled) setGradedPrice({ success: false, error: error.message });
       } finally {
-        setLoadingGradedPrice(false);
+        if (!cancelled) setLoadingGradedPrice(false);
       }
     };
     
     fetchGraded();
+    return () => { cancelled = true; };
   }, [isGradedFilter, activeCard, selectedGradingCompany, selectedGrade]);
 
   return (
@@ -954,7 +961,10 @@ export function CardSearch({ mode = "collector" }) {
                           <label className="block text-sm font-medium mb-2">Grading Company</label>
                           <select
                             value={selectedGradingCompany}
-                            onChange={(e) => setSelectedGradingCompany(e.target.value)}
+                            onChange={(e) => {
+                              setSelectedGradingCompany(e.target.value);
+                              setSelectedGrade(gradeForCompany(e.target.value, selectedGrade, "10"));
+                            }}
                             className="w-full px-3 py-2 border rounded-md"
                           >
                             <option value="PSA">PSA</option>
@@ -972,8 +982,8 @@ export function CardSearch({ mode = "collector" }) {
                             onChange={(e) => setSelectedGrade(e.target.value)}
                             className="w-full px-3 py-2 border rounded-md"
                           >
-                            {["10", "9.5", "9", "8.5", "8", "7.5", "7", "6.5", "6", "5.5", "5", "4", "3", "2", "1"].map(g => (
-                              <option key={g} value={g}>{g}</option>
+                            {getGradeOptions(selectedGradingCompany).map(g => (
+                              <option key={g} value={g}>{getGradeLabel(selectedGradingCompany, g)}</option>
                             ))}
                           </select>
                         </div>
@@ -1027,7 +1037,7 @@ export function CardSearch({ mode = "collector" }) {
                                 ⚠️ No graded price available for {selectedGradingCompany} {selectedGrade}
                               </p>
                               <p className="text-xs text-yellow-600 mt-1">
-                                Try a different grade or grading company
+                                You can add this graded card and enter a price later.
                               </p>
                             </div>
                           </CardContent>

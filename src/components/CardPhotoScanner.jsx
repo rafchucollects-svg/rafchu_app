@@ -1,3 +1,4 @@
+import { getGradeOptions, getGradeLabel, gradeForCompany, normalizeGrading } from "@/utils/grading";
 import { useState, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,6 @@ const GRADING_COMPANIES = [
   { value: "Other", label: "Other" },
 ];
 
-const GRADE_OPTIONS = ["10", "9.5", "9", "8.5", "8", "7.5", "7", "6.5", "6", "5", "4", "3", "2", "1"];
 
 function confidenceColor(c) {
   if (c >= 0.85) return "text-green-600 bg-green-50 border-green-200";
@@ -176,6 +176,7 @@ export function CardPhotoScanner({ onAddCards, onClose }) {
           ? Math.min(detected.confidence, firstName && enrichedMatch.name?.toLowerCase().includes(firstName) ? 0.95 : 0.6)
           : Math.min(detected.confidence, 0.3);
 
+        const grading = normalizeGrading(detected.gradingCompany || "PSA", detected.grade);
         return {
           _scanId: `scan-${Date.now()}-${i}`,
           detected,
@@ -184,8 +185,8 @@ export function CardPhotoScanner({ onAddCards, onClose }) {
           rejected: false,
           condition: "NM",
           isGraded: detected.isGraded || false,
-          gradingCompany: detected.gradingCompany || "PSA",
-          grade: detected.grade || "",
+          gradingCompany: grading?.gradingCompany || detected.gradingCompany || "PSA",
+          grade: grading?.grade || "",
           manualPrice: "",
           manualPriceCurrency: "USD",
           searchResults: searchResults.slice(0, 8),
@@ -479,7 +480,7 @@ export function CardPhotoScanner({ onAddCards, onClose }) {
                               <select
                                 value={card.gradingCompany}
                                 onChange={(e) =>
-                                  updateCard(card._scanId, { gradingCompany: e.target.value })
+                                  updateCard(card._scanId, { gradingCompany: e.target.value, grade: gradeForCompany(e.target.value, card.grade) })
                                 }
                                 className="rounded border px-1.5 py-0.5 text-xs"
                               >
@@ -497,9 +498,9 @@ export function CardPhotoScanner({ onAddCards, onClose }) {
                                 className="rounded border px-1.5 py-0.5 text-xs"
                               >
                                 <option value="">Grade</option>
-                                {GRADE_OPTIONS.map((g) => (
+                                {getGradeOptions(card.gradingCompany).map((g) => (
                                   <option key={g} value={g}>
-                                    {g}
+                                    {getGradeLabel(card.gradingCompany, g)}
                                   </option>
                                 ))}
                               </select>

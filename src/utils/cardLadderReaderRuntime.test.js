@@ -32,9 +32,9 @@ it('opens a visible reader, waits out old/loading documents, and keeps a fixed w
         if (destination) expect(navigationFinished).toBe(true);
         if (message.command === 'currency') return { ok: true, data: 'USD' };
         if (message.command === 'inventory') return { ok: true, data: [holding] };
-        if (message.command === 'holding') return { ok: true, data: { profileUrl: 'https://app.cardladder.com/profiles/psa-123' } };
+        if (message.command === 'holding') return { ok: true, data: { profileUrl: 'https://app.cardladder.com/profiles/matched-999', salesUrl: 'https://app.cardladder.com/sales-history?filters=grader:psa|grade:g10|profileId:psa-123&sort=date&direction=desc' } };
         if (message.command === 'sales') {
-          expect(message).toMatchObject({ startDate: '2026-08-23', endDate: '2026-09-06', profileId: 'psa-123', grade: '10', currency: 'USD' });
+          expect(message).toMatchObject({ startDate: '2026-08-23', endDate: '2026-09-06', profileId: 'psa-123', gradingCompany: 'PSA', grade: '10', currency: 'USD', holding });
           return { ok: true, data: { complete: true, sales: [] } };
         }
         return { ok: true };

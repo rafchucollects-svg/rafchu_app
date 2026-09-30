@@ -1,6 +1,7 @@
 import { CLOUD_FUNCTIONS_BASE } from "@/utils/functionEndpoint";
 import { CardLadderSyncPanel } from "@/components/CardLadderSyncPanel";
 import { preserveCardLadderSalesPrice } from "@/utils/cardLadderSales";
+import { sameGrading } from "@/utils/grading";
 import { useState, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,11 +10,13 @@ import { useApp } from "@/contexts/AppContext";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import {
   applyCardLadderPurchasePrice,
+  cardLadderCertificateKey,
   cardLadderCompositeKey,
   cardLadderCustomizationScore,
   cardLadderMatchScore,
   findManualDealCardMatch,
   parseCardLadderMoney,
+  parseCardLadderCondition,
   preserveDealAcquisitionData,
   preserveEditedCardLadderPurchasePrice,
   toPerUnitCardLadderAmount,
@@ -137,15 +140,6 @@ function cleanSetName(raw) {
   return set.trim();
 }
 
-function parseCondition(raw) {
-  if (!raw) return { company: "", grade: "" };
-  const match = raw.trim().match(/^(PSA|BGS|SGC|CGC)\s+(.+)$/i);
-  if (match) {
-    return { company: match[1].toUpperCase(), grade: match[2].trim() };
-  }
-  return { company: "", grade: raw.trim() };
-}
-
 // ─── CSV Row → Card Item ──────────────────────────────────────────────────────
 
 // CardLadder has renamed several columns over time. Each entry below lists
@@ -241,7 +235,7 @@ function rowToCard(row, headerMap) {
 
   const cleanName = cleanPlayerName(playerRaw);
   const cleanSet = cleanSetName(setRaw);
-  const { company, grade } = parseCondition(condition);
+  const { company, grade } = parseCardLadderCondition(condition);
 
   // CardLadder reports totals for the line item — divide by quantity for per-unit values
   const unitValue = toPerUnitCardLadderAmount(currentValue, quantity) ?? 0;
@@ -795,7 +789,7 @@ export function CardLadderImport({ onClose, collectionName }) {
       const noSlab = [];
       let slabDuplicatesRemoved = 0;
       for (const old of oldCardLadderRaw) {
-        const slab = old.cardladderData?.slabSerial;
+        const slab = cardLadderCertificateKey(old);
         if (!slab) {
           noSlab.push(old);
           continue;
@@ -820,7 +814,7 @@ export function CardLadderImport({ onClose, collectionName }) {
       for (const old of oldCardLadder) {
         const lid = old.cardladderData?.ladderId;
         if (lid) oldCardMap.set(`lid:${lid}`, old);
-        const slab = old.cardladderData?.slabSerial;
+        const slab = cardLadderCertificateKey(old);
         if (slab) oldCardMap.set(`slab:${slab}`, old);
       }
 
@@ -837,9 +831,10 @@ export function CardLadderImport({ onClose, collectionName }) {
       // Pass 1: stable-ID matching (ladderId, then slab/cert #)
       parsedCards.forEach((card, idx) => {
         const lid = card.cardladderData?.ladderId;
-        const slab = card.cardladderData?.slabSerial;
+        const slab = cardLadderCertificateKey(card);
         let m = null;
         if (lid) m = oldCardMap.get(`lid:${lid}`) || null;
+        if (m && !sameGrading(card, m)) m = null;
         if (!m && slab) m = oldCardMap.get(`slab:${slab}`) || null;
         if (m && !claimedEntryIds.has(m.entryId)) {
           matchedOldFor[idx] = m;

@@ -45,6 +45,22 @@ it.each(['1.1.0', '1.1.1', '1.10.0', '2.0.0'])('shows current companion %s witho
   expect(mocks.save).not.toHaveBeenCalled();
 });
 
+it.each(['1.1.0', '1.1.1'])('explains the BGS and CGC companion update for %s', async version => {
+  mocks.request.mockResolvedValue({ installed: true, version });
+  await act(async () => root.render(<CardLadderSyncPanel />));
+  const warning = host.querySelector('[aria-label="CardLadder grading support update"]');
+  expect(warning.textContent).toContain('sync BGS and CGC');
+  expect(warning.textContent).toContain('1.2.0');
+  expect(warning.textContent).toContain('run Sync Inventory again');
+  expect(mocks.request).not.toHaveBeenCalledWith('start');
+});
+
+it.each(['1.2.0', '1.10.0', '2.0.0'])('does not show a grading update notice for %s', async version => {
+  mocks.request.mockResolvedValue({ installed: true, version });
+  await act(async () => root.render(<CardLadderSyncPanel />));
+  expect(host.querySelector('[aria-label="CardLadder grading support update"]')).toBeNull();
+});
+
 const legacyReport = (failed = false) => {
   const capturedAt = new Date().toISOString();
   return { schemaVersion: 1, source: 'cardladder-browser', runId: 'legacy', capturedAt, ...salesWindow(capturedAt), collectionName: 'Inventory', collectionComplete: true,
@@ -112,6 +128,52 @@ const loadReport = async report => {
   await act(async () => root.render(<CardLadderSyncPanel />));
   await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Preview latest capture').click());
 };
+
+it('shows the last sale separately from the 14-day high and still applies the selected high', async () => {
+  const report = legacyReport();
+  const high = report.holdings[0].sales[0];
+  high.soldDate = report.startDate;
+  const latest = { ...high, price: 900, soldDate: report.endDate, url: 'https://www.ebay.com/itm/98765432' };
+  report.holdings[0].sales.push(latest);
+  await loadReport(report);
+  expect(amountBeside('Last matching sale')).toBe(formatCurrency(828, 'EUR'));
+  expect(amountBeside('14-day high')).toBe(formatCurrency(1104, 'EUR'));
+  const link = [...host.querySelectorAll('a')].find(anchor => anchor.textContent.startsWith('View last sale'));
+  expect(link.href).toBe(latest.url);
+  expect(link.textContent).toContain(latest.soldDate);
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Update 1 sticker price').click());
+  expect(mocks.save.mock.calls[0][2]).toBe(report);
+  expect(mocks.save.mock.calls[0][5]).toEqual(['one']);
+});
+
+it('labels an older last sale as reference and leaves an unpriced card unchanged', async () => {
+  const report = legacyReport();
+  const recent = report.holdings[0].sales[0];
+  report.holdings[0].latestSale = { ...recent, soldDate: '2020-01-01', price: 500 };
+  report.holdings[0].sales = [];
+  await loadReport(report);
+  expect(amountBeside('Last matching sale')).toBe(formatCurrency(460, 'EUR'));
+  expect(host.textContent).toContain('Older than 14 days · for reference only');
+  expect(amountBeside('14-day high')).toBe('No recent sales');
+  expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Update 0 sticker prices').disabled).toBe(true);
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('offers only the exact normalized BGS grade when linking an unmatched card', async () => {
+  const report = legacyReport();
+  Object.assign(report.holdings[0], { gradingCompany: 'BGS', grade: '10 Pristine', name: 'Lugia' });
+  report.holdings[0].sales[0].title = 'Lugia 186 BGS 10 Pristine';
+  mocks.items = [
+    { ...mocks.items[0], gradingCompany: 'BGS', grade: '10', entryId: 'gold' },
+    { ...mocks.items[0], gradingCompany: 'BGS', grade: '10 Black Label', entryId: 'black' },
+    { ...mocks.items[0], gradingCompany: 'CGC', grade: '10', entryId: 'cgc' },
+  ];
+  await loadReport(report);
+  const choices = [...host.querySelectorAll('option')].map(option => option.value);
+  expect(choices).toContain('gold');
+  expect(choices).not.toContain('black');
+  expect(choices).not.toContain('cgc');
+});
 
 it('shows the actual rounded inventory sticker beside market prices and follows both current currency preferences', async () => {
   const report = legacyReport();

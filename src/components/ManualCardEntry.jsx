@@ -1,3 +1,4 @@
+import { getGradeOptions, getGradeLabel, gradeForCompany } from "@/utils/grading";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -77,8 +78,6 @@ export function ManualCardEntry({
     { value: 'Other', label: 'Other' },
   ];
   
-  // Common grades
-  const GRADE_OPTIONS = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6.5', '6', '5', '4', '3', '2', '1'];
   
   // Image upload state
   const [selectedImage, setSelectedImage] = useState(null);
@@ -302,7 +301,7 @@ export function ManualCardEntry({
       // Graded card fields
       isGraded: isGraded,
       gradingCompany: isGraded ? gradingCompany : null,
-      grade: isGraded && grade ? parseFloat(grade) : null,
+      grade: isGraded && grade ? grade : null,
       gradedPrice: isGraded && gradedPrice ? parseFloat(gradedPrice) : null,
       gradedPriceCurrency: isGraded && gradedPrice ? (currency || 'EUR') : null, // Store currency for graded price too
     };
@@ -426,7 +425,10 @@ export function ManualCardEntry({
                 </label>
                 <select
                   value={gradingCompany}
-                  onChange={(e) => setGradingCompany(e.target.value)}
+                  onChange={(e) => {
+                    setGradingCompany(e.target.value);
+                    setGrade(gradeForCompany(e.target.value, grade));
+                  }}
                   className="w-full px-3 py-2 border rounded-md bg-background"
                 >
                   {GRADING_COMPANIES.map(company => (
@@ -448,8 +450,8 @@ export function ManualCardEntry({
                   required={isGraded}
                 >
                   <option value="">Select Grade...</option>
-                  {GRADE_OPTIONS.map(g => (
-                    <option key={g} value={g}>{g}</option>
+                  {getGradeOptions(gradingCompany).map(g => (
+                    <option key={g} value={g}>{getGradeLabel(gradingCompany, g)}</option>
                   ))}
                 </select>
               </div>
@@ -759,4 +761,3 @@ export function ManualCardModal({
 }
 
 export default ManualCardEntry;
-

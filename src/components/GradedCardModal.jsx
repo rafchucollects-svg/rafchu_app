@@ -1,10 +1,9 @@
+import { getGradeOptions, getGradeLabel, gradeForCompany } from "@/utils/grading";
 import { useState } from "react";
 import { Button } from "./ui/button";
-import { Select } from "./ui/select";
 import { X } from "lucide-react";
 
 const GRADING_COMPANIES = ["PSA", "BGS", "CGC", "SGC", "ACE", "Other"];
-const GRADES = ["10", "9.5", "9", "8.5", "8", "7.5", "7", "6.5", "6", "5.5", "5", "4", "3", "2", "1"];
 
 /**
  * Simplified modal for adding graded cards
@@ -73,7 +72,10 @@ export function GradedCardModal({ isOpen, onClose, card, onSubmit, mode = "colle
             </label>
             <select
               value={gradingCompany}
-              onChange={(e) => setGradingCompany(e.target.value)}
+              onChange={(e) => {
+                setGradingCompany(e.target.value);
+                setGrade(gradeForCompany(e.target.value, grade, "10"));
+              }}
               className="w-full px-3 py-2 border rounded-md"
             >
               {GRADING_COMPANIES.map((company) => (
@@ -94,9 +96,9 @@ export function GradedCardModal({ isOpen, onClose, card, onSubmit, mode = "colle
               onChange={(e) => setGrade(e.target.value)}
               className="w-full px-3 py-2 border rounded-md"
             >
-              {GRADES.map((g) => (
+              {getGradeOptions(gradingCompany).map((g) => (
                 <option key={g} value={g}>
-                  {g}
+                  {getGradeLabel(gradingCompany, g)}
                 </option>
               ))}
             </select>

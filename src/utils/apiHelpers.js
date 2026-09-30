@@ -7,6 +7,7 @@
  */
 
 import { normalizeApiCard } from './cardHelpers';
+import { normalizeGrading } from './grading';
 import { getAuth } from 'firebase/auth';
 
 // Import improved search helpers (ranking is done ONCE via improveSearchResults)
@@ -522,23 +523,28 @@ function normalizeGradedEntry(entry) {
   };
 }
 
-export function getEmbeddedGradedPrices(card, gradingCompany) {
-  const companyKey = String(gradingCompany || 'PSA').toLowerCase();
-  const ebayCompany = card?.prices?.ebay?.graded?.[companyKey] || {};
-  const cardmarketCompany = card?.prices?.cardmarket?.graded?.[companyKey] || {};
+function getProviderGradedPrices(card, gradingCompany, provider) {
+  const company = normalizeGrading(gradingCompany, '10')?.gradingCompany;
+  if (!company) return {};
+  const providerGrades = card?.prices?.[provider]?.graded || {};
+  const companyEntries = Object.entries(providerGrades).filter(([key]) =>
+    normalizeGrading(key, '10')?.gradingCompany === company);
   const allGrades = {};
-
-  Object.entries(cardmarketCompany).forEach(([key, value]) => {
-    const grade = String(key).toLowerCase().replace(companyKey, '').replace(/_/g, '.');
+  companyEntries.flatMap(([, grades]) => Object.entries(grades || {})).forEach(([key, value]) => {
+    // A numeric underscore is a decimal (bgs9_5); label underscores are spaces.
+    const grade = normalizeGrading(company, String(key).replace(/(\d)_(\d)/g, '$1.$2'))?.grade;
     const normalized = normalizeGradedEntry(value);
     if (grade && normalized.price > 0) allGrades[grade] = normalized;
   });
-  Object.entries(ebayCompany).forEach(([grade, value]) => {
-    const normalized = normalizeGradedEntry(value);
-    if (normalized.price > 0) allGrades[String(grade)] = normalized;
-  });
-
   return allGrades;
+}
+
+export function getEmbeddedGradedPrices(card, gradingCompany) {
+  const company = gradingCompany || 'PSA';
+  return {
+    ...getProviderGradedPrices(card, company, 'cardmarket'),
+    ...getProviderGradedPrices(card, company, 'ebay'),
+  };
 }
 
 /**
@@ -558,12 +564,13 @@ export async function apiFetchGradedPrices(card, gradingCompany, grade) {
     return { success: false, error: 'Card name is required' };
   }
   
-  const company = gradingCompany || 'PSA';
-  const gradeKey = String(grade || '10');
+  const grading = normalizeGrading(gradingCompany || 'PSA', grade || '10');
+  if (!grading) return { success: false, error: 'A supported grading company and exact grade are required' };
+  const { gradingCompany: company, grade: gradeKey } = grading;
   const embeddedGrades = getEmbeddedGradedPrices(card, company);
   const embedded = embeddedGrades[gradeKey];
   if (embedded?.price > 0) {
-    const hasEbayGrade = Boolean(card?.prices?.ebay?.graded?.[company.toLowerCase()]?.[gradeKey]);
+    const hasEbayGrade = Boolean(getProviderGradedPrices(card, company, 'ebay')[gradeKey]);
     return {
       success: true,
       card: { name: cardName, tcgplayerId: card.tcgplayerId || card.tcgPlayerId || null },

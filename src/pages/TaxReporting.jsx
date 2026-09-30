@@ -1,3 +1,4 @@
+import { getGradeOptions, getGradeLabel } from "@/utils/grading";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { loadReconciliation } from "@/utils/reconciliationStore";
 import { Card, CardContent } from "@/components/ui/card";
@@ -853,8 +854,13 @@ function PurchaseDiaryTab() {
                   <option value="DMG">DMG</option>
                   <option value="PSA 10">PSA 10</option>
                   <option value="PSA 9">PSA 9</option>
-                  <option value="CGC 10">CGC 10</option>
-                  <option value="BGS 9.5">BGS 9.5</option>
+                  {['BGS', 'CGC'].map(company => (
+                    <optgroup key={company} label={company}>
+                      {getGradeOptions(company).map(grade => (
+                        <option key={grade} value={`${company} ${grade}`}>{company} {getGradeLabel(company, grade)}</option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
               <div>
