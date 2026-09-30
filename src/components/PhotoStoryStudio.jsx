@@ -24,6 +24,8 @@ import {
   getStoryPrice,
   matchPhotoCard,
   parseStoryPrice,
+  roundStoryPrice,
+  isStoryGraded,
 } from "@/utils/storyPhotoMatching";
 import {
   prepareStoryPhoto,
@@ -34,6 +36,10 @@ import {
 } from "@/utils/storyPhotoMedia";
 import { createStoryPhotoArchive } from "@/utils/storyPhotoArchive";
 import { loadStoryDraft, saveStoryDraft } from "@/utils/storyPhotoDraft";
+import {
+  getStoryConditionBadge,
+  STORY_CONDITION_OPTIONS,
+} from "@/utils/storyPhotoCondition";
 import "./PhotoStoryStudio.css";
 
 const MAX_PHOTOS = 20;
@@ -45,28 +51,58 @@ const isReady = (photo) =>
   photo.labels.length > 0 &&
   photo.labels.every(
     (label) =>
-      label.confirmed &&
-      !label.needsPositionReview &&
-      parseStoryPrice(label.price) !== null,
+      !label.needsPositionReview && parseStoryPrice(label.price) !== null,
   );
 const errorMessage = (error) =>
   /resource-exhausted|quota/i.test(`${error?.code} ${error?.message}`)
     ? "Photo scanning is temporarily busy. Try again, or add prices yourself below."
     : "This photo could not be scanned. Retry, or choose a card or enter a price yourself below.";
 const priceText = (price) =>
-  price == null ? "" : String(Math.round(price * 100) / 100);
+  roundStoryPrice(price) == null ? "" : String(roundStoryPrice(price));
 const itemDescription = (item) =>
   [
     item.set,
     item.number && `#${item.number}`,
-    item.isGraded
-      ? `${item.gradingCompany || ""} ${item.grade || ""}`
+    isStoryGraded(item)
+      ? `${item.gradingCompany || item.grader || ""} ${item.grade || ""}`
       : item.condition,
     item.variant,
     item.language,
   ]
     .filter(Boolean)
     .join(" · ");
+
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+const cardLabelFields = (item, detected = {}) => {
+  const card = item || detected;
+  const isGraded = isStoryGraded(card);
+  return {
+    isGraded,
+    condition: isGraded ? "" : item?.condition || "",
+    gradingCompany: isGraded ? card.gradingCompany || card.grader || "" : "",
+    grade: isGraded ? card.grade || "" : "",
+  };
+};
+const labelCardFields = (label, inventory) => {
+  const item = inventory.find(
+    (entry, index) => getInventoryKey(entry, index) === label.itemKey,
+  );
+  const defaults = cardLabelFields(item, label.detected);
+  const isGraded = hasOwn(label, "isGraded")
+    ? label.isGraded
+    : defaults.isGraded;
+  return {
+    ...defaults,
+    isGraded,
+    condition: isGraded
+      ? ""
+      : hasOwn(label, "condition")
+        ? label.condition
+        : defaults.condition,
+    grade: label.grade ?? defaults.grade,
+    gradingCompany: label.gradingCompany ?? defaults.gradingCompany,
+  };
+};
 
 export function PhotoStoryStudio() {
   const {
@@ -88,6 +124,7 @@ export function PhotoStoryStudio() {
     currency,
     secondaryCurrency,
     includeSecondary: false,
+    showCondition: true,
   });
   const [autoScan, setAutoScan] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -141,10 +178,18 @@ export function PhotoStoryStudio() {
             ...photo,
             url: createUrl(photo.blob),
             status: "review",
+            labels: photo.labels.map((label) => ({
+              ...label,
+              price:
+                parseStoryPrice(label.price) == null
+                  ? label.price
+                  : priceText(label.price),
+            })),
           }));
         setPhotos(restored);
         setActiveId(draft.activeId || restored[0]?.id || null);
-        if (draft.settings) setSettings(draft.settings);
+        if (draft.settings)
+          setSettings((previous) => ({ ...previous, ...draft.settings }));
         if (restored.length)
           setNotice("Your saved photo draft is ready to continue.");
       })
@@ -215,6 +260,69 @@ export function PhotoStoryStudio() {
       ),
     [collectionItems],
   );
+  // Upgrade existing drafts once inventory is available. Preserve every entered
+  // price; only previously unpriced detections receive the new suggested match.
+  useEffect(() => {
+    if (loading || inventory.length === 0) return;
+    setPhotos((previous) => {
+      let changed = false;
+      const next = previous.map((photo) => ({
+        ...photo,
+        labels: photo.labels.map((label) => {
+          if (hasOwn(label, "priceSource")) return label;
+          changed = true;
+          const item = inventory.find(
+            (entry, index) => getInventoryKey(entry, index) === label.itemKey,
+          );
+          if (parseStoryPrice(label.price) == null && item) {
+            const price = getStoryPrice(
+              item,
+              settings.currency,
+              roundUpPrices,
+              marketSource,
+            );
+            if (price != null)
+              return {
+                ...label,
+                ...labelCardFields(label, inventory),
+                price: priceText(price),
+                priceSource: "inventory",
+                reason:
+                  "Applied this card’s inventory price. You can adjust it below.",
+              };
+          }
+          if (parseStoryPrice(label.price) == null && !item && label.detected) {
+            const match = matchPhotoCard(label.detected, inventory, {
+              currency: settings.currency,
+              roundUp: roundUpPrices,
+              marketSource,
+            });
+            if (match.item && match.price != null)
+              return {
+                ...label,
+                ...cardLabelFields(match.item, label.detected),
+                name: match.item.name,
+                price: priceText(match.price),
+                priceSource: "inventory",
+                reason: match.reason,
+                itemKey: getInventoryKey(
+                  match.item,
+                  inventory.indexOf(match.item),
+                ),
+                confirmed: match.confident && !label.needsPositionReview,
+              };
+          }
+          return {
+            ...label,
+            ...labelCardFields(label, inventory),
+            priceSource: item ? "inventory" : "manual",
+          };
+        }),
+      }));
+      return changed ? next : previous;
+    });
+  }, [inventory, loading, settings.currency, roundUpPrices, marketSource]);
+
   matchingContext.current = {
     inventory,
     currency: settings.currency,
@@ -283,6 +391,8 @@ export function PhotoStoryStudio() {
             id: makeId(),
             name: match.item?.name || card.name || `Card ${index + 1}`,
             detected: card,
+            ...cardLabelFields(match.item, card),
+            priceSource: match.item ? "inventory" : null,
             ...positions[index],
             price: priceText(match.price),
             itemKey: match.item
@@ -380,6 +490,8 @@ export function PhotoStoryStudio() {
     const label = {
       id,
       name: item?.name || "Custom price",
+      ...cardLabelFields(item),
+      priceSource: item ? "inventory" : "manual",
       price: priceText(price),
       x: 0.5,
       y: Math.min(0.86, 0.58 + (active.labels.length % 4) * 0.08),
@@ -406,15 +518,20 @@ export function PhotoStoryStudio() {
     }
     updateLabel(selected.id, {
       name: item.name,
+      ...cardLabelFields(item),
+      priceSource: "inventory",
       price: priceText(price),
       itemKey: getInventoryKey(item, inventory.indexOf(item)),
       confirmed: false,
-      reason: "Inventory price selected. Check this card and confirm.",
+      reason:
+        "Inventory price and card details applied. You can change them below.",
     });
     setSearch("");
   };
   const labelForExport = (label) => ({
     ...label,
+    ...labelCardFields(label, inventory),
+    price: priceText(label.price),
     priceText:
       parseStoryPrice(label.price) == null
         ? ""
@@ -440,6 +557,8 @@ export function PhotoStoryStudio() {
         ...active,
         labels: active.labels.map((label) => ({
           ...label,
+          ...labelCardFields(label, inventory),
+          price: priceText(label.price),
           priceText:
             parseStoryPrice(label.price) == null
               ? "Set price"
@@ -463,7 +582,7 @@ export function PhotoStoryStudio() {
               : "",
         })),
       },
-    [active, settings],
+    [active, settings, inventory],
   );
   useEffect(() => {
     if (!previewPhoto) {
@@ -522,6 +641,14 @@ export function PhotoStoryStudio() {
         parseStoryPrice(label.price) == null,
     ).length || 0;
   const readyCount = photos.filter(isReady).length;
+  const selectedCard = selected ? labelCardFields(selected, inventory) : null;
+  const selectedCondition = selectedCard
+    ? STORY_CONDITION_OPTIONS.find(
+        (option) =>
+          getStoryConditionBadge(option.value) ===
+          getStoryConditionBadge(selectedCard.condition),
+      )?.value || ""
+    : "";
 
   const moveFromPointer = (event, label) => {
     if (!stage.current || !layout) return;
@@ -742,8 +869,8 @@ export function PhotoStoryStudio() {
           <h2>The picture is yours. We add the prices.</h2>
           <p>
             Tabletop layouts, single cards and slabs all work. Keep cards
-            readable, with up to 12 per photo. Exact inventory matches get a
-            price; anything uncertain stays marked for your review.
+            readable, with up to 12 per photo. We apply the best matching
+            inventory prices automatically. You can correct any match afterward.
           </p>
           <p>
             No inventory match? Add a custom price. No photo crops or
@@ -965,13 +1092,12 @@ export function PhotoStoryStudio() {
                 <div className="photo-studio-panel-heading">
                   <div>
                     <h2>Prices & placement</h2>
-                    <p>Match, adjust, then confirm.</p>
+                    <p>Prices applied for you. Change any label.</p>
                   </div>
                   <span className="photo-studio-count">
                     {
                       active.labels.filter(
                         (label) =>
-                          label.confirmed &&
                           !label.needsPositionReview &&
                           parseStoryPrice(label.price) != null,
                       ).length
@@ -1023,10 +1149,14 @@ export function PhotoStoryStudio() {
                         <strong>{label.name}</strong>
                         <small>
                           {label.confirmed && !label.needsPositionReview
-                            ? "Confirmed"
+                            ? label.priceSource === "inventory"
+                              ? "Inventory price applied"
+                              : "Checked"
                             : label.needsPositionReview
                               ? "Check placement"
-                              : "Check match & price"}
+                              : parseStoryPrice(label.price) != null
+                                ? "Suggested price · editable"
+                                : "Add a price"}
                         </small>
                       </span>
                       <b>
@@ -1082,16 +1212,64 @@ export function PhotoStoryStudio() {
                       <input
                         aria-label="Label price"
                         inputMode="decimal"
-                        placeholder="e.g. 12.50"
+                        placeholder="e.g. 125"
                         value={selected.price}
                         onChange={(event) =>
                           updateLabel(selected.id, {
                             price: event.target.value,
+                            priceSource: "manual",
                             confirmed: false,
                           })
                         }
+                        onBlur={() => {
+                          if (parseStoryPrice(selected.price) != null)
+                            updateLabel(selected.id, {
+                              price: priceText(selected.price),
+                            });
+                        }}
                       />
                     </label>
+                    <p className="photo-studio-match-reason">
+                      Prices use whole {settings.currency} amounts. Decimal
+                      entries are rounded to the nearest whole unit.
+                    </p>
+                    {selectedCard?.isGraded ? (
+                      <p className="photo-studio-match-reason">
+                        Graded card ·{" "}
+                        {[selectedCard.gradingCompany, selectedCard.grade]
+                          .filter(Boolean)
+                          .join(" ") || "Slab"}
+                      </p>
+                    ) : (
+                      <label>
+                        Raw card condition
+                        <select
+                          aria-label="Card condition"
+                          value={selectedCondition}
+                          onChange={(event) =>
+                            updateLabel(selected.id, {
+                              condition: event.target.value,
+                              isGraded: false,
+                              confirmed: false,
+                            })
+                          }
+                        >
+                          <option value="">Not set</option>
+                          {STORY_CONDITION_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="photo-studio-condition-hint">
+                          {settings.showCondition === false
+                            ? "Condition badges are hidden. Turn them on in Label style to include this condition."
+                            : selectedCondition
+                              ? `The ${getStoryConditionBadge(selectedCard.condition)} badge is included on this raw card.`
+                              : "Choose a condition to add its badge. Inventory matches use your saved condition."}
+                        </span>
+                      </label>
+                    )}
                     {parseStoryPrice(selected.price) == null && (
                       <p className="photo-studio-field-error">
                         Enter a price greater than zero to include this label.
@@ -1114,6 +1292,10 @@ export function PhotoStoryStudio() {
                         This label is on the correct card
                       </label>
                     )}
+                    <p className="photo-studio-match-reason">
+                      Checking a filled label is optional; you can download and
+                      correct it at any time.
+                    </p>
                     <Button
                       className="w-full"
                       disabled={
@@ -1263,6 +1445,19 @@ export function PhotoStoryStudio() {
                       <option value="#9f1239">Berry</option>
                     </select>
                   </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={settings.showCondition !== false}
+                      onChange={(event) =>
+                        setSettings((previous) => ({
+                          ...previous,
+                          showCondition: event.target.checked,
+                        }))
+                      }
+                    />
+                    Show condition badges on raw cards
+                  </label>
                   {settings.secondaryCurrency &&
                     settings.secondaryCurrency !== settings.currency && (
                       <label>
@@ -1290,8 +1485,10 @@ export function PhotoStoryStudio() {
               </strong>
               <p>
                 {active && !isReady(active)
-                  ? "Confirm every price and its placement before downloading."
-                  : "Your photo and prices will export just as previewed."}
+                  ? "Add any missing prices and check provisional positions before downloading."
+                  : needsReview
+                    ? "Suggested prices are already applied. Check them before posting, or download now."
+                    : "Your photo and prices will export just as previewed."}
               </p>
             </div>
             <div>

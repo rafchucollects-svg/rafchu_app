@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   exportStoryPhoto,
+  getPhotoConditionGeometry,
   getPhotoLabelGeometry,
   getPhotoLayout,
   positionPhotoLabels,
   prepareStoryPhoto,
 } from "./storyPhotoMedia";
+import {
+  STORY_CONDITION_COLORS,
+  STORY_CONDITION_OPTIONS,
+} from "./storyPhotoCondition";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -90,12 +95,87 @@ describe("uploaded story photo layout", () => {
       ])[0].needsPositionReview,
     ).toBe(true);
   });
+
+  it("reserves badge space only for known raw conditions when enabled", () => {
+    const photo = { width: 1600, height: 900 };
+    const label = { x: 0.5, y: 0.5, width: 0.2, condition: "LP" };
+    const raw = getPhotoLabelGeometry(label, photo);
+    const plain = getPhotoLabelGeometry({ ...label, condition: "" }, photo);
+    expect(raw.height).toBeCloseTo(plain.height + raw.width * 0.18);
+    expect(getPhotoConditionGeometry(label, photo)).toMatchObject({
+      code: "EX",
+      ...STORY_CONDITION_COLORS.EX,
+    });
+    for (const [item, settings] of [
+      [{ ...label, isGraded: true }, {}],
+      [{ ...label, condition: "Unknown" }, {}],
+      [{ ...label, condition: undefined }, {}],
+      [label, { showCondition: false }],
+    ]) {
+      expect(getPhotoConditionGeometry(item, photo, settings)).toBeNull();
+      expect(getPhotoLabelGeometry(item, photo, settings)).toEqual(plain);
+    }
+  });
+
+  it("keeps badges and both prices inside the complete drag target at every photo edge", () => {
+    for (const photo of [
+      { width: 1600, height: 900 },
+      { width: 900, height: 2000 },
+      { width: 2800, height: 200 },
+    ]) {
+      for (const format of ["original", "story"]) {
+        const settings = { format, labelScale: 3 };
+        const layout = getPhotoLayout(photo.width, photo.height, format);
+        for (const secondaryText of ["", "$110"]) {
+          for (const [x, y] of [
+            [0, 0],
+            [1, 0],
+            [0, 1],
+            [1, 1],
+          ]) {
+            const label = { x, y, width: 0.8, condition: "NM", secondaryText };
+            const box = getPhotoLabelGeometry(label, photo, settings);
+            const badge = getPhotoConditionGeometry(label, photo, settings);
+            expect(box.x).toBeGreaterThanOrEqual(layout.imageX - 0.00001);
+            expect(box.y).toBeGreaterThanOrEqual(layout.imageY - 0.00001);
+            expect(box.x + box.width).toBeLessThanOrEqual(
+              layout.imageX + layout.imageWidth + 0.00001,
+            );
+            expect(box.y + box.height).toBeLessThanOrEqual(
+              layout.imageY + layout.imageHeight + 0.00001,
+            );
+            expect(badge.x).toBeGreaterThan(box.x);
+            expect(badge.y).toBeGreaterThan(box.y);
+            expect(badge.x + badge.width).toBeLessThan(box.x + box.width);
+            expect(badge.y + badge.height).toBeLessThan(box.y + box.height);
+            const reservedRow = box.width * 0.18;
+            const priceHeight = box.height - reservedRow;
+            const primaryY =
+              box.y + reservedRow + priceHeight * (secondaryText ? 0.38 : 0.5);
+            expect(badge.y + badge.height).toBeLessThan(
+              primaryY - box.width * 0.09,
+            );
+            if (secondaryText) {
+              const secondaryY = box.y + reservedRow + priceHeight * 0.75;
+              expect(primaryY + box.width * 0.09).toBeLessThan(
+                secondaryY - box.width * 0.0525,
+              );
+              expect(secondaryY + box.width * 0.0525).toBeLessThan(
+                box.y + box.height,
+              );
+            }
+          }
+        }
+      }
+    }
+  });
 });
 
 function mockCanvasAndDecoder(width = 4000, height = 3000) {
   const contexts = [];
   const canvases = [];
   const encodedDimensions = [];
+  const filledColors = [];
   const encoded = new Blob(["encoded photo"], { type: "image/png" });
   vi.spyOn(document, "createElement").mockImplementation(() => {
     const context = {
@@ -106,7 +186,9 @@ function mockCanvasAndDecoder(width = 4000, height = 3000) {
       moveTo: vi.fn(),
       arcTo: vi.fn(),
       closePath: vi.fn(),
-      fill: vi.fn(),
+      fill: vi.fn(function () {
+        filledColors.push(this.fillStyle);
+      }),
       measureText: vi.fn((text) => ({ width: text.length * 40 })),
       fillText: vi.fn(),
     };
@@ -126,7 +208,14 @@ function mockCanvasAndDecoder(width = 4000, height = 3000) {
   });
   const bitmap = { width, height, close: vi.fn() };
   vi.stubGlobal("createImageBitmap", vi.fn().mockResolvedValue(bitmap));
-  return { bitmap, contexts, canvases, encoded, encodedDimensions };
+  return {
+    bitmap,
+    contexts,
+    canvases,
+    encoded,
+    encodedDimensions,
+    filledColors,
+  };
 }
 
 describe("local photo processing", () => {
@@ -266,6 +355,80 @@ describe("local photo processing", () => {
     expect(encodedDimensions).toEqual([{ width: 400, height: 200 }]);
     expect(contexts[0].scale).toHaveBeenCalledWith(1, 1);
     expect(contexts[0].fillRect).not.toHaveBeenCalled();
+  });
+
+  it("renders all raw condition colors with white outlines and reserves a separate price area", async () => {
+    const { contexts, filledColors } = mockCanvasAndDecoder(1600, 900);
+    const labels = STORY_CONDITION_OPTIONS.map(({ value }) => ({
+      x: 0.3,
+      y: 0.7,
+      width: 0.2,
+      priceText: "€100",
+      secondaryText: "$110",
+      condition: value,
+    }));
+    const photo = {
+      blob: new Blob(["photo"]),
+      width: 1600,
+      height: 900,
+      labels,
+    };
+    const settings = { format: "story" };
+    await exportStoryPhoto(photo, settings, { maxDimension: 1000 });
+    const textCalls = contexts[0].fillText.mock.calls;
+    expect(
+      textCalls
+        .filter(([text]) => text !== "€100" && text !== "$110")
+        .map(([text]) => text),
+    ).toEqual(["M", "NM", "EX", "GD", "LP", "PL", "PO"]);
+    for (const { background } of Object.values(STORY_CONDITION_COLORS))
+      expect(filledColors).toContain(background);
+    expect(filledColors.filter((color) => color === "#ffffff")).toHaveLength(7);
+    const box = getPhotoLabelGeometry(labels[0], photo, settings);
+    const row = box.width * 0.18;
+    expect(contexts[0].fillText).toHaveBeenCalledWith(
+      "€100",
+      box.x + box.width / 2,
+      box.y + row + (box.height - row) * 0.38,
+      box.width * 0.88,
+    );
+    expect(contexts[0].fillText).toHaveBeenCalledWith(
+      "$110",
+      box.x + box.width / 2,
+      box.y + row + (box.height - row) * 0.75,
+      box.width * 0.88,
+    );
+  });
+
+  it("omits condition badges for slabs, unknown conditions, and the off setting", async () => {
+    const { contexts } = mockCanvasAndDecoder(1600, 900);
+    const label = { x: 0.5, y: 0.7, priceText: "€100", condition: "NM" };
+    const photo = {
+      blob: new Blob(["photo"]),
+      width: 1600,
+      height: 900,
+      labels: [
+        label,
+        { ...label, isGraded: true },
+        { ...label, condition: "unknown" },
+        { ...label, condition: undefined },
+      ],
+    };
+    await exportStoryPhoto(photo);
+    expect(contexts[0].fillText.mock.calls.map(([text]) => text)).toEqual([
+      "NM",
+      "€100",
+      "€100",
+      "€100",
+      "€100",
+    ]);
+    await exportStoryPhoto(photo, { showCondition: false });
+    expect(contexts[1].fillText.mock.calls.map(([text]) => text)).toEqual([
+      "€100",
+      "€100",
+      "€100",
+      "€100",
+    ]);
   });
 
   it("closes the bitmap and releases the canvas when encoding fails", async () => {

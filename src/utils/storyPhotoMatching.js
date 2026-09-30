@@ -16,19 +16,26 @@ export function parseStoryPrice(value) {
     : null;
 }
 
-/** Keep cents visible even for currencies whose usual display rounds to units. */
-export function formatStoryPrice(value, currency = "EUR") {
+/** Sale labels use whole amounts; a positive sub-unit price is never shown as zero. */
+export function roundStoryPrice(value, roundUp = false) {
   const price = parseStoryPrice(value);
+  return price === null
+    ? null
+    : Math.max(1, roundUp ? Math.ceil(price) : Math.round(price));
+}
+
+export function formatStoryPrice(value, currency = "EUR") {
+  const price = roundStoryPrice(value);
   if (price === null) return "—";
   try {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
       currency: currency || "EUR",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     }).format(price);
   } catch {
-    return `${currency || "EUR"} ${price.toFixed(2)}`;
+    return `${currency || "EUR"} ${price}`;
   }
 }
 
@@ -57,7 +64,7 @@ export function getStoryPrice(
       item.overridePriceCurrency,
       currency,
     );
-  } else if (item.isGraded && hasValue(item.gradedPrice)) {
+  } else if (isStoryGraded(item) && hasValue(item.gradedPrice)) {
     price = convertedPrice(
       item.gradedPrice,
       item.gradedPriceCurrency || "USD",
@@ -75,7 +82,7 @@ export function getStoryPrice(
       item.customPriceCurrency || item.overridePriceCurrency,
       currency,
     );
-  } else if (!item.isGraded) {
+  } else if (!isStoryGraded(item)) {
     const metrics = computeItemMetrics(item, currency);
     price = parseStoryPrice(metrics?.suggested);
     if (price === null) {
@@ -88,7 +95,7 @@ export function getStoryPrice(
     }
   }
   // A missing slab price must never silently become the price of the raw card.
-  return price === null ? null : roundUp ? Math.ceil(price) : price;
+  return roundStoryPrice(price, roundUp);
 }
 
 function normalizeText(value) {
@@ -118,6 +125,7 @@ function normalizeNumber(value) {
 
 function sameNumber(a, b) {
   if (!a || !b) return false;
+  if (a.split("/").length > 2 || b.split("/").length > 2) return false;
   const [aBase, aTotal] = a.split("/");
   const [bBase, bTotal] = b.split("/");
   return aBase === bBase && (!aTotal || !bTotal || aTotal === bTotal);
@@ -152,14 +160,42 @@ const CONDITIONS = {
   damaged: "dmg",
 };
 
+function normalizedGrade(value) {
+  const text = normalizeText(value);
+  if (!text || ["raw", "ungraded", "not graded"].includes(text)) return "";
+  const numeric = String(value).trim();
+  return /^\d+(?:\.\d+)?$/.test(numeric) ? String(Number(numeric)) : text;
+}
+
+function normalizedCompany(value) {
+  const company = normalizeText(value);
+  if (["raw", "ungraded", "not graded"].includes(company)) return "";
+  const aliases = {
+    "professional sports authenticator": "psa",
+    beckett: "bgs",
+    "beckett grading services": "bgs",
+    "certified guaranty company": "cgc",
+    "sportscard guaranty": "sgc",
+  };
+  return aliases[company] || company;
+}
+
+/** Older inventory entries can carry slab metadata without the boolean flag. */
+export function isStoryGraded(item) {
+  return (
+    !!item &&
+    (item.isGraded === true ||
+      !!normalizedGrade(item.grade) ||
+      !!normalizedCompany(item.gradingCompany || item.grader))
+  );
+}
+
 function getIdentity(card) {
   const language = normalizeText(
     card.language || card.cardLanguage || (card.isJapanese ? "Japanese" : ""),
   );
-  const grade = hasValue(card.grade)
-    ? String(card.grade).trim().replace(/\.0+$/, "")
-    : "";
-  const company = normalizeText(card.gradingCompany || card.grader);
+  const grade = normalizedGrade(card.grade);
+  const company = normalizedCompany(card.gradingCompany || card.grader);
   const condition = normalizeText(card.condition);
   return {
     name: normalizeText(card.name || card.cardName),
@@ -168,14 +204,9 @@ function getIdentity(card) {
     ),
     set: normalizeText(card.setName || card.set),
     language: LANGUAGES[language] || language,
-    grade: normalizeText(grade),
+    grade,
     company,
-    graded:
-      typeof card.isGraded === "boolean"
-        ? card.isGraded
-        : grade || company
-          ? true
-          : null,
+    graded: isStoryGraded(card) ? true : card.isGraded === false ? false : null,
     condition: CONDITIONS[condition] || condition,
     variant: normalizeText(card.variant || card.variantName || card.finish),
   };
@@ -198,7 +229,69 @@ function isForSale(item) {
   );
 }
 
-/** Conservative matching: an uncertain identity yields candidates, never a price. */
+function nameSimilarity(first, second) {
+  if (!first || !second) return 0;
+  const generic = new Set([
+    "pokemon",
+    "card",
+    "unknown",
+    "unreadable",
+    "ex",
+    "v",
+    "vmax",
+    "vstar",
+    "gx",
+    "tag",
+    "team",
+    "holo",
+  ]);
+  if (
+    [first, second].some((name) =>
+      name.split(" ").every((token) => generic.has(token)),
+    )
+  )
+    return 0;
+  if (first === second) return 1;
+  const a = first.replaceAll(" ", "");
+  const b = second.replaceAll(" ", "");
+  if (a === b) return 1;
+  const firstTokens = first.split(" ");
+  const secondTokens = second.split(" ");
+  const shorter =
+    firstTokens.length <= secondTokens.length ? firstTokens : secondTokens;
+  const longer = shorter === firstTokens ? secondTokens : firstTokens;
+  if (
+    shorter.some((token) => !generic.has(token)) &&
+    shorter.every((token) => longer.includes(token))
+  )
+    return 0.8;
+  const length = Math.max(a.length, b.length);
+  const minLength = Math.min(a.length, b.length);
+  if (
+    minLength >= 5 &&
+    minLength / length >= 0.65 &&
+    (a.includes(b) || b.includes(a))
+  )
+    return 0.75;
+  // A small OCR typo is useful with a matching collector number, but a shared
+  // number alone must not turn an unrelated Pokémon into a priced match.
+  if (minLength < 4 || Math.abs(a.length - b.length) > 2) return 0;
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      row[j] = Math.min(
+        row[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    previous = row;
+  }
+  return previous[b.length] <= (length >= 9 ? 2 : 1) ? 0.75 : 0;
+}
+
+/** Apply the best plausible inventory price first; uncertainty stays editable. */
 export function matchPhotoCard(
   detected,
   items,
@@ -207,25 +300,19 @@ export function matchPhotoCard(
   const identity = getIdentity(detected || {});
   const scored = (Array.isArray(items) ? items : [])
     .filter(isForSale)
-    .map((item) => {
+    .map((item, index) => {
       const entry = getIdentity(item);
-      // Inventory entries without slab metadata are raw; scanner omissions are unknown.
       if (entry.graded === null) entry.graded = false;
-      const exactName = !!identity.name && identity.name === entry.name;
+      const similarity = nameSimilarity(identity.name, entry.name);
+      const exactName = similarity === 1;
       const exactNumber = sameNumber(identity.number, entry.number);
-      const partialName =
-        !!identity.name &&
-        !!entry.name &&
-        (identity.name.includes(entry.name) ||
-          entry.name.includes(identity.name));
-      const contradictions = [];
-      const missing = [];
-      let score =
-        (exactName ? 40 : partialName ? 12 : 0) + (exactNumber ? 35 : 0);
+      const hardConflicts = [];
+      const detailsToCheck = [];
+      let score = Math.round(similarity * 40) + (exactNumber ? 35 : 0);
       if (identity.number && entry.number && !exactNumber)
-        contradictions.push("card number");
-      if (identity.name && entry.name && !exactName)
-        contradictions.push("card name");
+        hardConflicts.push("card number");
+      if (identity.name && entry.name && !similarity)
+        hardConflicts.push("card name");
       for (const [field, weight, label] of [
         ["set", 16, "set"],
         ["language", 8, "language"],
@@ -236,35 +323,54 @@ export function matchPhotoCard(
       ]) {
         if (identity[field] && entry[field]) {
           if (identity[field] === entry[field]) score += weight;
-          else contradictions.push(label);
-        } else if (identity[field] && !entry[field]) missing.push(label);
+          else if (field === "grade" || field === "company")
+            hardConflicts.push(label);
+          else {
+            score -= weight;
+            detailsToCheck.push(label);
+          }
+        } else if (identity[field] && !entry[field]) detailsToCheck.push(label);
       }
       if (identity.graded !== null && identity.graded !== entry.graded)
-        contradictions.push("raw or graded status");
+        hardConflicts.push("raw or graded status");
       if (identity.graded !== null && identity.graded === entry.graded)
         score += 8;
-      score -= contradictions.length * 30;
+      score -= hardConflicts.length * 80;
+      const setMatches = !!identity.set && identity.set === entry.set;
+      // Number + recognizable name is normally sufficient to suggest a price.
+      // A missing number needs an exact name and matching set instead.
+      const plausible =
+        similarity > 0 &&
+        (exactNumber ||
+          (exactName && setMatches && (!identity.number || !entry.number)));
       return {
         item,
         price: getStoryPrice(item, currency, roundUp, marketSource),
+        index,
         score,
         identity: entry,
         exactName,
         exactNumber,
-        contradictions,
-        missing,
-        relevant: exactName || exactNumber || partialName,
+        setMatches,
+        hardConflicts,
+        detailsToCheck,
+        plausible,
+        relevant: similarity > 0 || exactNumber,
       };
     })
     .filter((entry) => entry.relevant)
-    .sort((a, b) => b.score - a.score);
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        Number(b.price !== null) - Number(a.price !== null) ||
+        a.index - b.index,
+    );
 
   const candidates = scored
     .slice(0, 8)
     .map(({ item, price, score }) => ({ item, price, score }));
   const possible = scored.filter(
-    (entry) =>
-      entry.exactName && entry.exactNumber && entry.contradictions.length === 0,
+    (entry) => entry.plausible && entry.hardConflicts.length === 0,
   );
   const unmatched = (reason) => ({
     item: null,
@@ -277,55 +383,52 @@ export function matchPhotoCard(
     return unmatched(
       "No matching inventory card found. Choose a card or enter a price.",
     );
-  const hasConfidence =
-    detected && Object.prototype.hasOwnProperty.call(detected, "confidence");
-  const validConfidence =
-    typeof detected?.confidence === "number" &&
-    Number.isFinite(detected.confidence) &&
-    detected.confidence >= 0.85 &&
-    detected.confidence <= 1;
-  if (hasConfidence && !validConfidence) {
-    return unmatched(
-      "The photo scan is uncertain. Confirm the inventory card before using its price.",
-    );
-  }
-  if (identity.graded === false && (identity.grade || identity.company))
-    return unmatched(
-      "The scan contains conflicting grading details. Confirm whether this card is raw or graded.",
-    );
-  if (!identity.name || !identity.number)
-    return unmatched(
-      "The name or card number is unclear. Confirm the inventory card.",
-    );
   if (!possible.length)
     return unmatched(
-      "The detected details differ from your inventory. Confirm the card and price.",
-    );
-  if (possible.length > 1)
-    return unmatched(
-      "Several inventory entries match. Choose the correct condition or variant.",
+      "No compatible inventory match found. Choose a card or enter a price.",
     );
   const match = possible[0];
-  if (match.missing.length)
-    return unmatched(
-      `Confirm the ${match.missing.join(", ")} before using this inventory price.`,
-    );
-  if (!identity.set || !match.identity.set)
-    return unmatched("Confirm the set before using this inventory price.");
-  if (identity.graded === null)
-    return unmatched("Confirm whether this card is raw or graded.");
-  if (match.identity.graded && (!identity.grade || !identity.company))
-    return unmatched(
-      "Confirm the grading company and grade before using this inventory price.",
-    );
+  const hasConfidence =
+    detected && Object.prototype.hasOwnProperty.call(detected, "confidence");
+  const reliableScan =
+    !hasConfidence ||
+    (typeof detected.confidence === "number" &&
+      Number.isFinite(detected.confidence) &&
+      detected.confidence >= 0.85 &&
+      detected.confidence <= 1);
+  const slabMatches =
+    identity.graded === true &&
+    match.identity.graded === true &&
+    !!identity.grade &&
+    identity.grade === match.identity.grade &&
+    !!identity.company &&
+    identity.company === match.identity.company;
+  const confident =
+    possible.length === 1 &&
+    match.exactName &&
+    match.exactNumber &&
+    match.detailsToCheck.length === 0 &&
+    reliableScan &&
+    (slabMatches || (identity.graded === false && match.setMatches));
+  let reason;
+  if (match.price === null)
+    reason =
+      "Inventory card selected. Add a sale price or choose another match.";
+  else if (confident)
+    reason = "Applied this card’s inventory price. You can adjust it below.";
+  else if (possible.length > 1)
+    reason =
+      "Applied the closest inventory price. Several entries match; you can choose another condition or variant.";
+  else if (match.detailsToCheck.length)
+    reason = `Applied the best inventory price. Check the ${match.detailsToCheck.join(", ")} if needed.`;
+  else
+    reason =
+      "Applied the best inventory price from the readable details. You can correct the match or price.";
   return {
     item: match.item,
     price: match.price,
     candidates,
-    confident: true,
-    reason:
-      match.price === null
-        ? "Inventory card matched. Add a sale price to continue."
-        : "Matched the card and its inventory sale price.",
+    confident,
+    reason,
   };
 }

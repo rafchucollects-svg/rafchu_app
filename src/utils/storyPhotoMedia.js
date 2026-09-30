@@ -1,7 +1,13 @@
+import {
+  getStoryConditionBadge,
+  STORY_CONDITION_COLORS,
+} from "./storyPhotoCondition";
+
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const WORKING_IMAGE_SIZE = 2800;
 const SCAN_IMAGE_SIZE = 2048;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const CONDITION_ROW_RATIO = 0.18;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const numberOr = (value, fallback) =>
@@ -197,9 +203,17 @@ export function getPhotoLayout(width, height, format = "original") {
   };
 }
 
+function visibleConditionCode(label, settings) {
+  return label.isGraded || settings.showCondition === false
+    ? ""
+    : getStoryConditionBadge(label.condition);
+}
+
 export function getPhotoLabelGeometry(label, photo, settings = {}) {
   const layout = getPhotoLayout(photo.width, photo.height, settings.format);
-  const ratio = label.secondaryText ? 0.44 : 0.3;
+  const ratio =
+    (label.secondaryText ? 0.44 : 0.3) +
+    (visibleConditionCode(label, settings) ? CONDITION_ROW_RATIO : 0);
   const labelScale = clamp(numberOr(settings.labelScale, 1), 0.4, 3);
   const relativeWidth = clamp(numberOr(label.width, 0.24), 0.04, 1);
   const width = Math.min(
@@ -225,6 +239,20 @@ export function getPhotoLabelGeometry(label, photo, settings = {}) {
     ),
     width,
     height,
+  };
+}
+
+export function getPhotoConditionGeometry(label, photo, settings = {}) {
+  const code = visibleConditionCode(label, settings);
+  if (!code) return null;
+  const box = getPhotoLabelGeometry(label, photo, settings);
+  return {
+    x: box.x + box.width * 0.695,
+    y: box.y + box.width * 0.018,
+    width: box.width * 0.28,
+    height: box.width * 0.145,
+    code,
+    ...STORY_CONDITION_COLORS[code],
   };
 }
 
@@ -333,6 +361,9 @@ export async function exportStoryPhoto(photo, settings = {}, options = {}) {
     for (const label of photo.labels || []) {
       if (!String(label.priceText || "").trim()) continue;
       const box = getPhotoLabelGeometry(label, photo, settings);
+      const condition = getPhotoConditionGeometry(label, photo, settings);
+      const conditionRow = condition ? box.width * CONDITION_ROW_RATIO : 0;
+      const priceHeight = box.height - conditionRow;
       context.fillStyle = settings.labelBackground || "#059669";
       roundedRectangle(
         context,
@@ -342,12 +373,45 @@ export async function exportStoryPhoto(photo, settings = {}, options = {}) {
         box.height,
         box.width * 0.055,
       );
+      if (condition) {
+        // Draw the outline inside the badge bounds so labels at photo edges
+        // remain wholly inside both the image and the editor's drag target.
+        context.fillStyle = "#ffffff";
+        roundedRectangle(
+          context,
+          condition.x,
+          condition.y,
+          condition.width,
+          condition.height,
+          box.width * 0.035,
+        );
+        const inset = box.width * 0.007;
+        context.fillStyle = condition.background;
+        roundedRectangle(
+          context,
+          condition.x + inset,
+          condition.y + inset,
+          condition.width - inset * 2,
+          condition.height - inset * 2,
+          box.width * 0.028,
+        );
+        context.fillStyle = condition.color;
+        drawFittedText(
+          context,
+          condition.code,
+          condition.x + condition.width / 2,
+          condition.y + condition.height / 2,
+          condition.width * 0.8,
+          box.width * 0.1,
+          700,
+        );
+      }
       context.fillStyle = settings.labelColor || "#ffffff";
       drawFittedText(
         context,
         String(label.priceText),
         box.x + box.width / 2,
-        box.y + box.height * (label.secondaryText ? 0.38 : 0.5),
+        box.y + conditionRow + priceHeight * (label.secondaryText ? 0.38 : 0.5),
         box.width * 0.88,
         box.width * 0.18,
         700,
@@ -357,7 +421,7 @@ export async function exportStoryPhoto(photo, settings = {}, options = {}) {
           context,
           String(label.secondaryText),
           box.x + box.width / 2,
-          box.y + box.height * 0.75,
+          box.y + conditionRow + priceHeight * 0.75,
           box.width * 0.88,
           box.width * 0.105,
           600,
