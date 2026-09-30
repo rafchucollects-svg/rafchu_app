@@ -60,6 +60,7 @@ const card = (patch = {}) => ({
   number: "58/102",
   language: "English",
   isGraded: false,
+  condition: "NM",
   overridePrice: 12.5,
   overridePriceCurrency: "EUR",
   quantity: 1,
@@ -102,6 +103,19 @@ const editInput = async (label, value) => {
       "value",
     ).set.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+const blurInput = async (label) => {
+  await act(async () =>
+    byLabel(label).dispatchEvent(new FocusEvent("focusout", { bubbles: true })),
+  );
+};
+const selectOption = async (label, value) => {
+  const select = byLabel(label);
+  expect(select).toBeTruthy();
+  await act(async () => {
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 };
 const renderStudio = async () => {
@@ -182,7 +196,7 @@ afterEach(async () => {
 afterAll(() => vi.unstubAllGlobals());
 
 describe("PhotoStoryStudio", () => {
-  it("automatically matches an uploaded photo and exports its measured labels with exact cents", async () => {
+  it("automatically applies whole-unit prices and raw-card conditions without requiring confirmation", async () => {
     await renderStudio();
     const original = await upload();
     expect(mocks.prepare).toHaveBeenCalledWith(original);
@@ -195,10 +209,12 @@ describe("PhotoStoryStudio", () => {
       imageBase64: "reduced-photo",
       mimeType: "image/jpeg",
     });
-    expect(byLabel("Label price").value).toBe("12.5");
+    expect(byLabel("Label price").value).toBe("13");
+    expect(byLabel("Card condition").value).toBe("NM");
     expect(host.textContent).toContain("1 of 1 photos ready");
     const preview = byLabel("Move price label 1: Pikachu");
-    expect(preview.textContent).toBe(formatStoryPrice(12.5, "EUR"));
+    expect(preview.textContent).toContain(formatStoryPrice(13, "EUR"));
+    expect(preview.textContent).not.toContain(".00");
     await click(button("Download photo"));
     const [photo, settings] = mocks.exportPhoto.mock.calls[0];
     expect(photo.blob).toBe((await mocks.prepare.mock.results[0].value).blob);
@@ -206,14 +222,105 @@ describe("PhotoStoryStudio", () => {
       ...positionPhotoLabels([detection()])[0],
       itemKey: "pikachu",
       confirmed: true,
-      price: "12.5",
-      priceText: formatStoryPrice(12.5, "EUR"),
+      price: "13",
+      priceText: formatStoryPrice(13, "EUR"),
+      condition: "NM",
+      isGraded: false,
     });
-    expect(settings).toMatchObject({ format: "original", currency: "EUR" });
+    expect(settings).toMatchObject({
+      format: "original",
+      currency: "EUR",
+      showCondition: true,
+    });
     expect(downloaded).toEqual([
       { href: expect.stringMatching(/^blob:/), name: "tabletop-prices.png" },
     ]);
     expect(mocks.app.collectionItems[0].overridePrice).toBe(12.5);
+  });
+
+  it("applies a best-match price immediately and lets an inventory correction update both price and condition", async () => {
+    mocks.app.collectionItems.push(
+      card({
+        entryId: "pikachu-excellent",
+        condition: "EX",
+        overridePrice: 18.75,
+      }),
+    );
+    await renderStudio();
+    await upload();
+    expect(byLabel("Label price").value).toBe("13");
+    expect(byLabel("Card condition").value).toBe("NM");
+    expect(button("Download photo").disabled).toBe(false);
+    await click(button("Download photo"));
+    expect(mocks.exportPhoto.mock.calls[0][0].labels[0]).toMatchObject({
+      itemKey: "pikachu",
+      price: "13",
+      condition: "NM",
+      confirmed: false,
+    });
+
+    const alternative = [
+      ...host.querySelectorAll(".photo-studio-suggestions button"),
+    ].find((element) => element.textContent.includes("EX"));
+    await click(alternative);
+    expect(byLabel("Label price").value).toBe("19");
+    expect(byLabel("Card condition").selectedOptions[0].textContent).toBe(
+      "Excellent (EX)",
+    );
+    expect(button("Download photo").disabled).toBe(false);
+    await click(button("Download photo"));
+    expect(mocks.exportPhoto.mock.calls[1][0].labels[0]).toMatchObject({
+      itemKey: "pikachu-excellent",
+      price: "19",
+      condition: "EX",
+      isGraded: false,
+    });
+
+    await selectOption("Card condition", "MP");
+    expect(byLabel("Card condition").selectedOptions[0].textContent).toBe(
+      "Good (GD)",
+    );
+    await click(button("Download photo"));
+    expect(mocks.exportPhoto.mock.calls[2][0].labels[0].condition).toBe("MP");
+    expect(mocks.app.collectionItems[1].condition).toBe("EX");
+    expect(mocks.app.collectionItems[1].overridePrice).toBe(18.75);
+  });
+
+  it("automatically prices a clear slab match despite unread set metadata and omits raw-card condition controls", async () => {
+    mocks.app.collectionItems = [
+      card({
+        isGraded: true,
+        grade: "9",
+        gradingCompany: "PSA",
+        overridePrice: undefined,
+        gradedPrice: 49.6,
+        gradedPriceCurrency: "EUR",
+      }),
+    ];
+    mocks.scan.mockResolvedValue({
+      data: {
+        cards: [
+          detection({
+            isGraded: true,
+            grade: "9",
+            gradingCompany: "PSA",
+            setName: null,
+          }),
+        ],
+      },
+    });
+    await renderStudio();
+    await upload();
+    expect(byLabel("Label price").value).toBe("50");
+    expect(byLabel("Card condition")).toBeNull();
+    expect(button("Download photo").disabled).toBe(false);
+    await click(button("Download photo"));
+    expect(mocks.exportPhoto.mock.calls[0][0].labels[0]).toMatchObject({
+      itemKey: "pikachu",
+      price: "50",
+      priceText: formatStoryPrice(50, "EUR"),
+      isGraded: true,
+    });
   });
 
   it("recovers from scanner failure with a custom price and explicit placement confirmation", async () => {
@@ -228,18 +335,18 @@ describe("PhotoStoryStudio", () => {
     await click(button("Add a price label"));
     await editInput("Label name", "My card");
     await editInput("Label price", "12,50");
-    expect(button("Confirm this label").disabled).toBe(true);
+    await blurInput("Label price");
+    expect(byLabel("Label price").value).toBe("13");
+    expect(button("Download photo").disabled).toBe(true);
     const placement = [...host.querySelectorAll("label")].find((element) =>
       element.textContent.includes("This label is on the correct card"),
     );
     await click(placement.querySelector("input"));
-    await click(button("Confirm this label"));
     await click(button("Download photo"));
     expect(mocks.exportPhoto.mock.calls[0][0].labels[0]).toMatchObject({
       name: "My card",
-      price: "12,50",
-      priceText: formatStoryPrice(12.5, "EUR"),
-      confirmed: true,
+      price: "13",
+      priceText: formatStoryPrice(13, "EUR"),
       needsPositionReview: false,
       itemKey: null,
     });
@@ -250,17 +357,16 @@ describe("PhotoStoryStudio", () => {
     await renderStudio();
     await upload();
     expect(byLabel("Label price").value).toBe("");
-    expect(button("Confirm this label").disabled).toBe(true);
     expect(button("Download photo").disabled).toBe(true);
     expect(host.textContent).toContain("Enter a price greater than zero");
     for (const invalid of ["0", "-5", "Infinity", "12.345"]) {
       await editInput("Label price", invalid);
-      expect(button("Confirm this label").disabled, invalid).toBe(true);
       expect(button("Download photo").disabled, invalid).toBe(true);
     }
     expect(mocks.exportPhoto).not.toHaveBeenCalled();
     await editInput("Label price", "7.25");
-    await click(button("Confirm this label"));
+    await blurInput("Label price");
+    expect(byLabel("Label price").value).toBe("7");
     expect(button("Download photo").disabled).toBe(false);
   });
 
@@ -282,7 +388,7 @@ describe("PhotoStoryStudio", () => {
     expect(mocks.saveDraft.mock.lastCall[1].photos).toEqual([]);
   });
 
-  it("restores the photo, exact decimal price and saved currency without rescanning", async () => {
+  it("restores a legacy draft with rounded prices, inventory conditions and its saved currency without rescanning", async () => {
     mocks.app.currency = "USD";
     const blob = new Blob(["saved photo"], { type: "image/png" });
     const savedPhoto = {
@@ -295,6 +401,7 @@ describe("PhotoStoryStudio", () => {
         {
           id: "saved-label",
           name: "Saved card",
+          itemKey: "pikachu",
           price: "31.75",
           x: 0.3,
           y: 0.7,
@@ -321,7 +428,8 @@ describe("PhotoStoryStudio", () => {
     expect(host.textContent).toContain(
       "Your saved photo draft is ready to continue",
     );
-    expect(byLabel("Label price").value).toBe("31.75");
+    expect(byLabel("Label price").value).toBe("32");
+    expect(byLabel("Card condition").value).toBe("NM");
     expect(byLabel("Export size").value).toBe("story");
     expect(mocks.prepare).not.toHaveBeenCalled();
     expect(mocks.scan).not.toHaveBeenCalled();
@@ -330,14 +438,68 @@ describe("PhotoStoryStudio", () => {
       id: savedPhoto.id,
       blob,
       labels: [
-        { ...savedPhoto.labels[0], priceText: formatStoryPrice(31.75, "EUR") },
+        {
+          ...savedPhoto.labels[0],
+          price: "32",
+          priceText: formatStoryPrice(32, "EUR"),
+          condition: "NM",
+          isGraded: false,
+        },
       ],
     });
     expect(mocks.exportPhoto.mock.calls[0][1]).toMatchObject({
       currency: "EUR",
       format: "story",
       labelScale: 1.2,
+      showCondition: true,
     });
+  });
+
+  it("fills a linked legacy draft's missing inventory price but preserves a price the user clears afterward", async () => {
+    mocks.loadDraft.mockResolvedValue({
+      activeId: "legacy-linked-photo",
+      photos: [
+        {
+          id: "legacy-linked-photo",
+          name: "legacy.jpg",
+          blob: new Blob(["saved photo"], { type: "image/png" }),
+          width: 1200,
+          height: 900,
+          labels: [
+            {
+              id: "legacy-linked-label",
+              name: "Pikachu",
+              itemKey: "pikachu",
+              detected: detection(),
+              price: "",
+              x: 0.3,
+              y: 0.7,
+              width: 0.24,
+              confirmed: false,
+              needsPositionReview: false,
+            },
+          ],
+        },
+      ],
+    });
+    await renderStudio();
+    expect(byLabel("Label price").value).toBe("13");
+    expect(byLabel("Card condition").value).toBe("NM");
+    expect(button("Download photo").disabled).toBe(false);
+    expect(mocks.scan).not.toHaveBeenCalled();
+
+    await editInput("Label price", "");
+    mocks.app.collectionItems = [card({ overridePrice: 20 })];
+    await renderStudio();
+    expect(byLabel("Label price").value).toBe("");
+    expect(button("Download photo").disabled).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(mocks.saveDraft.mock.lastCall[1].photos[0].labels[0]).toMatchObject({
+      itemKey: "pikachu",
+      price: "",
+      priceSource: "manual",
+    });
+    expect(downloaded).toEqual([]);
   });
 
   it("preserves measured placement when a second card needs a manual placement check", async () => {
@@ -363,7 +525,6 @@ describe("PhotoStoryStudio", () => {
       element.textContent.includes("This label is on the correct card"),
     );
     await click(placement.querySelector("input"));
-    await click(button("Confirm this label"));
     await click(button("Download photo"));
     const labels = mocks.exportPhoto.mock.calls[0][0].labels;
     expect(labels[0]).toMatchObject({
@@ -372,8 +533,7 @@ describe("PhotoStoryStudio", () => {
     });
     expect(labels[1]).toMatchObject({
       name: "Charmander",
-      price: "8.25",
-      confirmed: true,
+      price: "8",
       needsPositionReview: false,
     });
   });
@@ -446,7 +606,7 @@ describe("PhotoStoryStudio", () => {
     );
     await click(byLabel("Edit photo 2: second.jpg"));
     expect(byLabel("Label name").value).toBe("Charmander");
-    expect(byLabel("Label price").value).toBe("8.25");
+    expect(byLabel("Label price").value).toBe("8");
     expect(button("Download photo").disabled).toBe(false);
     expect(mocks.scan).toHaveBeenCalledTimes(2);
   });

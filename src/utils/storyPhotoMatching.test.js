@@ -10,17 +10,18 @@ vi.mock("./cardHelpers", () => ({
       item.testMetrics || { suggested: 0, tcg: 0, cmAvg: 0, cmLowest: 0 },
   ),
 }));
-
 import { computeItemMetrics, convertCurrency } from "./cardHelpers";
 import {
   formatStoryPrice,
   getInventoryKey,
   getStoryPrice,
+  isStoryGraded,
   matchPhotoCard,
   parseStoryPrice,
+  roundStoryPrice,
 } from "./storyPhotoMatching";
 
-const inventoryCard = (changes = {}) => ({
+const card = (changes = {}) => ({
   entryId: "pikachu-nm",
   cardId: "base-58",
   name: "Pikachu",
@@ -34,7 +35,7 @@ const inventoryCard = (changes = {}) => ({
   overridePriceCurrency: "EUR",
   ...changes,
 });
-const scannedCard = (changes = {}) => ({
+const scan = (changes = {}) => ({
   name: "Pikachu",
   collectorNumber: "58/102",
   setName: "Base Set",
@@ -42,11 +43,14 @@ const scannedCard = (changes = {}) => ({
   language: "English",
   ...changes,
 });
-
+const slab = (changes = {}) =>
+  card({ isGraded: true, grade: "10", gradingCompany: "PSA", ...changes });
+const slabScan = (changes = {}) =>
+  scan({ isGraded: true, grade: "10", gradingCompany: "PSA", ...changes });
 beforeEach(() => vi.clearAllMocks());
 
-describe("story prices", () => {
-  it("accepts decimal comma and point without interpreting thousands separators", () => {
+describe("whole story prices", () => {
+  it("parses decimal prices from manual input and legacy drafts", () => {
     expect(parseStoryPrice(" 12,75 ")).toBe(12.75);
     expect(parseStoryPrice("12.75")).toBe(12.75);
     expect(parseStoryPrice(12.75)).toBe(12.75);
@@ -73,120 +77,116 @@ describe("story prices", () => {
       1e12,
     ]) {
       expect(parseStoryPrice(value), String(value)).toBeNull();
+      expect(roundStoryPrice(value), String(value)).toBeNull();
     }
   });
-
-  it("preserves cents in the displayed price instead of rounding to whole currency", () => {
-    expect(formatStoryPrice(12.75, "EUR")).toContain("12.75");
-    expect(formatStoryPrice(12.5, "USD")).toContain("12.50");
-    expect(formatStoryPrice(12.75, "ISK")).toContain("12.75");
+  it("rounds to the nearest whole price or up when requested, never showing zero", () => {
+    expect(roundStoryPrice(12.49)).toBe(12);
+    expect(roundStoryPrice("12,50")).toBe(13);
+    expect(roundStoryPrice(12.01, true)).toBe(13);
+    expect(roundStoryPrice(12, true)).toBe(12);
+    expect(roundStoryPrice(0.01)).toBe(1);
+    expect(roundStoryPrice(1e9)).toBe(1e9);
+  });
+  it("formats whole amounts without decimals, including the fallback", () => {
+    for (const currency of ["EUR", "USD", "ISK"])
+      expect(formatStoryPrice(12.75, currency)).toBe(
+        new Intl.NumberFormat(undefined, {
+          style: "currency",
+          currency,
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0,
+        }).format(13),
+      );
+    expect(formatStoryPrice(0.01, "EUR")).toContain("1");
+    expect(formatStoryPrice(12.75, "invalid-currency")).toBe(
+      "invalid-currency 13",
+    );
     expect(formatStoryPrice(null, "EUR")).toBe("—");
   });
-
-  it("uses the inventory override over a graded or market price and converts its currency", () => {
-    expect(
-      getStoryPrice(
-        inventoryCard({
-          isGraded: true,
-          gradedPrice: 900,
-          overridePrice: "12,75",
-          overridePriceCurrency: "USD",
-        }),
-        "EUR",
-      ),
-    ).toBeCloseTo(10.2);
+  it("converts overrides before rounding and before slab or market prices", () => {
+    const item = slab({
+      gradedPrice: 900,
+      overridePrice: "12,75",
+      overridePriceCurrency: "USD",
+    });
+    expect(getStoryPrice(item, "EUR")).toBe(10);
+    expect(getStoryPrice(item, "EUR", true)).toBe(11);
     expect(convertCurrency).toHaveBeenCalledWith(12.75, "EUR", "USD");
     expect(computeItemMetrics).not.toHaveBeenCalled();
   });
-
-  it("follows the inventory graded-price precedence and USD default", () => {
+  it("uses inventory graded-price precedence and USD defaults for inferred slabs too", () => {
     expect(
       getStoryPrice(
-        inventoryCard({
-          overridePrice: null,
-          isGraded: true,
-          gradedPrice: 100,
-          manualPrice: 20,
-        }),
+        slab({ overridePrice: null, gradedPrice: 100, manualPrice: 20 }),
         "EUR",
       ),
     ).toBe(80);
     expect(
       getStoryPrice(
-        inventoryCard({
+        slab({
           overridePrice: null,
-          isGraded: true,
           gradedPrice: 100,
           gradedPriceCurrency: "GBP",
         }),
         "EUR",
       ),
     ).toBe(160);
-  });
-
-  it("converts manual prices and preserves implicit user-currency overrides", () => {
     expect(
       getStoryPrice(
-        inventoryCard({
+        slab({ isGraded: false, overridePrice: null, gradedPrice: 100 }),
+        "EUR",
+      ),
+    ).toBe(80);
+  });
+  it("converts manual prices and respects implicitly stored user currencies", () => {
+    expect(
+      getStoryPrice(
+        card({
           overridePrice: null,
           manualPrice: "20.50",
           manualPriceCurrency: "USD",
         }),
         "EUR",
       ),
-    ).toBeCloseTo(16.4);
+    ).toBe(16);
+    expect(getStoryPrice(card({ overridePriceCurrency: null }), "EUR")).toBe(
+      13,
+    );
     expect(
-      getStoryPrice(inventoryCard({ overridePriceCurrency: null }), "EUR"),
-    ).toBe(12.75);
-    expect(
-      getStoryPrice(
-        inventoryCard({ overridePrice: null, customPrice: 22.5 }),
-        "EUR",
-      ),
-    ).toBe(22.5);
+      getStoryPrice(card({ overridePrice: null, customPrice: 22.5 }), "EUR"),
+    ).toBe(23);
   });
-
-  it("uses the same seller ask as the inventory and only rounds when requested", () => {
-    const item = inventoryCard({
+  it("rounds the inventory seller ask and uses market fallback only if unavailable", () => {
+    const item = card({
       overridePrice: null,
       testMetrics: { suggested: 15.25, tcg: 10, cmAvg: 12 },
     });
-    expect(getStoryPrice(item, "EUR")).toBe(15.25);
+    expect(getStoryPrice(item, "EUR")).toBe(15);
     expect(getStoryPrice(item, "EUR", true)).toBe(16);
     expect(computeItemMetrics).toHaveBeenCalledWith(item, "EUR");
-  });
-
-  it("uses the preferred source only when no inventory seller ask is available", () => {
-    const item = inventoryCard({
-      overridePrice: null,
+    const fallback = {
+      ...item,
       testMetrics: { suggested: 0, tcg: 10, cmAvg: 12.5 },
-    });
-    expect(getStoryPrice(item, "EUR", false, "cardmarket")).toBe(12.5);
-    expect(getStoryPrice(item, "EUR", false, "tcgplayer")).toBe(10);
+    };
+    expect(getStoryPrice(fallback, "EUR", false, "cardmarket")).toBe(13);
+    expect(getStoryPrice(fallback, "EUR", false, "tcgplayer")).toBe(10);
   });
-
-  it("does not turn unavailable prices or invalid explicit overrides into zero or another price", () => {
-    for (const overridePrice of [0, "bad", Infinity, -20]) {
+  it("leaves unknown prices empty and never substitutes a raw price for a slab", () => {
+    for (const overridePrice of [0, "bad", Infinity, -20])
       expect(
         getStoryPrice(
-          inventoryCard({
-            overridePrice,
-            gradedPrice: 300,
-            testMetrics: { suggested: 50 },
-          }),
+          card({ overridePrice, testMetrics: { suggested: 50 } }),
           "EUR",
         ),
       ).toBeNull();
-    }
-    expect(
-      getStoryPrice(inventoryCard({ overridePrice: null }), "EUR"),
-    ).toBeNull();
+    expect(getStoryPrice(card({ overridePrice: null }), "EUR")).toBeNull();
     expect(getStoryPrice(null, "EUR")).toBeNull();
     expect(
       getStoryPrice(
-        inventoryCard({
+        slab({
+          isGraded: false,
           overridePrice: null,
-          isGraded: true,
           gradedPrice: null,
           testMetrics: { suggested: 25 },
         }),
@@ -196,62 +196,86 @@ describe("story prices", () => {
   });
 });
 
-describe("inventory entry identity", () => {
-  it("prefers the inventory entry ID and keeps copies sharing a catalog ID distinct", () => {
-    expect(getInventoryKey(inventoryCard())).toBe("pikachu-nm");
-    const item = inventoryCard({ entryId: null });
+describe("inventory identity and slab detection", () => {
+  it("prefers entry IDs and keeps copies sharing catalog IDs distinct", () => {
+    expect(getInventoryKey(card())).toBe("pikachu-nm");
+    const item = card({ entryId: null });
     expect(getInventoryKey(item, 0)).not.toBe(getInventoryKey(item, 1));
     expect(getInventoryKey(item, 0)).not.toBe(
       getInventoryKey({ ...item, condition: "LP" }, 0),
     );
   });
+  it("identifies slab metadata even without a correct boolean flag", () => {
+    for (const item of [
+      slab(),
+      { grade: "9" },
+      { isGraded: false, gradingCompany: "PSA" },
+      { isGraded: true },
+    ])
+      expect(isStoryGraded(item)).toBe(true);
+    for (const item of [
+      null,
+      {},
+      { condition: "NM" },
+      { grade: null, gradingCompany: "" },
+      { grade: "N/A", gradingCompany: "Unknown" },
+      { grade: "Raw", gradingCompany: "Ungraded" },
+    ])
+      expect(isStoryGraded(item)).toBe(false);
+  });
 });
 
-describe("photo card matching", () => {
-  it("matches a unique card using name, number, set and compatible details", () => {
-    const item = inventoryCard();
+describe("automatic inventory pricing", () => {
+  it("applies a whole inventory price to a unique exact match", () => {
+    const item = card();
     const result = matchPhotoCard(
-      scannedCard({
+      scan({
         name: " PIKACHU ",
         collectorNumber: "#058 / 102",
         language: "en",
       }),
       [item],
-      { currency: "EUR" },
     );
-    expect(result).toMatchObject({ item, confident: true, price: 12.75 });
-    expect(result.candidates[0]).toMatchObject({ item, price: 12.75 });
+    expect(result).toMatchObject({ item, confident: true, price: 13 });
+    expect(result.candidates[0]).toMatchObject({ item, price: 13 });
+    expect(result.reason).toContain("Applied");
   });
-
-  it("permits a missing printed denominator when the set identifies the printing", () => {
+  it("automatically prices clear slabs without requiring a readable set or language", () => {
+    const item = slab({
+      name: "Mew",
+      number: "151",
+      set: "CoroCoro Comics",
+      language: "Japanese",
+      overridePrice: 280.49,
+    });
+    const detected = slabScan({
+      name: "Mew",
+      collectorNumber: "#151",
+      setName: null,
+      language: null,
+      grade: "10.0",
+      confidence: 0.97,
+    });
+    expect(matchPhotoCard(detected, [item])).toMatchObject({
+      item,
+      price: 280,
+      confident: true,
+    });
+  });
+  it("uses slab metadata when old inventory or scan flags are false", () => {
+    const item = slab({ isGraded: false, overridePrice: 85.5 });
+    expect(matchPhotoCard(slabScan({ isGraded: false }), [item])).toMatchObject(
+      { item, price: 86 },
+    );
     expect(
-      matchPhotoCard(scannedCard({ collectorNumber: "58" }), [inventoryCard()])
-        .confident,
-    ).toBe(true);
+      matchPhotoCard(
+        slabScan({ gradingCompany: "Professional Sports Authenticator" }),
+        [item],
+      ).item,
+    ).toBe(item);
   });
-
-  it("keeps low-confidence scans for review even when the suggested identity exists", () => {
-    const result = matchPhotoCard(scannedCard({ confidence: 0.4 }), [
-      inventoryCard(),
-    ]);
-    expect(result).toMatchObject({ item: null, price: null, confident: false });
-    expect(result.candidates).toHaveLength(1);
-  });
-
-  it.each(["KR", "CN"])(
-    "recognizes the scanner language code %s",
-    (language) => {
-      const item = inventoryCard({
-        language: language === "KR" ? "Korean" : "Chinese",
-      });
-      expect(matchPhotoCard(scannedCard({ language }), [item]).item).toBe(item);
-      expect(
-        matchPhotoCard(scannedCard({ language }), [inventoryCard()]).item,
-      ).toBeNull();
-    },
-  );
-
   it.each([
+    0.4,
     null,
     undefined,
     true,
@@ -264,188 +288,198 @@ describe("photo card matching", () => {
     Infinity,
     -1,
     1.1,
-  ])("requires review for malformed supplied confidence %j", (confidence) => {
+  ])(
+    "applies a useful price even with low or malformed scan confidence %j",
+    (confidence) => {
+      const item = card();
+      expect(matchPhotoCard(scan({ confidence }), [item])).toMatchObject({
+        item,
+        price: 13,
+        confident: false,
+      });
+    },
+  );
+  it("applies prices despite missing set, language, company or raw/slab scanner flags", () => {
+    const item = card();
+    for (const changes of [
+      { setName: null },
+      { language: null },
+      { isGraded: undefined },
+    ])
+      expect(matchPhotoCard(scan(changes), [item])).toMatchObject({
+        item,
+        price: 13,
+      });
+    const graded = slab();
     expect(
-      matchPhotoCard(scannedCard({ confidence }), [inventoryCard()]),
-    ).toMatchObject({ item: null, price: null, confident: false });
+      matchPhotoCard(slabScan({ gradingCompany: null }), [graded]),
+    ).toMatchObject({ item: graded, price: 13, confident: false });
   });
-
-  it("requires review when a supposedly raw card also has a grade or grading company", () => {
+  it("uses exact name plus set when the collector number could not be read", () => {
+    const item = card();
     expect(
-      matchPhotoCard(scannedCard({ grade: "9", gradingCompany: "PSA" }), [
-        inventoryCard({ grade: "9", gradingCompany: "PSA" }),
-      ]),
-    ).toMatchObject({ item: null, price: null, confident: false });
+      matchPhotoCard(scan({ collectorNumber: null }), [item]),
+    ).toMatchObject({ item, price: 13, confident: false });
+    expect(
+      matchPhotoCard(scan({ collectorNumber: null, setName: null }), [item]),
+    ).toMatchObject({ item: null, price: null });
   });
-
-  it("preserves numbered subset prefixes and refuses a contradictory denominator", () => {
+  it("uses partial and OCR names with a matching collector number", () => {
+    const item = card({ name: "Charizard ex", number: "006/165" });
+    for (const name of ["Charizard", "Charzard ex", "Charizardex"])
+      expect(
+        matchPhotoCard(scan({ name, collectorNumber: "6/165" }), [item]),
+      ).toMatchObject({ item, price: 13 });
     expect(
-      matchPhotoCard(scannedCard({ collectorNumber: "TG58" }), [
-        inventoryCard(),
+      matchPhotoCard(scan({ name: "Charzard ex", collectorNumber: null }), [
+        item,
       ]).item,
     ).toBeNull();
+  });
+  it("does not use unrelated cards just because their number matches", () => {
+    for (const name of [null, "Charizard", "Mewtwo", "Unknown Card", "Pokemon"])
+      expect(matchPhotoCard(scan({ name }), [card()])).toMatchObject({
+        item: null,
+        price: null,
+      });
     expect(
-      matchPhotoCard(scannedCard({ collectorNumber: "58/120" }), [
-        inventoryCard(),
-      ]).item,
+      matchPhotoCard(scan({ name: "Mew" }), [card({ name: "Mewtwo" })]).item,
     ).toBeNull();
   });
-
+  it("ranks a plausible OCR match above unrelated names sharing a number", () => {
+    const likely = card({
+      name: "Pikachu ex",
+      set: "Different set",
+      language: "Japanese",
+    });
+    const unrelated = card({ entryId: "unrelated", name: "Charizard" });
+    const result = matchPhotoCard(scan(), [unrelated, likely]);
+    expect(result.item).toBe(likely);
+    expect(result.candidates[0].item).toBe(likely);
+  });
+  it("preserves number prefixes and refuses different or malformed denominators", () => {
+    expect(
+      matchPhotoCard(scan({ collectorNumber: "58" }), [card()]).price,
+    ).toBe(13);
+    for (const collectorNumber of ["TG58", "58/120", "58/102/100", "59"])
+      expect(matchPhotoCard(scan({ collectorNumber }), [card()])).toMatchObject(
+        { item: null, price: null },
+      );
+  });
   it.each([
-    [{ name: "Pikachu V" }, {}],
-    [{ setName: "Jungle" }, {}],
-    [{ language: "Japanese" }, {}],
     [{ isGraded: true, grade: "10", gradingCompany: "PSA" }, {}],
     [
       { isGraded: false },
       { isGraded: true, grade: "10", gradingCompany: "PSA" },
     ],
-    [{ condition: "LP" }, {}],
-    [{ variant: "Reverse Holo" }, { variant: "Holo" }],
+    [
+      { isGraded: true, grade: "9", gradingCompany: "PSA" },
+      { isGraded: true, grade: "10", gradingCompany: "PSA" },
+    ],
+    [
+      { isGraded: true, grade: "10", gradingCompany: "CGC" },
+      { isGraded: true, grade: "10", gradingCompany: "PSA" },
+    ],
   ])(
-    "does not auto-price a contradictory identity (%j)",
+    "rejects explicit grade, grader or raw/slab incompatibility (%j)",
     (scanChanges, itemChanges) => {
       expect(
-        matchPhotoCard(scannedCard(scanChanges), [inventoryCard(itemChanges)]),
+        matchPhotoCard(scan(scanChanges), [card(itemChanges)]),
       ).toMatchObject({ item: null, price: null, confident: false });
     },
   );
-
-  it("never chooses arbitrarily between different conditions or variants", () => {
-    const nm = inventoryCard();
-    const lp = inventoryCard({
-      entryId: "lp",
-      condition: "LP",
-      overridePrice: 9,
-    });
-    expect(matchPhotoCard(scannedCard(), [nm, lp])).toMatchObject({
-      item: null,
-      price: null,
-      confident: false,
-    });
+  it("selects the right slab among raw cards, other grades and other graders", () => {
+    const target = slab({ entryId: "psa10", overridePrice: 99.75 });
+    const alternatives = [
+      card(),
+      slab({ grade: "9", entryId: "psa9" }),
+      slab({ gradingCompany: "BGS", entryId: "bgs10" }),
+    ];
     expect(
-      matchPhotoCard(scannedCard({ condition: "Near Mint" }), [nm, lp]).item,
-    ).toBe(nm);
-    const holo = inventoryCard({ entryId: "holo", variant: "Holo" });
-    const reverse = inventoryCard({
-      entryId: "reverse",
-      variant: "Reverse Holo",
-    });
-    expect(matchPhotoCard(scannedCard(), [holo, reverse]).item).toBeNull();
-    expect(
-      matchPhotoCard(scannedCard({ variant: "Holo" }), [holo, reverse]).item,
-    ).toBe(holo);
+      matchPhotoCard(slabScan({ setName: null }), [...alternatives, target]),
+    ).toMatchObject({ item: target, price: 100, confident: true });
   });
-
-  it("still requires review for separate identical entries", () => {
+  it("applies a stable best suggestion among duplicate conditions and variants", () => {
+    const nm = card();
+    const lp = card({ entryId: "lp", condition: "LP", overridePrice: 9 });
+    const result = matchPhotoCard(scan(), [nm, lp]);
+    expect(result).toMatchObject({ item: nm, price: 13, confident: false });
+    expect(result.reason).toContain("Several entries");
     expect(
-      matchPhotoCard(scannedCard(), [
-        inventoryCard(),
-        inventoryCard({ entryId: "copy" }),
-      ]).item,
-    ).toBeNull();
+      matchPhotoCard(scan({ condition: "Lightly Played" }), [nm, lp]).item,
+    ).toBe(lp);
+    const holo = card({ entryId: "holo", variant: "Holo" });
+    const reverse = card({ entryId: "reverse", variant: "Reverse Holo" });
+    expect(matchPhotoCard(scan(), [holo, reverse]).item).toBe(holo);
+    expect(
+      matchPhotoCard(scan({ variant: "Reverse Holo" }), [holo, reverse]).item,
+    ).toBe(reverse);
   });
-
-  it("uses grade and grading company to distinguish slabs", () => {
-    const psa9 = inventoryCard({
-      entryId: "psa9",
-      isGraded: true,
-      grade: "9",
-      gradingCompany: "PSA",
-    });
-    const psa10 = inventoryCard({
-      entryId: "psa10",
-      isGraded: true,
-      grade: "10",
-      gradingCompany: "PSA",
-    });
-    const bgs10 = inventoryCard({
-      entryId: "bgs10",
-      isGraded: true,
-      grade: "10",
-      gradingCompany: "BGS",
-    });
-    const scan = scannedCard({
-      isGraded: true,
-      grade: "10.0",
-      gradingCompany: "PSA",
-    });
-    expect(matchPhotoCard(scan, [psa9, psa10, bgs10]).item).toBe(psa10);
+  it("prefers priced entries on equal identity scores and preserves ordering otherwise", () => {
+    const unavailable = card({ entryId: "unknown-price", overridePrice: null });
+    const priced = card({ entryId: "priced" });
+    const other = card({ entryId: "other", overridePrice: 30 });
+    const result = matchPhotoCard(scan(), [unavailable, priced, other]);
+    expect(result).toMatchObject({ item: priced, price: 13, confident: false });
     expect(
-      matchPhotoCard({ ...scan, grade: "8" }, [psa9, psa10]).item,
-    ).toBeNull();
-    expect(
-      matchPhotoCard({ ...scan, gradingCompany: "CGC" }, [psa10]).item,
-    ).toBeNull();
-    expect(
-      matchPhotoCard({ ...scan, gradingCompany: "" }, [psa10]).item,
-    ).toBeNull();
+      result.candidates.map((candidate) => candidate.item.entryId),
+    ).toEqual(["priced", "other", "unknown-price"]);
   });
-
-  it("retains useful candidates without auto-matching when the scan lacks key details", () => {
-    for (const changes of [
-      { collectorNumber: "" },
-      { name: "" },
-      { setName: "" },
-      { isGraded: undefined },
-    ]) {
-      const result = matchPhotoCard(scannedCard(changes), [inventoryCard()]);
-      expect(result).toMatchObject({
-        item: null,
-        price: null,
+  it("ranks exact optional details higher but still fills a price when they disagree", () => {
+    const english = card();
+    const japanese = card({
+      entryId: "jp",
+      language: "Japanese",
+      overridePrice: 40,
+    });
+    expect(
+      matchPhotoCard(scan({ language: "JP" }), [english, japanese]).item,
+    ).toBe(japanese);
+    for (const change of [
+      { language: "JP" },
+      { setName: "Different set" },
+      { variant: "Reverse Holo" },
+      { condition: "LP" },
+    ])
+      expect(matchPhotoCard(scan(change), [english])).toMatchObject({
+        item: english,
+        price: 13,
         confident: false,
       });
-      expect(result.candidates).toHaveLength(1);
-    }
   });
-
-  it("requires review when detected details cannot be verified from the inventory", () => {
-    expect(
-      matchPhotoCard(scannedCard({ language: "Japanese" }), [
-        inventoryCard({ language: null }),
-      ]).item,
-    ).toBeNull();
-    expect(
-      matchPhotoCard(scannedCard({ variant: "Reverse Holo" }), [
-        inventoryCard(),
-      ]).item,
-    ).toBeNull();
-  });
-
-  it("filters hidden and out-of-stock entries before deciding whether a match is unique", () => {
-    const available = inventoryCard();
+  it.each(["KR", "CN"])(
+    "recognizes the scanner language code %s",
+    (language) => {
+      const correct = card({
+        entryId: language,
+        language: language === "KR" ? "Korean" : "Chinese",
+      });
+      expect(matchPhotoCard(scan({ language }), [card(), correct]).item).toBe(
+        correct,
+      );
+    },
+  );
+  it("excludes hidden and sold inventory from suggestions and selection", () => {
+    const available = card();
     const others = [
-      inventoryCard({ entryId: "hidden", excludeFromSale: true }),
-      inventoryCard({ entryId: "sold", quantity: 0 }),
-      inventoryCard({ entryId: "sold-string", quantity: "0" }),
-      inventoryCard({ entryId: "invalid-qty", quantity: -1 }),
+      card({ excludeFromSale: true }),
+      card({ quantity: 0 }),
+      card({ quantity: "0" }),
+      card({ quantity: -1 }),
     ];
-    const result = matchPhotoCard(scannedCard(), [available, ...others]);
+    const result = matchPhotoCard(scan(), [...others, available]);
     expect(result.item).toBe(available);
     expect(result.candidates).toHaveLength(1);
-    expect(matchPhotoCard(scannedCard(), others).candidates).toHaveLength(0);
+    expect(matchPhotoCard(scan(), others).candidates).toHaveLength(0);
   });
-
-  it("matches identity without inventing a price when market data is unavailable", () => {
-    const item = inventoryCard({ overridePrice: null });
-    expect(matchPhotoCard(scannedCard(), [item])).toMatchObject({
-      item,
-      confident: true,
-      price: null,
-    });
-  });
-
-  it("returns an empty safe result for malformed or unrelated input", () => {
+  it("never invents a price when compatible inventory lacks one", () => {
+    const item = card({ overridePrice: null });
+    expect(matchPhotoCard(scan(), [item])).toMatchObject({ item, price: null });
     expect(matchPhotoCard(null, null)).toMatchObject({
       item: null,
       price: null,
       candidates: [],
       confident: false,
     });
-    expect(
-      matchPhotoCard(scannedCard(), [
-        inventoryCard({ name: "Charizard", number: "4" }),
-      ]).candidates,
-    ).toHaveLength(0);
   });
 });
