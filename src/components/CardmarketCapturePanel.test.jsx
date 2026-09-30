@@ -14,6 +14,7 @@ vi.mock('@/contexts/AppContext', () => ({ useApp: () => mocks.app }));
 vi.mock('@/utils/cardmarketCompanion', () => ({ cardmarketRequest: mocks.request, saveCardmarketBinding: mocks.save, saveCardmarketOffers: mocks.save }));
 import { CardmarketSyncPanel } from './CardmarketSyncPanel';
 import { createCardmarketBinding, cardmarketInventoryKey } from '../utils/cardmarketSync';
+import { readCardmarketMatchDraft } from '../utils/cardmarketMatchDraft';
 
 let host, root, status, report;
 const makeCard = name => {
@@ -24,6 +25,7 @@ const captured = card => ({ entryId: card.entryId, inventoryKey: card.cardmarket
 const failed = (card, patch = {}) => ({ entryId: card.entryId, inventoryKey: card.cardmarketBinding.inventoryKey, binding: structuredClone(card.cardmarketBinding), name: card.name, error: 'Cardmarket did not load the next offer page completely.', code: 'pagination-stalled', failedAt: new Date().toISOString(), ...patch });
 const button = name => [...host.querySelectorAll('button')].find(el => el.textContent === name);
 beforeEach(() => {
+  localStorage.clear();
   vi.useFakeTimers(); globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   mocks.app = { user: { uid: 'test' }, db: {}, collectionItems: [makeCard('Blastoise'), makeCard('Charizard')], currency: 'EUR' };
   mocks.save.mockReset(); mocks.request.mockReset();
@@ -31,6 +33,76 @@ beforeEach(() => {
   report = { runId: 'test', captures: [captured(mocks.app.collectionItems[0])] };
   mocks.request.mockImplementation(async action => action === 'status' ? status : action === 'report' ? structuredClone(report) : {});
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+});
+
+it('keeps a no-match manual draft on failed saves, shows feedback on its card, and reopens the successful saved match', async () => {
+  const card = { entryId: 'snorlax', name: 'Hungry Snorlax', set: 'Unknown Set', number: '143', language: 'English', condition: 'NM', overridePrice: 400 };
+  const url = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Unnumbered-Promos/Hungry-Snorlax';
+  mocks.app.collectionItems = [card];
+  const render = () => act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  await render();
+  const input = host.querySelector('input[type="url"]');
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, url);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  for (const [label, value] of [['Reverse holo', 'non-reverse'], ['First edition', 'false']]) act(() => {
+    const field = [...host.querySelectorAll('article label')].find(el => el.textContent.startsWith(label)).querySelector('select');
+    field.value = value; field.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  act(() => host.querySelector('article input[type="checkbox"]').click());
+  mocks.save.mockRejectedValueOnce(new Error('Permission denied. Please sign in again.'));
+  await act(async () => button('Save product match').click());
+  expect(host.querySelector('article [role="alert"]').textContent).toContain('Permission denied');
+  expect(host.querySelector('input[type="url"]').value).toBe(url);
+  expect(readCardmarketMatchDraft('test', card)?.customUrl).toBe(url);
+  expect(button('Save product match').disabled).toBe(false);
+
+  let finishSave;
+  mocks.save.mockImplementation((_db, _uid, current, choice) => new Promise(resolve => {
+    finishSave = () => {
+      const binding = createCardmarketBinding(current, choice);
+      mocks.app.collectionItems = [{ ...current, cardmarketBinding: binding }];
+      resolve(binding);
+    };
+  }));
+  await act(async () => button('Save product match').click());
+  expect(button('Saving product match…').disabled).toBe(true);
+  expect(host.querySelector('input[type="url"]').disabled).toBe(true);
+  await act(async () => finishSave());
+  await render();
+  expect(host.querySelector('article [role="status"]').textContent).toContain('Saved Hungry Snorlax product match');
+  expect(readCardmarketMatchDraft('test', card)).toBeNull();
+  expect(host.textContent).not.toContain('Draft saved in this browser');
+  await act(async () => root.render(null)); await render();
+  expect(host.querySelector('input[type="url"]').value).toBe(url);
+  expect(host.textContent).toContain('Saved product match');
+  expect(mocks.app.collectionItems[0].overridePrice).toBe(400);
+});
+
+it('does not erase a newer draft when a save finishes after closing and reopening the panel', async () => {
+  const card = { ...makeCard('Arbok'), cardmarketBinding: undefined };
+  const firstUrl = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/Arbok-EX3';
+  const secondUrl = firstUrl.replace('/Arbok-', '/Arbok-V2-');
+  mocks.app.collectionItems = [card];
+  const render = () => act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  const type = value => act(() => {
+    const input = host.querySelector('input[type="url"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  let finishSave;
+  mocks.save.mockImplementation((_db, _uid, current, choice) => new Promise(resolve => {
+    finishSave = () => resolve(createCardmarketBinding(current, choice));
+  }));
+  await render(); type(firstUrl);
+  act(() => host.querySelector('article input[type="checkbox"]').click());
+  await act(async () => button('Save product match').click());
+  await act(async () => root.render(null)); await render(); type(secondUrl);
+  await act(async () => finishSave());
+  expect(readCardmarketMatchDraft('test', card)?.customUrl).toBe(secondUrl);
+  await act(async () => root.render(null)); await render();
+  expect(host.querySelector('input[type="url"]').value).toBe(secondUrl);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers(); delete globalThis.IS_REACT_ACT_ENVIRONMENT; });
 

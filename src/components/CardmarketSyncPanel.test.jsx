@@ -8,7 +8,7 @@ const item = { entryId:'test-arbok',name:'Arbok',set:'Expedition Base Set',numbe
 const suggestion = {name:'Arbok',set:'Expedition Base Set',number:'3',productUrl:'https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/Arbok-EX3'};
 const correction = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Expedition-Base-Set/Arbok-V2-EX3';
 let root, host;
-beforeEach(()=>{globalThis.IS_REACT_ACT_ENVIRONMENT=true;host=document.createElement('div');document.body.append(host);root=createRoot(host);});
+beforeEach(()=>{localStorage.clear();globalThis.IS_REACT_ACT_ENVIRONMENT=true;host=document.createElement('div');document.body.append(host);root=createRoot(host);});
 afterEach(()=>{act(()=>root.unmount());host.remove();delete globalThis.IS_REACT_ACT_ENVIRONMENT;});
 const render = (props={}) => act(()=>root.render(<CardmarketMatchForm item={item} onSave={()=>{}} busy={false} {...props}/>));
 const input = () => host.querySelector('input[type="url"]');
@@ -38,4 +38,47 @@ it('keeps saved matches ahead of suggestions and requires review again if an aut
  render({item:{...item,cardmarketBinding:binding},candidates:[suggestion]});expect(input().value).toBe(correction);
  render({candidates:[suggestion]});act(()=>host.querySelector('input[type="checkbox"]').click());
  render({candidates:[{...suggestion,productUrl:correction}]});expect(host.querySelector('input[type="checkbox"]').checked).toBe(false);expect(host.querySelector('button').disabled).toBe(true);
+});
+
+const unmatched = { entryId: 'hungry-snorlax', name: 'Hungry Snorlax', set: 'Unknown Set', number: '143', language: 'English', condition: 'NM', overridePrice: 400 };
+const manualUrl = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Unnumbered-Promos/Hungry-Snorlax';
+const choose = (label, value) => act(() => {
+ const field = [...host.querySelectorAll('label')].find(el => el.textContent.startsWith(label)).querySelector('select');
+ field.value = value; field.dispatchEvent(new Event('change', { bubbles: true }));
+});
+
+it('retains a manually entered no-match URL and printing choices after closing and reopening, without confirming or saving it', () => {
+ const save = vi.fn(); const props = { item: unmatched, draftOwner: 'owner', onSave: save, lookupError: 'No unique expansion match in Cardmarket search.' };
+ render(props); typeUrl(manualUrl); choose('Reverse holo', 'non-reverse'); choose('First edition', 'false');
+ act(() => host.querySelector('input[type="checkbox"]').click());
+ act(() => root.render(null)); render(props);
+ expect(input().value).toBe(manualUrl);
+ expect([...host.querySelectorAll('select')].map(el => el.value)).toEqual(['English', 'NM', 'non-reverse', 'false']);
+ expect(host.querySelector('input[type="checkbox"]').checked).toBe(false);
+ expect(host.querySelector('button').disabled).toBe(true);
+ expect(host.textContent).toContain('Draft saved in this browser');
+ expect(save).not.toHaveBeenCalled();
+ act(() => host.querySelector('input[type="checkbox"]').click()); act(() => host.querySelector('button').click());
+ expect(save).toHaveBeenCalledWith(expect.objectContaining({ productUrl: manualUrl, finish: 'non-reverse', firstEdition: false, confirmed: true }));
+});
+
+it('explains each missing printing choice beside Save and distinguishes a URL draft from a saved match', () => {
+ render({ item: unmatched, draftOwner: 'owner' }); typeUrl(manualUrl);
+ expect(host.textContent).toContain('To save this match: choose reverse holo, choose first edition, check the confirmation box.');
+ choose('Reverse holo', 'non-reverse'); choose('First edition', 'false');
+ expect(host.textContent).toContain('To save this match: check the confirmation box.');
+ act(() => host.querySelector('input[type="checkbox"]').click());
+ expect(host.textContent).not.toContain('To save this match:');
+ expect(host.querySelector('button').disabled).toBe(false);
+});
+
+it('explains invalid product URLs and retains edits when browser storage is unavailable', () => {
+ const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage full'); });
+ try {
+  render({ item: unmatched, draftOwner: 'owner' }); typeUrl('https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=Snorlax');
+  expect(input().value).toContain('/Products/Search');
+  expect(host.textContent).toContain('Paste an English Cardmarket Pokémon single-product URL');
+  expect(host.textContent).toContain('This browser could not keep your draft');
+  expect(host.querySelector('button').disabled).toBe(true);
+ } finally { write.mockRestore(); }
 });

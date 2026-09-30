@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const tx = vi.hoisted(() => ({ get: vi.fn(), update: vi.fn() }));
 vi.mock('firebase/firestore', () => ({ doc: (_db, collection, uid) => ({ collection, uid }), runTransaction: (_db, callback) => callback(tx) }));
 import { saveCardmarketBinding, saveCardmarketOffers } from './cardmarketCompanion';
-import { cardmarketInventoryKey, createCardmarketBinding } from './cardmarketSync';
+import { cardmarketInventoryKey, createCardmarketBinding, summarizeCardmarketOffers } from './cardmarketSync';
 const card = { entryId: 'one', name: 'Jolteon', number: '8', set: 'EX Unseen Forces', condition: 'LP', language: 'English', isReverseHolo: true };
 const choice = { productUrl: 'https://www.cardmarket.com/en/Pokemon/Products/Singles/EX-Unseen-Forces/Jolteon-UF8', confirmed: true, language: 'English', condition: 'EX', finish: 'reverse', firstEdition: false };
 beforeEach(() => vi.clearAllMocks());
@@ -13,6 +13,25 @@ it('saves a reviewed binding against current inventory without overwriting concu
   expect(tx.update.mock.calls[0][1].items[0]).toMatchObject({ quantity: 3, buyPrice: 45, overridePrice: 90, cardmarketBinding: { finish: 'reverse', condition: 'EX' } });
   tx.get.mockResolvedValue({ data: () => ({ items: [{ ...card, isReverseHolo: false }] }) });
   await expect(saveCardmarketBinding({}, 'user', card, choice)).rejects.toThrow(/changed/);
+});
+it('persists a manually matched unknown-set card and keeps the match usable after reload and correction', async () => {
+  const manualCard = { entryId: 'hungry-snorlax', name: 'Hungry Snorlax', set: 'Unknown Set', number: '143', language: 'English', condition: 'NM', quantity: 1, overridePrice: 400 };
+  const productUrl = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Unnumbered-Promos/Hungry-Snorlax';
+  const manualChoice = { productUrl, language: 'English', condition: 'NM', finish: 'non-reverse', firstEdition: false, confirmed: true };
+  tx.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [manualCard] }) });
+
+  const binding = await saveCardmarketBinding({}, 'user', manualCard, manualChoice);
+  const reloadedCard = JSON.parse(JSON.stringify(tx.update.mock.calls[0][1].items[0]));
+  expect(reloadedCard).toMatchObject({ ...manualCard, cardmarketBinding: { ...manualChoice, inventoryKey: cardmarketInventoryKey(manualCard) } });
+  expect(createCardmarketBinding(reloadedCard, reloadedCard.cardmarketBinding)).toEqual(binding);
+  const now = Date.now();
+  const capture = { source: 'cardmarket-browser', currency: 'EUR', productUrl, inventoryKey: binding.inventoryKey, capturedAt: new Date(now).toISOString(), filters: binding, complete: true, offers: [] };
+  expect(summarizeCardmarketOffers(reloadedCard, capture, now).status).toBe('no-offers');
+
+  const correctedUrl = productUrl + '-V2';
+  tx.get.mockResolvedValue({ exists: () => true, data: () => ({ items: [{ ...reloadedCard, quantity: 2, overridePrice: 425 }] }) });
+  await saveCardmarketBinding({}, 'user', reloadedCard, { ...manualChoice, productUrl: correctedUrl });
+  expect(tx.update.mock.calls[1][1].items[0]).toMatchObject({ name: 'Hungry Snorlax', set: 'Unknown Set', number: '143', quantity: 2, overridePrice: 425, cardmarketBinding: { ...manualChoice, productUrl: correctedUrl } });
 });
 it('applies only the selected offer and refuses stale identity before a transaction write', async () => {
   const bound = { ...card, quantity: 2, cardmarketBinding: createCardmarketBinding(card, choice) };
