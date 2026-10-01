@@ -1,0 +1,8 @@
+/* Keep the shared page's sticky header and toolbar attached to the viewport.
+   The app's mobile overflow rule otherwise creates an ancestor scroll container. */
+@media (max-width: 768px) {
+  html:has(.shared-inventory-page),
+  body:has(.shared-inventory-page) {
+    overflow-x: clip;
+  }
+}
