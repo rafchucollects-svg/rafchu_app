@@ -53,22 +53,25 @@ function InventoryCard({ item, currency, roundUp }) {
 
   return (
     <article className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="relative flex aspect-[3/4] items-center justify-center bg-slate-50 p-3 sm:p-4">
-        {item.image && failedImage !== item.image ? (
-          <img
-            src={item.image}
-            alt={item.name || "Pokémon card"}
-            className="h-full w-full object-contain"
-            loading="lazy"
-            decoding="async"
-            onError={() => setFailedImage(item.image)}
-          />
-        ) : (
-          <div className="flex flex-col items-center gap-2 text-slate-500">
-            <Package className="h-9 w-9" aria-hidden="true" />
-            <span className="text-xs">Image unavailable</span>
-          </div>
-        )}
+      {/* Keep image dimensions from widening the card in Safari. */}
+      <div className="relative aspect-[3/4] w-full min-w-0 shrink-0 bg-slate-50">
+        <div className="absolute inset-0 flex min-w-0 items-center justify-center p-3 sm:p-4">
+          {item.image && failedImage !== item.image ? (
+            <img
+              src={item.image}
+              alt={item.name || "Pokémon card"}
+              className="block h-full w-full min-w-0 max-w-full object-contain"
+              loading="lazy"
+              decoding="async"
+              onError={() => setFailedImage(item.image)}
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-2 text-slate-500">
+              <Package className="h-9 w-9" aria-hidden="true" />
+              <span className="text-xs">Image unavailable</span>
+            </div>
+          )}
+        </div>
         {isNewCard(item) && (
           <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800">
             <Sparkles className="h-3 w-3" aria-hidden="true" /> New
@@ -202,10 +205,6 @@ export function SharedInventory() {
     return enrichedItems.filter(item => {
       if (filterGraded === "graded" && !item.isGraded) return false;
       if (filterGraded === "ungraded" && item.isGraded) return false;
-      if (filterGraded === "manualPrice" && !(
-        (item.overridePrice != null && !isNaN(Number(item.overridePrice))) ||
-        (item.manualPrice != null && item.manualPrice > 0)
-      )) return false;
       return !term || [item.name, item.set, item.number].some(value => String(value || "").toLowerCase().includes(term));
     });
   }, [enrichedItems, searchTerm, filterGraded]);
@@ -315,7 +314,6 @@ export function SharedInventory() {
                   <option value="all">All cards</option>
                   <option value="graded">Graded</option>
                   <option value="ungraded">Ungraded</option>
-                  <option value="manualPrice">Seller-priced</option>
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden="true" />
               </div>

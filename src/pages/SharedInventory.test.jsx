@@ -168,11 +168,17 @@ describe("shared inventory browsing", () => {
     expectInventoryStats();
   });
 
-  it("lets visitors browse seller-priced cards", async () => {
+  it("omits pricing-method filters while showing the seller's asking price", async () => {
     await render();
-    expect([...namedControl("Card type").options].find((option) => option.value === "manualPrice")?.textContent).toBe("Seller-priced");
-    await select("Card type", "manualPrice");
-    expect(cardNames()).toEqual(["Alpha Pikachu"]);
+    expect([...namedControl("Card type").options].map((option) => ({ value: option.value, label: normalize(option.textContent) }))).toEqual([
+      { value: "all", label: "All cards" },
+      { value: "graded", label: "Graded" },
+      { value: "ungraded", label: "Ungraded" },
+    ]);
+    expect(host.textContent).not.toMatch(/seller-priced|manual price/i);
+    const pikachu = [...host.querySelectorAll("article")].find((card) => card.textContent.includes("Alpha Pikachu"));
+    expect(pikachu.textContent).toContain("EUR 9.00");
+    expect(mocks.convertCurrency).toHaveBeenCalledWith(9, "EUR", "USD");
     expectInventoryStats();
   });
 
