@@ -1,619 +1,367 @@
 import { useMemo, useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Store, Package, Search, LogIn, Award, MapPin, Sparkles, TrendingUp, Filter, ArrowUpDown, Clock } from "lucide-react";
+import { Store, Package, Search, LogIn, Award, MapPin, Sparkles, ChevronDown, X, LoaderCircle } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { LoginModal } from "@/components/LoginModal";
-import {  formatCurrency, computeItemMetrics, getConditionColorClass, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
+import { formatCurrency, computeItemMetrics, getConditionColorClass, convertCurrency, getConditionDisplayLabel } from "@/utils/cardHelpers";
 import { getDoc, doc } from "firebase/firestore";
+import "./SharedInventory.css";
 
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
-const isNewCard = (item) => item.addedAt && (Date.now() - item.addedAt) < TWO_WEEKS_MS;
+const isNewCard = (item) => {
+  const age = Date.now() - Number(item.addedAt);
+  return Boolean(item.addedAt) && age >= 0 && age < TWO_WEEKS_MS;
+};
 
-/**
- * Shared Inventory View (Read-only)
- * Displays a vendor's inventory when accessed via ?inventory={userId}
- */
+const VARIANT_CONFIG = {
+  isReverseHolo: { label: "Reverse Holo", color: "bg-blue-50 text-blue-800" },
+  isStampedPromo: { label: "Stamped", color: "bg-purple-50 text-purple-800" },
+  isSealed: { label: "Sealed", color: "bg-emerald-50 text-emerald-800" },
+  isAutographed: { label: "Autographed", color: "bg-rose-50 text-rose-800" },
+  isFirstEdition: { label: "1st Edition", color: "bg-amber-50 text-amber-900" },
+  isPokeBall: { label: "Poké Ball", color: "bg-red-50 text-red-800" },
+  isMasterBall: { label: "Master Ball", color: "bg-violet-50 text-violet-800" },
+  isUnlimited: { label: "Unlimited", color: "bg-slate-100 text-slate-700" },
+};
 
+// Use the same seller price for both sorting and card display.
+function getDisplayPrice(item, currency, roundUp) {
+  let price;
+  if (item.overridePrice != null) {
+    const sourceCurrency = item.overridePriceCurrency || currency;
+    price = sourceCurrency !== currency
+      ? convertCurrency(item.overridePrice, currency, sourceCurrency)
+      : Number(item.overridePrice);
+  } else if (item.isGraded && item.gradedPrice) {
+    const sourceCurrency = item.gradedPriceCurrency || "USD";
+    price = sourceCurrency !== currency
+      ? convertCurrency(item.gradedPrice, currency, sourceCurrency)
+      : Number(item.gradedPrice);
+  } else {
+    price = computeItemMetrics(item, currency).suggested;
+  }
+  return roundUp ? Math.ceil(price) : price;
+}
+
+function InventoryCard({ item, currency, roundUp }) {
+  const [failedImage, setFailedImage] = useState("");
+  const variants = Object.entries(VARIANT_CONFIG).filter(([key]) => item[key]);
+  const language = item.language || (item.isJapanese ? "Japanese" : "");
+  const quantity = item.quantity || 1;
+
+  return (
+    <article className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="relative flex aspect-[3/4] items-center justify-center bg-slate-50 p-3 sm:p-4">
+        {item.image && failedImage !== item.image ? (
+          <img
+            src={item.image}
+            alt={item.name || "Pokémon card"}
+            className="h-full w-full object-contain"
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailedImage(item.image)}
+          />
+        ) : (
+          <div className="flex flex-col items-center gap-2 text-slate-500">
+            <Package className="h-9 w-9" aria-hidden="true" />
+            <span className="text-xs">Image unavailable</span>
+          </div>
+        )}
+        {isNewCard(item) && (
+          <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800">
+            <Sparkles className="h-3 w-3" aria-hidden="true" /> New
+          </span>
+        )}
+      </div>
+      <div className="flex flex-1 flex-col p-3 sm:p-4">
+        <div className="mb-2 flex flex-wrap gap-1">
+          {item.isGraded ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs font-bold text-amber-900">
+              <Award className="h-3 w-3" aria-hidden="true" />
+              {[item.gradingCompany, item.grade].filter(Boolean).join(" ") || "Graded"}
+            </span>
+          ) : (
+            <span className={`rounded-md border px-1.5 py-0.5 text-xs font-semibold ${getConditionColorClass(item.condition)}`}>
+              {item.condition ? getConditionDisplayLabel(item.condition) : "Condition unspecified"}
+            </span>
+          )}
+          {variants.map(([key, variant]) => (
+            <span key={key} className={`rounded-md px-1.5 py-0.5 text-xs font-semibold ${variant.color}`}>
+              {variant.label}
+            </span>
+          ))}
+        </div>
+        <h3 className="break-words text-sm font-extrabold leading-5 text-slate-950 sm:text-base" title={item.name}>
+          {item.name || "Unnamed card"}
+        </h3>
+        <p className="mt-1 break-words text-xs leading-5 text-slate-600">
+          {item.set}{item.number ? ` #${item.number}` : ""}
+        </p>
+        {language && <p className="mt-1 text-xs text-slate-600">{language}</p>}
+        <div className="mt-auto pt-4">
+          <div className="border-t border-slate-100 pt-3">
+            <p className="text-xl font-extrabold tracking-tight text-slate-950 sm:text-2xl">
+              {formatCurrency(getDisplayPrice(item, currency, roundUp), currency)}
+              {quantity > 1 && <span className="ml-1 text-xs font-medium tracking-normal text-slate-500">each</span>}
+            </p>
+            <p className="mt-1 text-xs text-slate-600">{quantity} available</p>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+/** Displays the seller's shared inventory from public projections. */
 export function SharedInventory() {
-  const { 
-    user, 
-    db, 
-    currency,
-    loginModalOpen,
-    setLoginModalOpen,
-    authHandlers,
-    communityImages,
-    getImageForCard,
-    refreshCommunityImages,
+  const {
+    user, db, currency, loginModalOpen, setLoginModalOpen, authHandlers,
+    communityImages, getImageForCard, refreshCommunityImages,
   } = useApp();
   const [searchParams] = useSearchParams();
   const inventoryUserId = searchParams.get("inventory");
-  
   const [inventoryItems, setInventoryItems] = useState([]);
-  const [enrichedItems, setEnrichedItems] = useState([]);
-  const [vendorName, setVendorName] = useState("");
+  const [vendorName, setVendorName] = useState("Vendor");
   const [vendorPhoto, setVendorPhoto] = useState("");
   const [vendorCountry, setVendorCountry] = useState("");
   const [vendorRoundUpPrices, setVendorRoundUpPrices] = useState(false);
+  const [inventoryAvailable, setInventoryAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState("name");
-  const [filterGraded, setFilterGraded] = useState("all"); // "all", "graded", "ungraded", "manualPrice"
+  const [filterGraded, setFilterGraded] = useState("all");
 
-  // Load shared inventory
   useEffect(() => {
+    let cancelled = false;
+    setInventoryItems([]);
+    setInventoryAvailable(false);
+    setVendorName("Vendor");
+    setVendorPhoto("");
+    setVendorCountry("");
+    setVendorRoundUpPrices(false);
+    setLoadError(false);
+    setSearchTerm("");
+    setFilterGraded("all");
+    setSortBy("name");
+
     if (!db || !inventoryUserId) {
       setLoading(false);
       return;
     }
 
+    setLoading(true);
     const loadInventory = async () => {
       try {
-        setLoading(true);
-        
-        // Load vendor profile
-        const userRef = doc(db, "public_profiles", inventoryUserId);
-        const userSnap = await getDoc(userRef);
-        
-        if (userSnap.exists()) {
-          const profile = userSnap.data();
-          setVendorName(profile.username || profile.displayName || "Vendor");
-          setVendorPhoto(profile.photoURL || "");
-          setVendorCountry(profile.country || "");
-        }
-        
-        // Load inventory
-        const inventoryRef = doc(db, "public_inventories", inventoryUserId);
-        const inventorySnap = await getDoc(inventoryRef);
-        
-        if (inventorySnap.exists()) {
-          const data = inventorySnap.data();
-          
-          // Check if sharing is enabled
-          if (!data.shareEnabled) {
-            setInventoryItems([]);
-            setLoading(false);
-            return;
-          }
-          
-          const allItems = Array.isArray(data.items) ? data.items : [];
-          // Filter out excluded cards
-          const items = allItems.filter(item => !item.excludeFromSale);
-          
-          setInventoryItems(items);
-          
-          // Set vendor display name if available
-          if (data.shareUsername) {
-            setVendorName(data.shareUsername);
-          }
-          
-          // Get vendor's round-up prices preference
-          if (typeof data.roundUp === "boolean") {
-            setVendorRoundUpPrices(data.roundUp);
-          }
-        } else {
-          setInventoryItems([]);
-        }
+        const [profileSnap, inventorySnap] = await Promise.all([
+          getDoc(doc(db, "public_profiles", inventoryUserId)),
+          getDoc(doc(db, "public_inventories", inventoryUserId)),
+        ]);
+        if (cancelled) return;
+        if (!inventorySnap.exists() || !inventorySnap.data().shareEnabled) return;
+
+        const data = inventorySnap.data();
+        const profile = profileSnap.exists() ? profileSnap.data() : {};
+        setVendorName(data.shareUsername || profile.username || profile.displayName || "Vendor");
+        setVendorPhoto(profile.photoURL || "");
+        setVendorCountry(profile.country || "");
+        setVendorRoundUpPrices(data.roundUp === true);
+        setInventoryAvailable(true);
+        setInventoryItems((Array.isArray(data.items) ? data.items : []).filter(item => !item.excludeFromSale));
       } catch (error) {
+        if (cancelled) return;
         console.error("Failed to load shared inventory:", error);
-        setInventoryItems([]);
+        if (error.code !== "permission-denied" && error.code !== "firestore/permission-denied") {
+          setLoadError(true);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
-
     loadInventory();
-  }, [db, inventoryUserId]);
+    return () => { cancelled = true; };
+  }, [db, inventoryUserId, loadAttempt]);
 
-  // Lazy load community images only if needed
   useEffect(() => {
-    const cardsWithoutImages = inventoryItems.filter(item => !item.image);
-    
-    // No cards without images? No need to fetch community images
-    if (cardsWithoutImages.length === 0) {
-      setEnrichedItems(inventoryItems);
-      return;
+    if (inventoryItems.some(item => !item.image) && !communityImages && refreshCommunityImages) {
+      refreshCommunityImages().catch(error => console.error("Failed to load card images:", error));
     }
-    
-    // Cards without images exist - check if we have community images
-    if (!communityImages && refreshCommunityImages) {
-      // Lazy load community images on first need
-      console.log('📸 Lazy loading community images for shared inventory...');
-      refreshCommunityImages().then(() => {
-        // After loading, apply images (will trigger this effect again with communityImages populated)
-      });
-      // Set items without enrichment for now
-      setEnrichedItems(inventoryItems);
-      return;
-    }
-    
-    // We have community images - apply them
-    const enriched = inventoryItems.map(item => {
-      if (item.image) return item;
-      const communityImage = getImageForCard(item);
-      return communityImage ? { ...item, image: communityImage } : item;
-    });
-    
-    setEnrichedItems(enriched);
-  }, [inventoryItems, communityImages, getImageForCard, refreshCommunityImages]);
+  }, [inventoryItems, communityImages, refreshCommunityImages]);
 
-  // Filter items
+  const enrichedItems = useMemo(() => inventoryItems.map(item => {
+    if (item.image || !communityImages || !getImageForCard) return item;
+    const image = getImageForCard(item);
+    return image ? { ...item, image } : item;
+  }), [inventoryItems, communityImages, getImageForCard]);
+
   const filteredItems = useMemo(() => {
-    let items = enrichedItems;
-    
-    // Apply graded filter
-    if (filterGraded === "graded") {
-      items = items.filter(item => item.isGraded);
-    } else if (filterGraded === "ungraded") {
-      items = items.filter(item => !item.isGraded);
-    } else if (filterGraded === "manualPrice") {
-      items = items.filter(item =>
+    const term = searchTerm.trim().toLowerCase();
+    return enrichedItems.filter(item => {
+      if (filterGraded === "graded" && !item.isGraded) return false;
+      if (filterGraded === "ungraded" && item.isGraded) return false;
+      if (filterGraded === "manualPrice" && !(
         (item.overridePrice != null && !isNaN(Number(item.overridePrice))) ||
         (item.manualPrice != null && item.manualPrice > 0)
-      );
-    }
-    
-    // Apply search filter
-    if (!searchTerm) return items;
-    const term = searchTerm.toLowerCase();
-    return items.filter(item =>
-      String(item.name || "").toLowerCase().includes(term) ||
-      String(item.set || "").toLowerCase().includes(term) ||
-      String(item.number || "").toLowerCase().includes(term)
-    );
+      )) return false;
+      return !term || [item.name, item.set, item.number].some(value => String(value || "").toLowerCase().includes(term));
+    });
   }, [enrichedItems, searchTerm, filterGraded]);
 
-  // Sort items
-  const sortedItems = useMemo(() => {
-    const items = [...filteredItems];
-    items.sort((a, b) => {
-      if (sortBy === "name") {
-        return (a.name || "").localeCompare(b.name || "");
-      } else if (sortBy === "set") {
-        return (a.set || "").localeCompare(b.set || "");
-      } else if (sortBy === "dateAdded") {
-        // Sort by date added (newest first)
-        const aDate = a.addedAt || 0;
-        const bDate = b.addedAt || 0;
-        return bDate - aDate;
-      } else if (sortBy === "price") {
-        const aMetrics = computeItemMetrics(a, currency);
-        const bMetrics = computeItemMetrics(b, currency);
-        
-        // Calculate prices with graded card conversion and vendor rounding
-        let aPrice, bPrice;
-        
-        // Get base price for A - use fresh calculation like MyInventory
-        if (a.overridePrice != null) {
-          const overrideCurrency = a.overridePriceCurrency || currency;
-          aPrice = overrideCurrency !== currency 
-            ? convertCurrency(a.overridePrice, currency, overrideCurrency)
-            : a.overridePrice;
-        } else if (a.isGraded && a.gradedPrice) {
-          const storedCurrency = a.gradedPriceCurrency || 'USD';
-          aPrice = storedCurrency !== currency
-            ? convertCurrency(a.gradedPrice, currency, storedCurrency)
-            : a.gradedPrice;
-        } else {
-          aPrice = aMetrics.suggested;
-        }
-        
-        // Get base price for B - use fresh calculation like MyInventory
-        if (b.overridePrice != null) {
-          const overrideCurrency = b.overridePriceCurrency || currency;
-          bPrice = overrideCurrency !== currency 
-            ? convertCurrency(b.overridePrice, currency, overrideCurrency)
-            : b.overridePrice;
-        } else if (b.isGraded && b.gradedPrice) {
-          const storedCurrency = b.gradedPriceCurrency || 'USD';
-          bPrice = storedCurrency !== currency
-            ? convertCurrency(b.gradedPrice, currency, storedCurrency)
-            : b.gradedPrice;
-        } else {
-          bPrice = bMetrics.suggested;
-        }
-        
-        // Apply vendor's round-up preference
-        if (vendorRoundUpPrices) {
-          aPrice = Math.ceil(aPrice);
-          bPrice = Math.ceil(bPrice);
-        }
-        
-        return bPrice - aPrice;
-      }
-      return 0;
-    });
-    return items;
-  }, [filteredItems, sortBy, vendorRoundUpPrices, currency]);
+  const sortedItems = useMemo(() => [...filteredItems].sort((a, b) => {
+    if (sortBy === "set") return (a.set || "").localeCompare(b.set || "") || (a.name || "").localeCompare(b.name || "");
+    if (sortBy === "dateAdded") return (b.addedAt || 0) - (a.addedAt || 0);
+    if (sortBy === "price" || sortBy === "priceAsc") {
+      const difference = getDisplayPrice(a, currency, vendorRoundUpPrices) - getDisplayPrice(b, currency, vendorRoundUpPrices);
+      return (sortBy === "priceAsc" ? difference : -difference) || (a.name || "").localeCompare(b.name || "");
+    }
+    return (a.name || "").localeCompare(b.name || "");
+  }), [filteredItems, sortBy, vendorRoundUpPrices, currency]);
 
-  // Calculate totals using vendor prices
-  const totals = useMemo(() => {
-    let count = 0;
-    let totalValue = 0;
-    let gradedCount = 0;
-    let newCount = 0;
-    
-    sortedItems.forEach(item => {
-      const qty = item.quantity || 1;
-      count += qty;
-      if (item.isGraded) gradedCount += qty;
-      if (isNewCard(item)) newCount += qty;
-      
-      const metrics = computeItemMetrics(item, currency);
-      let itemPrice;
-      
-      if (item.overridePrice != null) {
-        const overrideCurrency = item.overridePriceCurrency || currency;
-        itemPrice = overrideCurrency !== currency 
-          ? convertCurrency(item.overridePrice, currency, overrideCurrency)
-          : item.overridePrice;
-      } else if (item.isGraded && item.gradedPrice) {
-        const storedCurrency = item.gradedPriceCurrency || 'USD';
-        itemPrice = storedCurrency !== currency
-          ? convertCurrency(item.gradedPrice, currency, storedCurrency)
-          : item.gradedPrice;
-      } else {
-        itemPrice = metrics.suggested;
-      }
-      
-      if (vendorRoundUpPrices) {
-        itemPrice = Math.ceil(itemPrice);
-      }
-      
-      totalValue += itemPrice * qty;
-    });
-    
-    return { count, value: totalValue, gradedCount, newCount };
-  }, [sortedItems, vendorRoundUpPrices, currency]);
+  const stats = useMemo(() => inventoryItems.reduce((result, item) => {
+    const quantity = item.quantity || 1;
+    result.count += quantity;
+    if (item.isGraded) result.gradedCount += quantity;
+    if (isNewCard(item)) result.newCount += quantity;
+    return result;
+  }, { count: 0, gradedCount: 0, newCount: 0 }), [inventoryItems]);
 
-  const formatPrice = (amount) => formatCurrency(amount, currency);
+  const hasFilters = Boolean(searchTerm.trim()) || filterGraded !== "all";
+  const clearFilters = () => { setSearchTerm(""); setFilterGraded("all"); };
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto p-4">
-        <Card>
-          <CardContent className="p-6 text-center">
-            Loading inventory...
-          </CardContent>
-        </Card>
+      <div className="mx-auto flex min-h-[50vh] max-w-[1200px] items-center justify-center gap-3 px-4 text-slate-600" role="status">
+        <LoaderCircle className="h-5 w-5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        Loading inventory…
       </div>
     );
   }
 
-  if (!inventoryUserId) {
+  if (!inventoryUserId || loadError || !inventoryAvailable) {
     return (
-      <div className="max-w-6xl mx-auto p-4">
-        <Card>
-          <CardContent className="p-6 text-center">
-            <p className="text-muted-foreground">No inventory specified</p>
-          </CardContent>
-        </Card>
+      <div className="mx-auto max-w-[1200px] px-4 py-12 sm:px-6">
+        <div className="rounded-2xl border border-border bg-card px-6 py-12 text-center">
+          <Store className="mx-auto mb-4 h-10 w-10 text-slate-500" aria-hidden="true" />
+          <h1 className="text-xl font-extrabold text-slate-950">
+            {!inventoryUserId ? "Inventory link missing" : loadError ? "Inventory could not be loaded" : "Inventory unavailable"}
+          </h1>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">
+            {!inventoryUserId ? "Ask the seller for their inventory sharing link." : loadError ? "Please try again to load the seller's cards." : "This inventory is no longer shared, or the link is unavailable. Ask the seller for an updated link."}
+          </p>
+          {loadError && <Button className="mt-5 min-h-11" onClick={() => setLoadAttempt(attempt => attempt + 1)}>Try again</Button>}
+        </div>
       </div>
     );
   }
-
-  if (inventoryItems.length === 0) {
-    return (
-      <div className="max-w-6xl mx-auto p-4">
-        <Card>
-          <CardContent className="p-6 text-center">
-            <Store className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <p className="text-lg font-semibold mb-2">Inventory Not Available</p>
-            <p className="text-muted-foreground">
-              This vendor's inventory is not shared or doesn't exist.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // Variant badge helper
-  const VARIANT_CONFIG = {
-    isReverseHolo:  { label: "Reverse Holo",   color: "bg-blue-100 text-blue-700" },
-    isStampedPromo: { label: "Stamped",        color: "bg-purple-100 text-purple-700" },
-    isSealed:       { label: "Sealed",         color: "bg-emerald-100 text-emerald-700" },
-    isAutographed:  { label: "Autographed",    color: "bg-rose-100 text-rose-700" },
-    isFirstEdition: { label: "1st Edition",    color: "bg-amber-100 text-amber-800" },
-    isPokeBall:     { label: "Poké Ball",      color: "bg-red-100 text-red-700" },
-    isMasterBall:   { label: "Master Ball",    color: "bg-violet-100 text-violet-700" },
-    isUnlimited:    { label: "Unlimited",     color: "bg-gray-100 text-gray-700" },
-  };
-
-  const getVariantBadges = (item) =>
-    Object.entries(VARIANT_CONFIG)
-      .filter(([key]) => item[key])
-      .map(([key, cfg]) => ({ key, ...cfg }));
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-50">
-      {/* ── Shop Banner ─────────────────────────────────────────────────── */}
-      <div className="relative bg-gradient-to-br from-indigo-600 via-purple-600 to-violet-700 text-white overflow-hidden">
-        {/* Decorative background pattern */}
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-white/20 blur-3xl" />
-          <div className="absolute -bottom-32 -left-32 w-80 h-80 rounded-full bg-white/15 blur-3xl" />
-        </div>
-
-        <div className="relative max-w-6xl mx-auto px-4 py-10 sm:py-12">
-          <div className="flex flex-col sm:flex-row items-center gap-5">
+    <div className="shared-inventory-page min-h-screen bg-background pb-10">
+      <div className="mx-auto max-w-[1200px] px-4 pb-4 pt-4 sm:px-6 sm:pb-5 sm:pt-7">
+        <section className="overflow-hidden rounded-3xl bg-slate-950 text-white" aria-labelledby="seller-name">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 p-4 sm:gap-5 sm:p-6">
             {vendorPhoto ? (
-              <img
-                src={vendorPhoto}
-                alt={vendorName}
-                className="h-24 w-24 rounded-2xl object-cover ring-4 ring-white/30 shadow-2xl"
-              />
+              <img src={vendorPhoto} alt="" className="h-12 w-12 shrink-0 rounded-xl border border-white/20 object-cover sm:h-16 sm:w-16 sm:rounded-2xl" onError={() => setVendorPhoto("")} />
             ) : (
-              <div className="h-24 w-24 rounded-2xl bg-white/15 backdrop-blur-sm flex items-center justify-center border border-white/20">
-                <Store className="h-11 w-11 text-white/80" />
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border border-amber-300/25 bg-amber-300/10 sm:h-16 sm:w-16 sm:rounded-2xl">
+                <Store className="h-6 w-6 text-amber-300 sm:h-8 sm:w-8" aria-hidden="true" />
               </div>
             )}
-
-            <div className="flex-1 text-center sm:text-left">
-              <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight drop-shadow-sm">
-                {vendorName}'s Shop
-              </h1>
-              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 mt-3 text-sm text-white/80">
-                {vendorCountry && (
-                  <span className="flex items-center gap-1.5">
-                    <MapPin className="h-4 w-4" /> {vendorCountry}
-                  </span>
-                )}
-                <span className="flex items-center gap-1.5">
-                  <Package className="h-4 w-4" />
-                  {inventoryItems.length} card{inventoryItems.length !== 1 ? "s" : ""} listed
-                </span>
-                {totals.newCount > 0 && (
-                  <span className="flex items-center gap-1.5 text-emerald-300 font-medium">
-                    <Sparkles className="h-4 w-4" />
-                    {totals.newCount} new this week
-                  </span>
-                )}
-              </div>
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase tracking-widest text-amber-300">Cards for sale</p>
+              <h1 id="seller-name" className="mt-1 break-words text-xl font-extrabold tracking-tight sm:text-3xl">{vendorName}</h1>
+              {vendorCountry && <p className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-300 sm:text-sm"><MapPin className="h-4 w-4 shrink-0" aria-hidden="true" />{vendorCountry}</p>}
             </div>
-
             {!user && (
-              <button
-                onClick={() => setLoginModalOpen(true)}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white text-indigo-700 font-bold text-sm hover:bg-white/90 transition-all shadow-lg hover:shadow-xl hover:scale-105"
-              >
-                <LogIn className="h-4 w-4" /> Sign In
-              </button>
-            )}
-            {user && (
-              <div className="text-sm text-white/70 bg-white/10 rounded-xl px-4 py-2 backdrop-blur-sm border border-white/10">
-                Signed in as <span className="font-semibold text-white">{user.displayName || user.email}</span>
-              </div>
+              <Button variant="secondary" aria-label="Sign in" className="min-h-11 w-11 px-0 sm:w-auto sm:px-4" onClick={() => setLoginModalOpen(true)}>
+                <LogIn className="h-4 w-4 sm:mr-2" aria-hidden="true" /><span className="sr-only sm:not-sr-only">Sign in</span>
+              </Button>
             )}
           </div>
-        </div>
-      </div>
-
-      {/* ── Quick Stats Bar ──────────────────────────────────────────────── */}
-      <div className="bg-white border-b">
-        <div className="max-w-6xl mx-auto px-4">
-          <div className="flex items-center justify-center sm:justify-start gap-6 sm:gap-10 py-3 overflow-x-auto">
-            <div className="flex flex-col items-center sm:items-start min-w-fit">
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Cards</span>
-              <span className="text-lg sm:text-xl font-extrabold text-slate-900">{totals.count}</span>
+          <dl className="grid grid-cols-3 border-t border-white/10 bg-white/5 px-1 py-3 sm:px-5 sm:py-4">
+            <div className="px-3">
+              <dt className="text-[11px] leading-4 text-slate-300 sm:text-xs sm:leading-5">Cards available</dt>
+              <dd className="mt-1 text-lg font-extrabold sm:text-2xl">{stats.count}</dd>
             </div>
-            {totals.gradedCount > 0 && (
-              <>
-                <div className="w-px h-8 bg-slate-200 hidden sm:block" />
-                <div className="flex flex-col items-center sm:items-start min-w-fit">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Graded</span>
-                  <span className="text-lg sm:text-xl font-extrabold text-amber-600 flex items-center gap-1">
-                    <Award className="h-4 w-4" /> {totals.gradedCount}
-                  </span>
-                </div>
-              </>
-            )}
-            {totals.newCount > 0 && (
-              <>
-                <div className="w-px h-8 bg-slate-200 hidden sm:block" />
-                <div className="flex flex-col items-center sm:items-start min-w-fit">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">New Arrivals</span>
-                  <span className="text-lg sm:text-xl font-extrabold text-emerald-600 flex items-center gap-1">
-                    <Sparkles className="h-4 w-4" /> {totals.newCount}
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+            <div className="border-l border-white/10 px-3">
+              <dt className="text-[11px] leading-4 text-slate-300 sm:text-xs sm:leading-5">Graded</dt>
+              <dd className="mt-1 text-lg font-extrabold sm:text-2xl">{stats.gradedCount}</dd>
+            </div>
+            <div className="border-l border-white/10 px-3">
+              <dt className="text-[11px] leading-4 text-slate-300 sm:text-xs sm:leading-5">Added in 14 days</dt>
+              <dd className="mt-1 text-lg font-extrabold text-amber-300 sm:text-2xl">{stats.newCount}</dd>
+            </div>
+          </dl>
+        </section>
       </div>
 
-      {/* ── Shop Toolbar ────────────────────────────────────────────────── */}
-      <div className="sticky top-14 z-20 bg-white/90 backdrop-blur-xl border-b shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col sm:flex-row gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search by name, set, or number..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 bg-white border-slate-200 focus:border-indigo-400 focus:ring-indigo-400/20"
-            />
-          </div>
-          <div className="flex gap-2">
-            <select
-              value={filterGraded}
-              onChange={(e) => setFilterGraded(e.target.value)}
-              className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white hover:border-slate-300 transition-colors cursor-pointer"
-            >
-              <option value="all">All Cards</option>
-              <option value="graded">Graded Only</option>
-              <option value="ungraded">Ungraded Only</option>
-              <option value="manualPrice">Manual Price</option>
-            </select>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white hover:border-slate-300 transition-colors cursor-pointer"
-            >
-              <option value="name">Sort: Name</option>
-              <option value="set">Sort: Set</option>
-              <option value="price">Sort: Price</option>
-              <option value="dateAdded">Sort: Newest</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Product Grid ────────────────────────────────────────────────── */}
-      <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Active filter indicator */}
-        {(searchTerm || filterGraded !== "all") && sortedItems.length > 0 && (
-          <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
-            <Filter className="h-3.5 w-3.5" />
-            Showing {sortedItems.length} of {inventoryItems.length} cards
-            {searchTerm && (
-              <button
-                onClick={() => setSearchTerm("")}
-                className="ml-1 px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-xs font-medium transition-colors"
-              >
-                Clear search
-              </button>
-            )}
-          </div>
-        )}
-
-        {sortedItems.length === 0 && inventoryItems.length > 0 && (
-          <div className="text-center py-20 text-muted-foreground">
-            <Search className="h-16 w-16 mx-auto mb-4 opacity-20" />
-            <p className="text-xl font-semibold text-slate-700">No cards match your search</p>
-            <p className="text-sm mt-2 text-slate-500">Try adjusting your filters or search terms.</p>
-            <button
-              onClick={() => { setSearchTerm(""); setFilterGraded("all"); }}
-              className="mt-4 px-4 py-2 rounded-lg bg-indigo-50 text-indigo-600 text-sm font-medium hover:bg-indigo-100 transition-colors"
-            >
-              Clear all filters
-            </button>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
-          {sortedItems.map((item) => {
-            const metrics = computeItemMetrics(item, currency);
-            const cardIsNew = isNewCard(item);
-
-            let displayPrice;
-            if (item.overridePrice != null) {
-              const overrideCurrency = item.overridePriceCurrency || currency;
-              displayPrice = overrideCurrency !== currency
-                ? convertCurrency(item.overridePrice, currency, overrideCurrency)
-                : item.overridePrice;
-            } else if (item.isGraded && item.gradedPrice) {
-              const storedCurrency = item.gradedPriceCurrency || "USD";
-              displayPrice = storedCurrency !== currency
-                ? convertCurrency(item.gradedPrice, currency, storedCurrency)
-                : item.gradedPrice;
-            } else {
-              displayPrice = metrics.suggested;
-            }
-            if (vendorRoundUpPrices) displayPrice = Math.ceil(displayPrice);
-
-            const variants = getVariantBadges(item);
-
-            return (
-              <div
-                key={item.entryId}
-                className="group relative bg-white rounded-2xl overflow-hidden shadow-sm ring-1 ring-slate-100 hover:shadow-xl hover:ring-indigo-200 hover:-translate-y-1.5 transition-all duration-300"
-              >
-                {/* NEW badge */}
-                {cardIsNew && (
-                  <div className="absolute top-2 right-2 z-10">
-                    <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide bg-emerald-500 text-white shadow-lg shadow-emerald-500/30 animate-pulse">
-                      <Sparkles className="h-2.5 w-2.5" />
-                      New
-                    </span>
-                  </div>
-                )}
-
-                {/* Card image */}
-                <div className="relative aspect-[3/4] bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200 flex items-center justify-center overflow-hidden">
-                  {item.image ? (
-                    <img
-                      src={item.image}
-                      alt={item.name}
-                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 ease-out"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center gap-2 text-slate-300">
-                      <Package className="h-10 w-10" />
-                      <span className="text-[10px] font-medium">No image</span>
-                    </div>
-                  )}
-                  {/* Subtle gradient overlay at bottom for readability */}
-                  <div className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-                </div>
-
-                {/* Card info */}
-                <div className="p-3">
-                  {/* Condition / Graded badge + variants */}
-                  <div className="flex flex-wrap gap-1 mb-1.5">
-                    {item.isGraded && item.gradingCompany && item.grade ? (
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-gradient-to-r from-yellow-50 to-amber-100 text-amber-800 border border-amber-300 flex items-center gap-0.5 shadow-sm">
-                        <Award className="h-2.5 w-2.5" />
-                        {item.gradingCompany} {item.grade}
-                      </span>
-                    ) : (
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border ${getConditionColorClass(item.condition)}`}>
-                        {getConditionDisplayLabel(item.condition || "NM")}
-                      </span>
-                    )}
-                    {variants.map((v) => (
-                      <span
-                        key={v.key}
-                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${v.color}`}
-                      >
-                        {v.label}
-                      </span>
-                    ))}
-                  </div>
-
-                  <h3 className="font-bold text-sm leading-tight truncate text-slate-900" title={item.name}>
-                    {item.name}
-                  </h3>
-                  <p className="text-[11px] text-slate-500 truncate mt-0.5" title={`${item.set} #${item.number}`}>
-                    {item.set} {item.number ? `#${item.number}` : ""}
-                  </p>
-                  {item.quantity > 1 && (
-                    <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Qty: {item.quantity}</p>
-                  )}
-
-                  {/* Price */}
-                  <div className="mt-2.5 pt-2 border-t border-slate-100">
-                    <span className="text-lg font-extrabold text-emerald-600 tracking-tight">
-                      {formatPrice(displayPrice)}
-                    </span>
-                  </div>
-                </div>
+      {inventoryItems.length > 0 && (
+        <div className="sticky top-[73px] z-20 border-y border-border bg-card/95 backdrop-blur-xl">
+          <div className="mx-auto grid max-w-[1200px] grid-cols-2 gap-2 px-4 py-3 sm:gap-3 sm:px-6 md:grid-cols-[minmax(0,1fr)_180px_220px]">
+            <div className="col-span-2 md:col-span-1">
+              <label htmlFor="inventory-search" className="mb-1.5 block text-xs font-bold text-slate-600">Search cards</label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden="true" />
+                <Input id="inventory-search" type="search" placeholder="Name, set, or card number" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} className="border-slate-300 bg-white pl-9 pr-11 [&::-webkit-search-cancel-button]:appearance-none" />
+                {searchTerm && <button type="button" aria-label="Clear search" onClick={() => setSearchTerm("")} className="absolute right-0 top-0 grid h-11 w-11 place-items-center rounded-r-xl text-slate-500 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"><X className="h-4 w-4" aria-hidden="true" /></button>}
               </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ── Footer ──────────────────────────────────────────────────────── */}
-      {sortedItems.length > 0 && (
-        <div className="border-t bg-white/80 backdrop-blur-sm">
-          <div className="max-w-6xl mx-auto px-4 py-6 text-center">
-            <p className="text-sm text-muted-foreground">
-              {totals.count} card{totals.count !== 1 ? "s" : ""} &middot; Total inventory value: <span className="font-bold text-slate-900">{formatPrice(totals.value)}</span>
-            </p>
-            <p className="text-xs text-slate-400 mt-1">
-              Prices shown in {currency}
-            </p>
+            </div>
+            <div className="min-w-0">
+              <label htmlFor="inventory-type" className="mb-1.5 block text-xs font-bold text-slate-600">Card type</label>
+              <div className="relative">
+                <select id="inventory-type" value={filterGraded} onChange={event => setFilterGraded(event.target.value)} className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-3 pr-8 text-sm text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400">
+                  <option value="all">All cards</option>
+                  <option value="graded">Graded</option>
+                  <option value="ungraded">Ungraded</option>
+                  <option value="manualPrice">Seller-priced</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden="true" />
+              </div>
+            </div>
+            <div className="min-w-0">
+              <label htmlFor="inventory-sort" className="mb-1.5 block text-xs font-bold text-slate-600">Sort by</label>
+              <div className="relative">
+                <select id="inventory-sort" value={sortBy} onChange={event => setSortBy(event.target.value)} className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-3 pr-8 text-sm text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400">
+                  <option value="name">Name: A to Z</option>
+                  <option value="set">Set: A to Z</option>
+                  <option value="priceAsc">Price: low to high</option>
+                  <option value="price">Price: high to low</option>
+                  <option value="dateAdded">Newest added</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden="true" />
+              </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Login Modal */}
+      <section className="mx-auto max-w-[1200px] px-4 py-6 sm:px-6" aria-labelledby="browse-cards">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 id="browse-cards" className="text-xl font-extrabold text-slate-950">Browse cards</h2>
+            <p className="mt-1 text-sm text-slate-600" role="status" aria-live="polite" aria-atomic="true">
+              {hasFilters ? `${sortedItems.length} of ${inventoryItems.length} listings` : `${inventoryItems.length} listing${inventoryItems.length === 1 ? "" : "s"}`} · Prices in {currency}
+            </p>
+          </div>
+          {hasFilters && <Button variant="outline" className="min-h-11" onClick={clearFilters}><X className="mr-1.5 h-4 w-4" aria-hidden="true" />Clear filters</Button>}
+        </div>
+
+        {sortedItems.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-14 text-center">
+            <Search className="mx-auto mb-4 h-9 w-9 text-slate-400" aria-hidden="true" />
+            <h3 className="text-lg font-extrabold text-slate-950">{inventoryItems.length ? "No matching cards" : "No cards listed yet"}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{inventoryItems.length ? "Try another name, set, or card number, or clear your filters." : "Check back later for cards from this seller."}</p>
+            {hasFilters && <Button className="mt-5 min-h-11" onClick={clearFilters}>Show all cards</Button>}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4 xl:grid-cols-5">
+            {sortedItems.map(item => <InventoryCard key={item.entryId} item={item} currency={currency} roundUp={vendorRoundUpPrices} />)}
+          </div>
+        )}
+      </section>
+
       <LoginModal
         isOpen={loginModalOpen}
         onClose={() => setLoginModalOpen(false)}
@@ -625,4 +373,3 @@ export function SharedInventory() {
     </div>
   );
 }
-
