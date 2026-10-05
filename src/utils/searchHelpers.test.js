@@ -159,6 +159,76 @@ describe("preprocessQuery", () => {
   });
 });
 
+describe("151 collector numbers and set searches", () => {
+  const lillie = { name: "Lillie", number: "151/156", set: "Ultra Prism" };
+  const lillieCards = [
+    lillie,
+    { name: "Lillie", number: "125/156", set: "Ultra Prism" },
+    { name: "Lillie", number: "147/149", set: "Sun & Moon" },
+    { name: "Charizard ex", number: "151", set: "Pokemon 151" },
+  ];
+
+  it.each([
+    { query: "Lillie 151", number: "151", setWords: [] },
+    { query: "Lillie 151 Ultra Prism", number: "151", setWords: ["ultra", "prism"] },
+    { query: "Ultra Prism Lillie 151", number: "151", setWords: ["ultra", "prism"] },
+    { query: "Lillie 0151 Ultra Prism", number: "0151", setWords: ["ultra", "prism"] },
+    { query: "Lillie 151/156 Ultra Prism", number: "151/156", setWords: ["ultra", "prism"] },
+    { query: "Lillie 0151/0156 Ultra Prism", number: "0151/0156", setWords: ["ultra", "prism"] },
+  ])("finds the collector number through preprocessing for $query", ({ query, number, setWords }) => {
+    const { processed } = preprocessQuery(query);
+    expect(parseQuery(processed)).toMatchObject({
+      primaryName: "lillie", numbers: [number], setWords,
+    });
+    expect(filterByRelevance(lillieCards, processed)).toEqual([lillie]);
+    // Cache and UI callers also filter the original query.
+    expect(improveSearchResults(lillieCards, query)).toEqual([lillie]);
+  });
+
+  it("keeps 151 as a collector number beside another explicit set without a name", () => {
+    const { processed } = preprocessQuery("151 Ultra Prism");
+    expect(parseQuery(processed)).toMatchObject({
+      primaryName: "", numbers: ["151"], setWords: ["ultra", "prism"],
+    });
+    expect(filterByRelevance(lillieCards, processed)).toEqual([lillie]);
+  });
+
+  it("matches a printed fraction when the provider omits the total, and rejects a conflicting total", () => {
+    const shortNumber = { ...lillie, number: "151" };
+    const differentTotal = { ...lillie, number: "151/149" };
+    const { processed } = preprocessQuery("Lillie 0151/0156 Ultra Prism");
+    expect(filterByRelevance([lillie, shortNumber, differentTotal], processed))
+      .toEqual([lillie, shortNumber]);
+  });
+
+  const charizard = { name: "Charizard ex", number: "199/165", set: "Scarlet & Violet 151" };
+  const setCards = [
+    charizard,
+    { name: "Charizard ex", number: "006/165", set: "151" },
+    { name: "Lillie", number: "151/156", set: "Ultra Prism" },
+  ];
+
+  it.each(["Charizard Pokemon 151 199", "Charizard 151 199", "Charizard 199 151"])(
+    "preserves the 151 set search with a separate collector number for %s", query => {
+      const { processed } = preprocessQuery(query);
+      for (const value of [query, processed]) {
+        expect(parseQuery(value)).toMatchObject({
+          primaryName: "charizard", numbers: ["199"], setWords: ["pokemon", "151"],
+        });
+        expect(improveSearchResults(setCards, value)).toEqual([charizard]);
+      }
+    },
+  );
+
+  it.each(["151", "Pokemon 151"])("preserves a set-only query for %s", query => {
+    const { processed } = preprocessQuery(query);
+    for (const value of [query, processed]) {
+      expect(parseQuery(value)).toMatchObject({ primaryName: "", numbers: [], setWords: ["pokemon", "151"] });
+      expect(filterByRelevance(setCards, value)).toEqual(setCards.slice(0, 2));
+    }
+  });
+});
+
 // ==============================
 // Query Parsing
 // ==============================
