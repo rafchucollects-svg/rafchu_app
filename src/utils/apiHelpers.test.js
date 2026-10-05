@@ -3,6 +3,7 @@ import {
   apiFetchGradedPrices,
   apiSearchCardsCached,
   canonicalizeQuery,
+  formatSearchResults,
   getEmbeddedGradedPrices,
   getEmbeddedMarketPrices,
   hasFreshEmbeddedMarketPrices,
@@ -261,6 +262,113 @@ describe("numbered-card provider fallbacks", () => {
     ok: true,
     json: async () => ({ success: true, cards: [] }),
   };
+
+  it.each([
+    "Lillie 151",
+    "Lillie 151 Ultra Prism",
+    "Ultra Prism Lillie 151",
+    "Lillie 151/156",
+    "Lillie 151/156 Ultra Prism",
+  ])("finds Ultra Prism Lillie with collector number 151: %s", async (query) => {
+    const expected = {
+      name: "Lillie",
+      number: "151",
+      set: "Ultra Prism",
+      rarity: "Ultra Rare",
+      tcgid: "sm5-151",
+    };
+    const providerCards = [
+      expected,
+      { name: "Lillie", number: "125", set: "Ultra Prism" },
+      { name: "Lillie", number: "147", set: "Sun & Moon" },
+      { name: "Lillie's Pearl", number: "151", set: "Journey Together" },
+      ...Array.from({ length: 16 }, (_, index) => ({
+        name: `Other Card ${index}`,
+        number: "151",
+        set: "Other Set",
+      })),
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      const request = new URL(String(url));
+      const providerQuery = query.includes("151/156") ? "lillie 151/156" : "lillie 151";
+      return cardMarketResponse(request.searchParams.get("q") === providerQuery
+        ? providerCards
+        : []);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await apiSearchCardsCached(query, {
+      useCache: false,
+      skipDatabaseCache: true,
+      languageScope: "english",
+    });
+
+    expect(results[0]).toMatchObject(expected);
+    expect(formatSearchResults(results, query, 5)[0]).toMatchObject(expected);
+    expect(results.every(card => String(card.number) === "151")).toBe(true);
+    if (query.toLowerCase().includes("ultra prism")) {
+      expect(results).toHaveLength(1);
+    }
+    expect(fetchMock.mock.calls.some(([url]) => (
+      new URL(String(url)).searchParams.get("q") ===
+        (query.includes("151/156") ? "lillie 151/156" : "lillie 151")
+    ))).toBe(true);
+  });
+
+  it("uses the set fallback when the broad Lillie response omits Ultra Prism", async () => {
+    const expected = {
+      name: "Lillie",
+      number: "151",
+      set: "Ultra Prism",
+      tcgid: "sm5-151",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      const query = new URL(String(url)).searchParams.get("q");
+      if (query === "lillie") {
+        return cardMarketResponse(Array.from({ length: 20 }, (_, index) => ({
+          name: "Lillie's Determination",
+          number: String(index + 1),
+          set: "Other Set",
+        })));
+      }
+      return cardMarketResponse(query === "ultra prism lillie" ? [expected] : []);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await apiSearchCardsCached("Lillie Ultra Prism", {
+      useCache: false,
+      skipDatabaseCache: true,
+      languageScope: "english",
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject(expected);
+  });
+
+  it.each(["Charizard Pokemon 151 199", "Charizard 151 199"])(
+    "preserves an explicit 151 set and a separate collector number: %s",
+    async (query) => {
+      const expected = {
+        name: "Charizard ex",
+        number: "199/165",
+        set: "Scarlet & Violet 151",
+        tcgid: "sv3pt5-199",
+      };
+      vi.stubGlobal("fetch", vi.fn(async (url) => {
+        const providerQuery = new URL(String(url)).searchParams.get("q");
+        return cardMarketResponse(providerQuery === "charizard 199" ? [expected] : []);
+      }));
+
+      const results = await apiSearchCardsCached(query, {
+        useCache: false,
+        skipDatabaseCache: true,
+        languageScope: "english",
+      });
+
+      expect(results).toHaveLength(1);
+      expect(formatSearchResults(results, query, 5)[0]).toMatchObject(expected);
+    },
+  );
 
   it("runs the number fallback when a large primary response has no relevant match", async () => {
     const irrelevantMoltres = Array.from({ length: 20 }, (_, index) => ({

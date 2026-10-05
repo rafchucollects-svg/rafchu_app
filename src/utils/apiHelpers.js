@@ -67,7 +67,7 @@ const GOLD_STAR_BY_POKEMON = {
 };
 
 // Cache version - increment when search logic changes to invalidate old cache
-const CACHE_VERSION = 'v4.10-power-keepers-gold-stars';
+const CACHE_VERSION = 'v4.11-collector-number-151';
 
 // Simple search analytics (in-memory for now, could be sent to analytics service)
 const searchAnalytics = {

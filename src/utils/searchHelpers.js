@@ -391,6 +391,14 @@ export function expandSetAbbreviations(query) {
     if (queryLower.includes(fullName.toLowerCase())) {
       continue;
     }
+
+    // Use the same 151 disambiguation as filtering and cache matching.
+    if (abbrev === '151') {
+      if (parseQuery(query).setWords.join(' ') !== 'pokemon 151') continue;
+
+      // Only replace a standalone token, never either side of "151/156".
+      return query.replace(/(^|\s)151(?=\s|$)/g, `$1${fullName}`);
+    }
     
     // Skip ambiguous single-word abbreviations that could be Pokemon name prefixes
     // e.g. "roaring" should NOT expand to "Roaring Skies" when user searches "Roaring Moon"
@@ -519,9 +527,9 @@ export function preprocessQuery(query, options = {}) {
 }
 
 // Regex to detect card number patterns (pure numbers or alphanumeric codes)
-// Matches: 123, SWSH121, SM123, SM-P, SM-P325, 325/SM-P, GG69, SV231, XY-P
+// Matches: 123, 151/156, SWSH121, SM123, SM-P, SM-P325, 325/SM-P, GG69, SV231, XY-P
 // Does NOT match: pikachu, charizard, ex (Pokemon names/types)
-const CARD_NUMBER_PATTERN = /^(\d{1,4}(\/[a-z-]{1,6})?|[a-z]{1,4}-[a-z](\d{0,4})?|[a-z]{1,6}\d{1,4})$/i;
+const CARD_NUMBER_PATTERN = /^(\d{1,4}(\/(?:\d{1,4}|[a-z-]{1,6}))?|[a-z]{1,4}-[a-z](\d{0,4})?|[a-z]{1,6}\d{1,4})$/i;
 
 // Set-related words that should NOT be part of Pokemon name matching
 // These indicate set names, not Pokemon names - they get stored in setWords instead
@@ -610,9 +618,25 @@ export function parseQuery(query) {
   
   // Phase 2: Classify remaining individual words
   const queryWords = queryLower.split(/\s+/).filter(Boolean);
+
+  // 151 is also a collector number. Preserve the set shorthand for "151"
+  // alone or "Charizard 151 199", where another number identifies the card.
+  // A sole number beside a name ("Lillie 151"), a fraction, or a number
+  // beside another named set must remain a collector number.
+  const hasNamedSet = setWords.length > 0 || queryWords.some(word =>
+    !isCardNumberLike(word) && isSetRelatedWord(word) && !POKEMON_NAME_PREFIXES.has(word),
+  );
+  const numeric151IsSet = !hasNamedSet && queryWords.includes('151') &&
+    (normalized.toLowerCase().trim() === '151' ||
+      queryWords.some(word => word !== '151' && isCardNumberLike(word)));
   
   for (let i = 0; i < queryWords.length; i++) {
     const word = queryWords[i];
+
+    if (word === '151' && numeric151IsSet) {
+      setWords.push('pokemon', '151');
+      continue;
+    }
     
     // Check if it's a card type keyword (ex, gx, v, vmax, etc.)
     if (CARD_TYPE_KEYWORDS.includes(word)) {
@@ -808,6 +832,12 @@ export function filterByRelevance(results, query) {
           return numberLower.includes(queryNumber) || 
                  cardId.includes(queryNumber) ||
                  normalizedCardNumber.includes(normalizedQueryNumber);
+        } else if (/^\d+\/\d+$/.test(queryNumber)) {
+          // Some providers omit the printed set total. Match the collector
+          // number in that case; when both totals are present, require both.
+          return normalizedCardNumber === normalizedQueryNumber ||
+            (!numberLower.includes('/') &&
+              matchesAsWholeNumber(normalizedCardNumber, normalizedQueryNumber.split('/')[0]));
         } else {
           // Pure numbers need precise matching (24 should NOT match 247)
           return matchesAsWholeNumber(numberLower, queryNumber) ||
@@ -841,6 +871,9 @@ export function filterByRelevance(results, query) {
     const setLower = normalizeApostrophes((card.set || '').toLowerCase());
     const setPhrase = setWords.join(' ');
     if (setPhrase === 'classic collection' && setLower.includes('celebrations')) return true;
+    // Providers label this set as either "Pokemon 151", "151", or
+    // "Scarlet & Violet 151". The explicit set phrase means the same set.
+    if (setPhrase === 'pokemon 151') return /\b151\b/.test(setLower);
     
     // For each setWord, check if the card's set matches it OR any of its parent/related sets
     return setWords.every(setWord => {
