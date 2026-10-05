@@ -323,14 +323,24 @@ describe("PhotoStoryStudio", () => {
     });
   });
 
-  it("recovers from scanner failure with a custom price and explicit placement confirmation", async () => {
+  it("tries the scanner three times before offering manual pricing and placement", async () => {
     mocks.app.collectionItems = [];
     mocks.scan.mockRejectedValue(new Error("Scanning is unavailable"));
     await renderStudio();
     await upload();
+    expect(mocks.scan).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(800));
+    expect(mocks.scan).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain("attempt 2 of 3");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(1800));
+    expect(mocks.scan).toHaveBeenCalledTimes(3);
     expect(host.querySelector('[role="alert"]').textContent).toContain(
-      "could not be scanned",
+      "We tried scanning this photo 3 times",
     );
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(mocks.scan).toHaveBeenCalledTimes(3);
     expect(button("Download photo").disabled).toBe(true);
     await click(button("Add a price label"));
     await editInput("Label name", "My card");
@@ -342,6 +352,7 @@ describe("PhotoStoryStudio", () => {
       element.textContent.includes("This label is on the correct card"),
     );
     await click(placement.querySelector("input"));
+    mocks.exportPhoto.mockClear();
     await click(button("Download photo"));
     expect(mocks.exportPhoto.mock.calls[0][0].labels[0]).toMatchObject({
       name: "My card",
@@ -351,6 +362,64 @@ describe("PhotoStoryStudio", () => {
       itemKey: null,
     });
   });
+
+  it.each([{ cards: [] }, { cards: [null, {}, false, "not a card"] }])(
+    "retries an empty or unusable scan response and applies the next successful result (%j)",
+    async ({ cards }) => {
+      mocks.scan.mockResolvedValueOnce({ data: { cards } });
+      await renderStudio();
+      await upload();
+      expect(mocks.scan).toHaveBeenCalledTimes(1);
+      expect(byLabel("Label price")).toBeNull();
+      expect(button("Download photo").disabled).toBe(true);
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+      await act(async () => vi.advanceTimersByTimeAsync(800));
+      expect(mocks.scan).toHaveBeenCalledTimes(2);
+      expect(byLabel("Label price").value).toBe("13");
+      expect(button("Download photo").disabled).toBe(false);
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+      expect(host.textContent).toContain("1 of 1 photos ready");
+    },
+  );
+
+  it("does not retry a scanner permission error", async () => {
+    mocks.scan.mockRejectedValue(
+      Object.assign(new Error("Permission denied"), {
+        code: "functions/permission-denied",
+      }),
+    );
+    await renderStudio();
+    await upload();
+    expect(host.querySelector('[role="alert"]')).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(mocks.scan).toHaveBeenCalledTimes(1);
+    expect(button("Add a price label").disabled).toBe(false);
+  });
+
+  it.each(["cancel", "delete", "unmount"])(
+    "does not retry when a photo is %s during backoff",
+    async (action) => {
+      mocks.scan.mockRejectedValue(
+        Object.assign(new Error("Temporary service failure"), {
+          code: "functions/unavailable",
+        }),
+      );
+      await renderStudio();
+      await upload();
+      expect(mocks.scan).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(300));
+      if (action === "cancel") await click(button("Continue manually"));
+      else if (action === "delete")
+        await click(byLabel("Remove current photo"));
+      else await act(async () => root.render(null));
+      await act(async () => vi.advanceTimersByTimeAsync(5000));
+      expect(mocks.scan).toHaveBeenCalledTimes(1);
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+      if (action === "cancel")
+        expect(button("Add a price label").disabled).toBe(false);
+      else expect(byLabel("Label price")).toBeNull();
+    },
+  );
 
   it("never exports a matched inventory card without a positive sale price", async () => {
     mocks.app.collectionItems = [card({ overridePrice: 0 })];
@@ -669,5 +738,236 @@ describe("PhotoStoryStudio", () => {
     expect(byLabel("Your sale photos").querySelectorAll("button")).toHaveLength(
       3,
     );
+  });
+
+  it("keeps the next photo queued while retrying and advances after the third failed attempt", async () => {
+    const failure = Object.assign(new Error("Service unavailable"), {
+      code: "functions/unavailable",
+    });
+    mocks.scan
+      .mockRejectedValueOnce(failure)
+      .mockRejectedValueOnce(failure)
+      .mockRejectedValueOnce(failure);
+    await renderStudio();
+    await uploadFiles(["retry.jpg", "next.jpg"]);
+    expect(mocks.scan).toHaveBeenCalledTimes(1);
+    expect(byLabel("Edit photo 2: next.jpg").textContent).toContain("Queued");
+    await act(async () => vi.advanceTimersByTimeAsync(800));
+    expect(mocks.scan).toHaveBeenCalledTimes(2);
+    expect(byLabel("Edit photo 2: next.jpg").textContent).toContain("Queued");
+    await act(async () => vi.advanceTimersByTimeAsync(1800));
+    expect(mocks.scan).toHaveBeenCalledTimes(4);
+    expect(byLabel("Edit photo 1: retry.jpg").textContent).toContain("Review");
+    expect(byLabel("Edit photo 2: next.jpg").textContent).toContain("Ready");
+    expect(host.querySelector('[role="alert"]').textContent).toContain(
+      "We tried scanning this photo 3 times",
+    );
+    await click(byLabel("Edit photo 2: next.jpg"));
+    expect(byLabel("Quick price").value).toBe("13");
+    expect(button("Download photo").disabled).toBe(false);
+  });
+
+  it("confirms all displayed label positions and advances to the next photo", async () => {
+    const charmander = card({
+      entryId: "charmander",
+      name: "Charmander",
+      number: "46/102",
+      overridePrice: 8.25,
+    });
+    mocks.app.collectionItems.push(charmander);
+    const firstDetections = [
+      detection({ position: null }),
+      detection({
+        name: "Charmander",
+        collectorNumber: "46/102",
+        position: null,
+      }),
+    ];
+    mocks.scan
+      .mockResolvedValueOnce({ data: { cards: firstDetections } })
+      .mockResolvedValueOnce({
+        data: {
+          cards: [detection({ name: "Charmander", collectorNumber: "46/102" })],
+        },
+      });
+    await renderStudio();
+    await uploadFiles(["first-review.jpg", "second-review.jpg"]);
+    expect(mocks.scan).toHaveBeenCalledTimes(2);
+    expect(button("Download photo").disabled).toBe(true);
+    expect(
+      byLabel("Edit photo 1: first-review.jpg").getAttribute("aria-pressed"),
+    ).toBe("true");
+    await click(button("Confirm photo & next"));
+    expect(
+      byLabel("Edit photo 2: second-review.jpg").getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(byLabel("Quick price").value).toBe("8");
+    expect(host.textContent).toContain("2 of 2 photos ready");
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    const first = mocks.saveDraft.mock.lastCall[1].photos[0];
+    expect(first.labels).toHaveLength(2);
+    first.labels.forEach((label, index) =>
+      expect(label).toMatchObject({
+        ...positionPhotoLabels(firstDetections)[index],
+        confirmed: true,
+        needsPositionReview: false,
+      }),
+    );
+    expect(first.labels.map((label) => label.price)).toEqual(["13", "8"]);
+    expect(mocks.app.collectionItems[0].overridePrice).toBe(12.5);
+  });
+
+  it("confirms individual cards in order and advances after the final card", async () => {
+    mocks.app.collectionItems.push(
+      card({
+        entryId: "charmander",
+        name: "Charmander",
+        number: "46/102",
+        overridePrice: 8.25,
+      }),
+    );
+    mocks.scan.mockResolvedValueOnce({
+      data: {
+        cards: [
+          detection({ position: null }),
+          detection({
+            name: "Charmander",
+            collectorNumber: "46/102",
+            position: null,
+          }),
+        ],
+      },
+    });
+    await renderStudio();
+    await uploadFiles(["multi-card.jpg", "following.jpg"]);
+    expect(byLabel("Quick price").value).toBe("13");
+    await click(button("Confirm & next"));
+    expect(byLabel("Quick price").value).toBe("8");
+    expect(byLabel("Label name").value).toBe("Charmander");
+    expect(
+      byLabel("Edit photo 1: multi-card.jpg").getAttribute("aria-pressed"),
+    ).toBe("true");
+    await click(button("Confirm & next"));
+    expect(
+      byLabel("Edit photo 2: following.jpg").getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(host.textContent).toContain("2 of 2 photos ready");
+  });
+
+  it("keeps quick prices and conditions in sync with the detailed editor and export", async () => {
+    await renderStudio();
+    await upload();
+    await editInput("Quick price", "17.75");
+    expect(byLabel("Label price").value).toBe("17.75");
+    await blurInput("Quick price");
+    expect(byLabel("Quick price").value).toBe("18");
+    expect(byLabel("Label price").value).toBe("18");
+    await selectOption("Quick condition", "MP");
+    expect(byLabel("Card condition").value).toBe("MP");
+    await editInput("Label price", "31");
+    expect(byLabel("Quick price").value).toBe("31");
+    await click(button("Download photo"));
+    expect(mocks.exportPhoto.mock.lastCall[0].labels[0]).toMatchObject({
+      price: "31",
+      priceSource: "manual",
+      condition: "MP",
+    });
+    expect(mocks.app.collectionItems[0]).toMatchObject({
+      overridePrice: 12.5,
+      condition: "NM",
+    });
+    await editInput("Quick price", "");
+    expect(byLabel("Label price").value).toBe("");
+    expect(button("Confirm & next").disabled).toBe(true);
+    expect(button("Confirm photo & next").disabled).toBe(true);
+    expect(button("Download photo").disabled).toBe(true);
+  });
+
+  it.each([
+    { unresolved: "price", hasNextPhoto: true },
+    { unresolved: "position", hasNextPhoto: true },
+    { unresolved: "price", hasNextPhoto: false },
+    { unresolved: "position", hasNextPhoto: false },
+  ])(
+    "returns to an earlier unresolved label instead of marking the photo ready (%j)",
+    async ({ unresolved, hasNextPhoto }) => {
+      mocks.app.collectionItems = [
+        card({ overridePrice: unresolved === "price" ? 0 : 12.5 }),
+        card({
+          entryId: "charmander",
+          name: "Charmander",
+          number: "46/102",
+          overridePrice: 8.25,
+        }),
+      ];
+      mocks.scan.mockResolvedValueOnce({
+        data: {
+          cards: [
+            detection({
+              position: unresolved === "position" ? null : detection().position,
+            }),
+            detection({ name: "Charmander", collectorNumber: "46/102" }),
+          ],
+        },
+      });
+      await renderStudio();
+      await uploadFiles(
+        hasNextPhoto ? ["unfinished.jpg", "later.jpg"] : ["unfinished.jpg"],
+      );
+      await click(byLabel("Move price label 2: Charmander"));
+      expect(byLabel("Quick price").value).toBe("8");
+      await click(button("Confirm & next"));
+      expect(
+        byLabel("Edit photo 1: unfinished.jpg").getAttribute("aria-pressed"),
+      ).toBe("true");
+      expect(byLabel("Label name").value).toBe("Pikachu");
+      expect(byLabel("Quick price").value).toBe(
+        unresolved === "price" ? "" : "13",
+      );
+      expect(button("Download photo").disabled).toBe(true);
+      expect(host.textContent).toContain(
+        "Check the remaining price or placement before saving this photo.",
+      );
+      expect(host.textContent).not.toContain("This photo is ready to save.");
+      if (hasNextPhoto)
+        expect(
+          byLabel("Edit photo 2: later.jpg").getAttribute("aria-pressed"),
+        ).toBe("false");
+      await act(async () => vi.advanceTimersByTimeAsync(500));
+      const labels = mocks.saveDraft.mock.lastCall[1].photos[0].labels;
+      expect(labels[1]).toMatchObject({
+        name: "Charmander",
+        confirmed: true,
+        needsPositionReview: false,
+      });
+      if (unresolved === "price") expect(labels[0].price).toBe("");
+      else expect(labels[0].needsPositionReview).toBe(true);
+      expect(downloaded).toEqual([]);
+    },
+  );
+
+  it("excludes deselected photos from the desktop ZIP download", async () => {
+    await renderStudio();
+    await uploadFiles([
+      "selected-first.jpg",
+      "omitted.jpg",
+      "selected-last.jpg",
+    ]);
+    expect(button("Download ZIP (3)")).toBeTruthy();
+    await click(byLabel("Select photo 2: omitted.jpg"));
+    expect(button("Download ZIP (3)")).toBeUndefined();
+    await click(button("Download ZIP (2)"));
+    expect(mocks.exportPhoto.mock.calls.map(([photo]) => photo.name)).toEqual([
+      "selected-first.jpg",
+      "selected-last.jpg",
+    ]);
+    expect(mocks.archive.mock.lastCall[0].map((file) => file.name)).toEqual([
+      "selected-first-prices.png",
+      "selected-last-prices.png",
+    ]);
+    await click(byLabel("Select photo 3: selected-last.jpg"));
+    expect(button("Download ZIP (1)")).toBeUndefined();
+    expect(button("Download ZIP (2)")).toBeUndefined();
+    expect(button("Save selected (1)").disabled).toBe(false);
   });
 });
