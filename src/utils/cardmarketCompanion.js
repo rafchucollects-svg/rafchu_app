@@ -24,8 +24,13 @@ export async function saveCardmarketBinding(db, uid, item, choice) {
     const items = snapshot.data()?.items || [];
     const current = items.find(row => row.entryId === item.entryId);
     if (!current || cardmarketInventoryKey(current) !== expected) throw new Error('This card changed. Reopen its match form.');
-    const binding = createCardmarketBinding(current, choice);
-    transaction.update(ref, { items: items.map(row => row.entryId === current.entryId ? { ...row, cardmarketBinding: binding } : row) });
+    // Correct the inventory tag only with the separate, explicit consent from
+    // the match form. Bind against that new identity in the same transaction.
+    const matched = choice.updateInventoryLanguage === true
+      ? { ...current, language: choice.language, isJapanese: choice.language === 'Japanese' }
+      : current;
+    const binding = createCardmarketBinding(matched, choice);
+    transaction.update(ref, { items: items.map(row => row.entryId === current.entryId ? { ...matched, cardmarketBinding: binding } : row) });
     return binding;
   });
 }

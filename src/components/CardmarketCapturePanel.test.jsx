@@ -104,6 +104,40 @@ it('does not erase a newer draft when a save finishes after closing and reopenin
   await act(async () => root.render(null)); await render();
   expect(host.querySelector('input[type="url"]').value).toBe(secondUrl);
 });
+
+it('reopens a corrected Japanese manual match and captures Japanese offers using its new inventory identity', async () => {
+  const original = { entryId: 'snorlax', name: 'Hungry Snorlax', set: 'Unknown Set', number: '143', isManualEntry: true, language: 'English', isJapanese: false, condition: 'NM', overridePrice: 400 };
+  const productUrl = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Unnumbered-Promos/Hungry-Snorlax';
+  const english = { productUrl, language: 'English', condition: 'NM', finish: 'non-reverse', firstEdition: false, confirmed: true };
+  const card = { ...original, cardmarketBinding: createCardmarketBinding(original, english) };
+  mocks.app.collectionItems = [card];
+  report = { runId: 'old-english', captures: [captured(card)] };
+  status = { ...status, hasCaptureJob: false, canResume: false, status: { state: 'complete' } };
+  mocks.save.mockImplementation(async (_db, _uid, current, choice) => {
+    const corrected = { ...current, language: choice.language, isJapanese: choice.language === 'Japanese' };
+    const binding = createCardmarketBinding(corrected, choice);
+    mocks.app.collectionItems = [{ ...corrected, cardmarketBinding: binding }];
+    return binding;
+  });
+  const render = () => act(async () => root.render(<CardmarketSyncPanel onClose={() => {}} />));
+  await render();
+  act(() => {
+    const field = [...host.querySelectorAll('article label')].find(el => el.textContent.startsWith('Card language')).querySelector('select');
+    field.value = 'Japanese'; field.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  const check = label => act(() => [...host.querySelectorAll('article label')].find(el => el.textContent.startsWith(label)).querySelector('input').click());
+  check('Update inventory language to Japanese'); check('I checked the product');
+  await act(async () => button('Save product match').click());
+  await render();
+  expect(mocks.save).toHaveBeenCalledWith(mocks.app.db, 'test', card, expect.objectContaining({ language: 'Japanese', updateInventoryLanguage: true }));
+  expect(host.querySelector('article [role="status"]').textContent).toContain('Inventory language updated to Japanese');
+  expect(host.querySelectorAll('article input[type="radio"]')).toHaveLength(0);
+  expect(mocks.app.collectionItems[0]).toMatchObject({ language: 'Japanese', isJapanese: true, overridePrice: 400 });
+  expect(host.querySelector('article').textContent).toContain('Unknown Set · Japanese');
+  await act(async () => button('Capture 1 linked card').click());
+  expect(mocks.request).toHaveBeenCalledWith('start', [expect.objectContaining({ binding: expect.objectContaining({ language: 'Japanese', inventoryKey: cardmarketInventoryKey(mocks.app.collectionItems[0]) }) })]);
+  expect(readCardmarketMatchDraft('test', card)).toBeNull();
+});
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers(); delete globalThis.IS_REACT_ACT_ENVIRONMENT; });
 
 it('automatically displays partial offers and exposes resume/open controls without writing inventory', async () => {

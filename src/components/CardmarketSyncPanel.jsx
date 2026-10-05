@@ -23,6 +23,7 @@ export function CardmarketMatchForm({ item, busy, saving = false, draftOwner, ca
   const productUrl = customUrl ?? saved?.productUrl ?? suggestions[0]?.productUrl ?? '';
   const suggestion = suggestions.find(row => row.productUrl === productUrl);
   const [confirmedUrl, setConfirmedUrl] = useState(null);
+  const [updateInventoryLanguage, setUpdateInventoryLanguage] = useState(false);
   const [form, setForm] = useState(() => {
     const firstEdition = saved?.firstEdition ?? target.firstEdition;
     return { language: saved?.language || target.language || '', condition: saved?.condition || target.condition || '', finish: saved?.finish || target.finish || '', firstEdition: firstEdition === null ? '' : String(firstEdition), ...draft, confirmed: false };
@@ -32,6 +33,7 @@ export function CardmarketMatchForm({ item, busy, saving = false, draftOwner, ca
     if (draftOwner) setDraftStatus(writeCardmarketMatchDraft(draftOwner, item, { ...fields, customUrl: url }) ? 'saved' : 'error');
   };
   const set = (key, value) => {
+    if (key === 'language') setUpdateInventoryLanguage(false);
     const next = { ...form, [key]: value, ...(key !== 'confirmed' ? { confirmed: false } : {}) };
     setForm(next);
     onEdit?.();
@@ -40,9 +42,13 @@ export function CardmarketMatchForm({ item, busy, saving = false, draftOwner, ca
   const changeUrl = value => { setCustomUrl(value); setForm(current => ({ ...current, confirmed: false })); remember(value, form); onEdit?.(); };
   const validUrl = safeCardmarketProduct(productUrl);
   const matchesSaved = saved && validUrl === saved.productUrl && ['language', 'condition', 'finish'].every(key => form[key] === saved[key]) && form.firstEdition === String(saved.firstEdition);
+  const storedLanguage = /^japanese$/i.test(item.language || '') ? 'Japanese'
+    : /^english$/i.test(item.language || '') ? 'English' : item.language;
+  const languageConflict = Boolean(storedLanguage && form.language && storedLanguage !== form.language);
   const helpId = useId();
   const missing = [!validUrl && 'enter a valid product URL', !form.language && 'choose card language', !form.condition && 'choose condition',
-    !form.finish && 'choose reverse holo', form.firstEdition === '' && 'choose first edition', !confirmed && 'check the confirmation box'].filter(Boolean);
+    !form.finish && 'choose reverse holo', form.firstEdition === '' && 'choose first edition',
+    languageConflict && !updateInventoryLanguage && 'confirm the inventory language correction', !confirmed && 'check the confirmation box'].filter(Boolean);
   const preview = previews.find(row => row.scope === 'product-preview' && Array.isArray(row.offers) && row.inventoryKey === cardmarketInventoryKey(item) && row.entryId === item.entryId &&
     safeCardmarketProduct(row.productUrl) === safeCardmarketProduct(productUrl) && Date.now() - Date.parse(row.capturedAt) >= -300000 && Date.now() - Date.parse(row.capturedAt) < 86400000);
   const previewError = previewErrors.find(row => safeCardmarketProduct(row.productUrl) === safeCardmarketProduct(productUrl))?.error;
@@ -78,10 +84,17 @@ export function CardmarketMatchForm({ item, busy, saving = false, draftOwner, ca
       <label className="text-xs">Reverse holo<select disabled={busy} className={basic} value={form.finish} onChange={e => set('finish', e.target.value)}><option value="">Confirm…</option><option value="reverse">Yes — Reverse Holo</option><option value="non-reverse">No — regular printing</option></select></label>
       <label className="text-xs">First edition<select disabled={busy} className={basic} value={form.firstEdition} onChange={e => set('firstEdition', e.target.value)}><option value="">Confirm…</option><option value="true">Yes — 1st Edition</option><option value="false">No — Unlimited / not first edition</option></select></label>
     </div>
+    {languageConflict && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-950">
+      <p>Your inventory tags this card as {storedLanguage}. Saving this match as {form.language} also needs a language correction.</p>
+      <label className="mt-2 flex items-start gap-2"><input type="checkbox" disabled={busy} className="mt-0.5 h-4 w-4 appearance-auto accent-blue-700" checked={updateInventoryLanguage} onChange={e => {
+        setUpdateInventoryLanguage(e.target.checked); setForm(current => ({ ...current, confirmed: false })); onEdit?.();
+      }} />Update inventory language to {form.language}</label>
+      <p className="mt-1">Your selling price and other card details stay the same. Refresh listings after saving to capture this language.</p>
+    </div>}
     <p className="mt-2 text-xs text-slate-600">Uses your existing condition mapping. Only offers in the selected condition, language and printing will match. Listings already captured for these filters are reused when you confirm.</p>
     <label className="mt-2 flex items-start gap-2 text-xs"><input type="checkbox" disabled={busy} className="mt-0.5 h-4 w-4 appearance-auto accent-blue-700" checked={confirmed} onChange={e => { set('confirmed', e.target.checked); setConfirmedUrl(productUrl); }} />I checked the product, language, condition, reverse status and edition against my card.</label>
     {missing.length > 0 && <p id={helpId} className="mt-2 text-xs text-amber-800">To save this match: {missing.join(', ')}.</p>}
-    <Button className="mt-2" size="sm" aria-describedby={missing.length ? helpId : undefined} disabled={busy || missing.length > 0} onClick={() => onSave({ ...form, productUrl, confirmed: true, firstEdition: form.firstEdition === 'true' })}>{saving ? 'Saving product match…' : 'Save product match'}</Button>
+    <Button className="mt-2" size="sm" aria-describedby={missing.length ? helpId : undefined} disabled={busy || missing.length > 0} onClick={() => onSave({ ...form, productUrl, confirmed: true, firstEdition: form.firstEdition === 'true', ...(languageConflict && updateInventoryLanguage ? { updateInventoryLanguage: true } : {}) })}>{saving ? 'Saving product match…' : 'Save product match'}</Button>
   </details>;
 }
 
@@ -162,16 +175,17 @@ export function CardmarketSyncPanel({ onClose }) {
   const saveMatch = async (item, choice, productResult) => {
     if (busy) return;
     const submittedDraft = readCardmarketMatchDraft(user?.uid, item);
-    const feedback = value => setMatchFeedback(current => ({ ...current, [item.entryId]: { ...value, inventoryKey: cardmarketInventoryKey(item) } }));
+    const feedback = (value, inventoryKey = cardmarketInventoryKey(item)) => setMatchFeedback(current => ({ ...current, [item.entryId]: { ...value, inventoryKey } }));
     setBusy(true); feedback({ type: 'saving', message: 'Saving product match…' });
     try {
       const binding = await saveCardmarketBinding(db, user?.uid, item, choice);
       clearCardmarketMatchDraft(user?.uid, item, submittedDraft);
-      const cached = (productResult?.previews || []).map(snapshot => materializeCardmarketDiscovery(item, snapshot, binding)).filter(Boolean).sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt))[0];
-      const hasOffers = cached && summarizeCardmarketOffers({ ...item, cardmarketBinding: binding }, cached).status === 'ready';
+      const matched = choice.updateInventoryLanguage === true ? { ...item, language: binding.language, isJapanese: binding.language === 'Japanese' } : item;
+      const cached = (productResult?.previews || []).map(snapshot => materializeCardmarketDiscovery(matched, snapshot, binding)).filter(Boolean).sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt))[0];
+      const hasOffers = cached && summarizeCardmarketOffers({ ...matched, cardmarketBinding: binding }, cached).status === 'ready';
       feedback({ type: 'success', message: hasOffers ? `Saved ${item.name} product match. Its captured listings are ready to choose below; no new capture is needed.`
         : cached ? `Saved ${item.name} product match. No captured offers match these filters. Your current price is unchanged.`
-          : `Saved ${item.name} product match. Refresh its listings to read offers for these filters.` });
+          : `Saved ${item.name} product match.${choice.updateInventoryLanguage === true ? ` Inventory language updated to ${binding.language}.` : ''} Refresh its listings to read offers for these filters.` }, binding.inventoryKey);
     } catch (err) {
       feedback({ type: 'error', message: err.message || 'Could not save this product match. Your edits are kept; please retry.' });
     } finally { setBusy(false); }

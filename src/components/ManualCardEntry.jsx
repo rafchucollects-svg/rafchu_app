@@ -48,6 +48,7 @@ export function ManualCardEntry({
   const [cardSet, setCardSet] = useState("");
   const [cardNumber, setCardNumber] = useState("");
   const [cardRarity, setCardRarity] = useState("");
+  const [language, setLanguage] = useState("English");
   const [manualPrice, setManualPrice] = useState("");
   const [notes, setNotes] = useState("");
   
@@ -104,6 +105,7 @@ export function ManualCardEntry({
   useEffect(() => {
     if (!debouncedQuery || debouncedQuery.length < 3) {
       setSuggestions([]);
+      setLoadingSuggestions(false);
       return;
     }
     
@@ -111,11 +113,14 @@ export function ManualCardEntry({
     
     const fetchSuggestions = async () => {
       setLoadingSuggestions(true);
+      setSuggestions([]);
+      setConfirmedNoMatch(false);
       try {
         // Search the API for potential matches
         const results = await apiSearchCardsHybrid(debouncedQuery, {
           useCache: true,
           maxResults: 50,
+          languageScope: language === "Japanese" ? "japanese" : "english",
         });
         
         if (cancelled) return;
@@ -129,10 +134,6 @@ export function ManualCardEntry({
         setSuggestions(fuzzyMatches);
         setShowSuggestions(true);
         
-        // Reset confirmed flag if user changes input
-        if (confirmedNoMatch) {
-          setConfirmedNoMatch(false);
-        }
       } catch (error) {
         console.error("Error fetching suggestions:", error);
       } finally {
@@ -147,7 +148,7 @@ export function ManualCardEntry({
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery]);
+  }, [debouncedQuery, language]);
   
   // Handle selecting a suggestion
   const handleSelectSuggestion = useCallback((card) => {
@@ -292,6 +293,8 @@ export function ManualCardEntry({
       set: cardSet.trim() || "Unknown Set",
       number: cardNumber.trim() || "N/A",
       rarity: cardRarity.trim() || "Unknown",
+      language,
+      isJapanese: language === "Japanese",
       isManualEntry: true,
       manualPrice: manualPrice ? parseFloat(manualPrice) : null,
       manualPriceCurrency: manualPrice ? (currency || 'EUR') : null, // Store currency with price
@@ -319,7 +322,7 @@ export function ManualCardEntry({
     if (onAddCard) {
       onAddCard(manualCard, { fromSuggestion: false, isManual: true });
     }
-  }, [cardName, cardSet, cardNumber, cardRarity, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard, isGraded, gradingCompany, grade, gradedPrice, currency, isVendor, consignment]);
+  }, [cardName, cardSet, cardNumber, cardRarity, language, manualPrice, notes, selectedImage, uploadImageToStorage, onAddCard, isGraded, gradingCompany, grade, gradedPrice, currency, isVendor, consignment]);
   
   // Check if form is valid
   const isFormValid = cardName.trim().length > 0 && (!isGraded || grade !== "");
@@ -396,6 +399,24 @@ export function ManualCardEntry({
             <option value="Illustration Rare">Illustration Rare</option>
             <option value="Hyper Rare">Hyper Rare</option>
             <option value="Promo">Promo</option>
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="manual-card-language" className="block text-sm font-medium mb-1">Language</label>
+          <select
+            id="manual-card-language"
+            value={language}
+            onChange={(e) => {
+              setLanguage(e.target.value);
+              setSuggestions([]);
+              setConfirmedNoMatch(false);
+              setShowSuggestions(true);
+            }}
+            className="w-full px-3 py-2 border rounded-md bg-background"
+          >
+            <option value="English">English</option>
+            <option value="Japanese">Japanese</option>
           </select>
         </div>
         
@@ -572,7 +593,7 @@ export function ManualCardEntry({
       </div>
       
       {/* Did You Mean? Suggestions */}
-      <AnimatePresence>
+      <AnimatePresence key={language}>
         {showSuggestions && suggestions.length > 0 && !confirmedNoMatch && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}

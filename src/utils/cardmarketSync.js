@@ -27,7 +27,7 @@ export function cardmarketTarget(item) {
   const language = storedLanguageConflict || /^japanese$/i.test(item.language || '') || (!item.language && japaneseSet) ? 'Japanese' : /^english$/i.test(item.language || '') ? 'English' : !item.language ? null : item.language;
   if (!language) issues.push('Confirm the card language.');
   else if (!['English', 'Japanese'].includes(language)) issues.push('This pilot supports English and Japanese.');
-  if (storedLanguageConflict) issues.push('The language conflicts with the Japanese expansion. Confirm Japanese for this match; the stored Inventory language will remain unchanged.');
+  if (storedLanguageConflict) issues.push('The inventory language conflicts with the Japanese expansion. Confirm Japanese for this match.');
   if (item.isFirstEdition && item.isUnlimited) issues.push('Both 1st Edition and Unlimited are tagged.');
   if (item.isPokeBall && item.isMasterBall) issues.push('Both Poké Ball and Master Ball are tagged.');
   if (item.isSealed) issues.push('Sealed cards need a separate product or confirmed offer details.');

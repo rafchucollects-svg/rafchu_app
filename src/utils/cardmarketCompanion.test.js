@@ -47,3 +47,39 @@ it('applies only the selected offer and refuses stale identity before a transact
   await expect(saveCardmarketOffers({}, 'user', report, [{ entryId: card.entryId, method: 'selected-offer', offerId: 'articleRow100', replaceManual: true }])).rejects.toThrow(/Link/);
   expect(tx.update).not.toHaveBeenCalled();
 });
+
+it('corrects a manual card language and saves its Japanese match atomically after explicit consent', async () => {
+  const original = { entryId: 'snorlax', name: 'Hungry Snorlax', set: 'Unknown Set', number: '143', isManualEntry: true, language: 'English', isJapanese: false, condition: 'NM', overridePrice: 400 };
+  const productUrl = 'https://www.cardmarket.com/en/Pokemon/Products/Singles/Unnumbered-Promos/Hungry-Snorlax';
+  const japanese = { productUrl, language: 'Japanese', condition: 'NM', finish: 'non-reverse', firstEdition: false, confirmed: true };
+  const other = { ...card, entryId: 'other' };
+  const current = { ...original, quantity: 2, buyPrice: 300, notes: 'Keep this note', overridePrice: 425 };
+  tx.get.mockResolvedValue({ data: () => ({ items: [current, other] }) });
+  await expect(saveCardmarketBinding({}, 'user', original, japanese)).rejects.toThrow(/conflict/);
+  expect(tx.update).not.toHaveBeenCalled();
+
+  const binding = await saveCardmarketBinding({}, 'user', original, { ...japanese, updateInventoryLanguage: true });
+  expect(tx.update).toHaveBeenCalledTimes(1);
+  const saved = JSON.parse(JSON.stringify(tx.update.mock.calls[0][1].items));
+  expect(saved[0]).toMatchObject({ ...current, language: 'Japanese', isJapanese: true, cardmarketBinding: { language: 'Japanese' } });
+  expect(saved[1]).toEqual(other);
+  expect(binding.inventoryKey).toBe(cardmarketInventoryKey(saved[0]));
+  expect(binding.inventoryKey).not.toBe(cardmarketInventoryKey(original));
+  expect(createCardmarketBinding(saved[0], saved[0].cardmarketBinding)).toEqual(binding);
+
+  const offer = language => ({ offerId: language === 'Japanese' ? 'articleRow1001' : 'articleRow1002', seller: 'Seller', price: 350, currency: 'EUR', language, condition: 'NM', finish: 'non-reverse', firstEdition: false, signed: false, altered: false });
+  const capture = { source: 'cardmarket-browser', currency: 'EUR', productUrl, inventoryKey: binding.inventoryKey, capturedAt: new Date().toISOString(), complete: true, filters: binding, offers: [offer('Japanese'), offer('English')] };
+  expect(summarizeCardmarketOffers(saved[0], capture)).toMatchObject({ status: 'ready', excluded: 1, offers: [expect.objectContaining({ language: 'Japanese' })] });
+  expect(summarizeCardmarketOffers(saved[0], { ...capture, inventoryKey: cardmarketInventoryKey(original) }).status).toBe('mismatch');
+});
+
+it('keeps stale-edit, review and variant checks when correcting inventory language', async () => {
+  const japanese = { ...choice, language: 'Japanese', updateInventoryLanguage: true };
+  tx.get.mockResolvedValue({ data: () => ({ items: [card] }) });
+  for (const changes of [{ confirmed: false }, { finish: 'non-reverse' }, { language: 'German' }]) {
+    await expect(saveCardmarketBinding({}, 'user', card, { ...japanese, ...changes })).rejects.toThrow();
+  }
+  tx.get.mockResolvedValue({ data: () => ({ items: [{ ...card, language: 'Japanese' }] }) });
+  await expect(saveCardmarketBinding({}, 'user', card, japanese)).rejects.toThrow(/changed/);
+  expect(tx.update).not.toHaveBeenCalled();
+});

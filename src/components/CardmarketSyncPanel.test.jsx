@@ -82,3 +82,33 @@ it('explains invalid product URLs and retains edits when browser storage is unav
   expect(host.querySelector('button').disabled).toBe(true);
  } finally { write.mockRestore(); }
 });
+
+const checkbox = label => [...host.querySelectorAll('label')].find(el => el.textContent.startsWith(label)).querySelector('input[type="checkbox"]');
+it('requires a separate language correction before saving a Japanese match for an English-tagged manual card', () => {
+ const save = vi.fn(); render({ item: unmatched, draftOwner: 'owner', onSave: save });
+ typeUrl(manualUrl); choose('Card language', 'Japanese'); choose('Reverse holo', 'non-reverse'); choose('First edition', 'false');
+ expect(host.textContent).toContain('Your inventory tags this card as English');
+ act(() => checkbox('I checked the product').click());
+ expect(host.querySelector('button').disabled).toBe(true);
+ expect(host.textContent).toContain('confirm the inventory language correction');
+ act(() => checkbox('Update inventory language to Japanese').click());
+ expect(checkbox('I checked the product').checked).toBe(false);
+ act(() => checkbox('I checked the product').click());
+ act(() => host.querySelector('button').click());
+ expect(save).toHaveBeenCalledWith(expect.objectContaining({ language: 'Japanese', updateInventoryLanguage: true, productUrl: manualUrl, confirmed: true }));
+ expect(unmatched.language).toBe('English');
+});
+
+it('remembers the Japanese draft without retaining inventory-correction consent after reopening', () => {
+ const props = { item: unmatched, draftOwner: 'owner' }; render(props);
+ typeUrl(manualUrl); choose('Card language', 'Japanese'); choose('Reverse holo', 'non-reverse'); choose('First edition', 'false');
+ act(() => checkbox('Update inventory language to Japanese').click());
+ act(() => checkbox('I checked the product').click());
+ act(() => root.render(null)); render(props);
+ expect(checkbox('Update inventory language to Japanese').checked).toBe(false);
+ expect(checkbox('I checked the product').checked).toBe(false);
+ expect(host.querySelector('button').disabled).toBe(true);
+ act(() => checkbox('Update inventory language to Japanese').click());
+ choose('Card language', 'English'); choose('Card language', 'Japanese');
+ expect(checkbox('Update inventory language to Japanese').checked).toBe(false);
+});
