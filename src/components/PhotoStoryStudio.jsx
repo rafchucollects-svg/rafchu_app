@@ -16,6 +16,12 @@ import {
   Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { StoryPhotoQuickReview } from "./StoryPhotoQuickReview";
+import { StoryPhotoSaveDialog } from "./StoryPhotoSaveDialog";
+import {
+  runStoryPhotoScan,
+  MAX_STORY_SCAN_ATTEMPTS,
+} from "@/utils/storyPhotoScan";
 import { useApp } from "@/contexts/AppContext";
 import { convertCurrency } from "@/utils/cardHelpers";
 import {
@@ -53,10 +59,10 @@ const isReady = (photo) =>
     (label) =>
       !label.needsPositionReview && parseStoryPrice(label.price) !== null,
   );
-const errorMessage = (error) =>
+const errorMessage = (error, attempts = 1) =>
   /resource-exhausted|quota/i.test(`${error?.code} ${error?.message}`)
     ? "Photo scanning is temporarily busy. Try again, or add prices yourself below."
-    : "This photo could not be scanned. Retry, or choose a card or enter a price yourself below.";
+    : `${attempts > 1 ? `We tried scanning this photo ${attempts} times.` : "This photo could not be scanned."} Retry, or choose a card or enter a price yourself below.`;
 const priceText = (price) =>
   roundStoryPrice(price) == null ? "" : String(roundStoryPrice(price));
 const itemDescription = (item) =>
@@ -130,6 +136,8 @@ export function PhotoStoryStudio() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [saveBatch, setSaveBatch] = useState(null);
+  const [omittedPhotoIds, setOmittedPhotoIds] = useState(() => new Set());
   const [notice, setNotice] = useState("");
   const [saveState, setSaveState] = useState("");
   const [search, setSearch] = useState("");
@@ -205,6 +213,7 @@ export function PhotoStoryStudio() {
     return () => {
       cancelled = true;
       mounted.current = false;
+      activeJobs.forEach((controller) => controller.abort());
       activeJobs.clear();
       ownedUrls.forEach((url) => URL.revokeObjectURL(url));
       ownedUrls.clear();
@@ -362,27 +371,57 @@ export function PhotoStoryStudio() {
   const scanPhoto = useCallback(
     async (photo) => {
       if (!user || jobs.current.has(photo.id)) return;
-      const token = makeId();
-      jobs.current.set(photo.id, token);
-      updatePhoto(photo.id, { status: "scanning", error: "" });
+      const controller = new AbortController();
+      let attempts = 0;
+      jobs.current.set(photo.id, controller);
+      updatePhoto(photo.id, { status: "scanning", error: "", scanAttempt: 1 });
       try {
         const prepared = photo.scanBase64
           ? photo
           : await prepareStoryPhoto(
               new File([photo.blob], photo.name, { type: photo.blob.type }),
             );
-        if (jobs.current.get(photo.id) !== token || !mounted.current) return;
-        const response = await httpsCallable(getFunctions(), "parseCardPhoto", {
+        if (jobs.current.get(photo.id) !== controller || !mounted.current)
+          return;
+        const callable = httpsCallable(getFunctions(), "parseCardPhoto", {
           timeout: 70000,
-        })({
-          imageBase64: prepared.scanBase64,
-          mimeType: prepared.scanMimeType,
         });
-        if (jobs.current.get(photo.id) !== token || !mounted.current) return;
-        const detected = Array.isArray(response.data?.cards)
-          ? response.data.cards.slice(0, 12)
-          : [];
-        if (!detected.length) throw new Error("No cards detected");
+        const detected = await runStoryPhotoScan(
+          async () => {
+            const response = await callable({
+              imageBase64: prepared.scanBase64,
+              mimeType: prepared.scanMimeType,
+            });
+            const cards = Array.isArray(response.data?.cards)
+              ? response.data.cards
+                  .filter(
+                    (card) =>
+                      card &&
+                      typeof card === "object" &&
+                      (card.name ||
+                        card.cardName ||
+                        card.collectorNumber ||
+                        card.number),
+                  )
+                  .slice(0, 12)
+              : [];
+            if (!cards.length)
+              throw Object.assign(new Error("No cards detected"), {
+                code: "story/no-cards",
+              });
+            return cards;
+          },
+          {
+            signal: controller.signal,
+            onAttempt: ({ attempt }) => {
+              attempts = attempt;
+              if (jobs.current.get(photo.id) === controller && mounted.current)
+                updatePhoto(photo.id, { scanAttempt: attempt });
+            },
+          },
+        );
+        if (jobs.current.get(photo.id) !== controller || !mounted.current)
+          return;
         const positions = positionPhotoLabels(detected);
         const labels = detected.map((card, index) => {
           const current = matchingContext.current;
@@ -416,13 +455,18 @@ export function PhotoStoryStudio() {
           scanMimeType: undefined,
         });
       } catch (error) {
-        if (jobs.current.get(photo.id) === token && mounted.current)
+        if (
+          jobs.current.get(photo.id) === controller &&
+          mounted.current &&
+          error.name !== "AbortError"
+        )
           updatePhoto(photo.id, {
             status: "review",
-            error: errorMessage(error),
+            error: errorMessage(error, attempts),
           });
       } finally {
-        if (jobs.current.get(photo.id) === token) jobs.current.delete(photo.id);
+        if (jobs.current.get(photo.id) === controller)
+          jobs.current.delete(photo.id);
       }
     },
     [user, updatePhoto],
@@ -472,6 +516,7 @@ export function PhotoStoryStudio() {
   };
 
   const removePhoto = (photo) => {
+    jobs.current.get(photo.id)?.abort();
     jobs.current.delete(photo.id);
     setPhotos((previous) => previous.filter((entry) => entry.id !== photo.id));
     if (active?.id === photo.id) {
@@ -641,6 +686,78 @@ export function PhotoStoryStudio() {
         parseStoryPrice(label.price) == null,
     ).length || 0;
   const readyCount = photos.filter(isReady).length;
+  const selectedPhotos = photos.filter(
+    (photo) => !omittedPhotoIds.has(photo.id),
+  );
+  const selectedReadyPhotos = selectedPhotos.filter(isReady);
+  const activeIndex = photos.findIndex((photo) => photo.id === active?.id);
+  const selectPhoto = (id) => {
+    setActiveId(id);
+    setSelectedId(null);
+    setSearch("");
+  };
+  const nextPhoto = () => {
+    if (activeIndex < photos.length - 1)
+      selectPhoto(photos[activeIndex + 1].id);
+    else setNotice("This photo is ready to save.");
+  };
+  const confirmLabel = (id) => {
+    const index = active.labels.findIndex((label) => label.id === id);
+    const label = active.labels[index];
+    if (
+      !label ||
+      parseStoryPrice(label.price) == null ||
+      active.status !== "review"
+    )
+      return;
+    updateLabel(id, {
+      confirmed: true,
+      needsPositionReview: false,
+      price: priceText(label.price),
+      reason: "Price and placement checked by you.",
+    });
+    const unfinished = active.labels.find(
+      (entry) =>
+        entry.id !== id &&
+        (entry.needsPositionReview || parseStoryPrice(entry.price) === null),
+    );
+    if (index < active.labels.length - 1)
+      setSelectedId(active.labels[index + 1].id);
+    else if (unfinished) {
+      setSelectedId(unfinished.id);
+      setNotice(
+        "Check the remaining price or placement before saving this photo.",
+      );
+    } else nextPhoto();
+  };
+  const confirmPhoto = () => {
+    if (
+      !active?.labels.length ||
+      active.status !== "review" ||
+      active.labels.some((label) => parseStoryPrice(label.price) == null)
+    )
+      return;
+    updatePhoto(active.id, (photo) => ({
+      labels: photo.labels.map((label) => ({
+        ...label,
+        confirmed: true,
+        needsPositionReview: false,
+        price: priceText(label.price),
+        reason: "Price and placement checked by you.",
+      })),
+    }));
+    nextPhoto();
+  };
+  const openSave = (batch) => {
+    if (!batch.length || batch.some((photo) => !isReady(photo))) return;
+    setSaveBatch({
+      photos: batch.map((photo) => ({
+        ...photo,
+        labels: photo.labels.map(labelForExport),
+      })),
+      settings: { ...settings },
+    });
+  };
   const selectedCard = selected ? labelCardFields(selected, inventory) : null;
   const selectedCondition = selectedCard
     ? STORY_CONDITION_OPTIONS.find(
@@ -681,7 +798,7 @@ export function PhotoStoryStudio() {
       urls.current.delete(url);
     }, 30000);
   };
-  const exportPhotos = async (batch, share = false) => {
+  const exportPhotos = async (batch) => {
     if (
       exportLock.current ||
       !batch.length ||
@@ -706,14 +823,12 @@ export function PhotoStoryStudio() {
         }-prices.png`;
         files.push(new File([blob], filename, { type: "image/png" }));
       }
-      if (share && navigator.canShare?.({ files }) && navigator.share)
-        await navigator.share({ files });
-      else if (files.length > 1)
+      if (files.length > 1)
         download(await createStoryPhotoArchive(files), "rafchu-story-sale.zip");
       else files.forEach((file) => download(file, file.name));
       if (mounted.current)
         setNotice(
-          `${files.length === 1 ? "Photo" : `${files.length} photos`} ready. ${share ? "" : "Check your downloads."}`,
+          `${files.length === 1 ? "Photo" : `${files.length} photos`} ready. Check your downloads.`,
         );
     } catch (error) {
       if (mounted.current && error.name !== "AbortError")
@@ -733,7 +848,7 @@ export function PhotoStoryStudio() {
       </div>
     );
   return (
-    <div className="photo-studio">
+    <div className={`photo-studio ${photos.length ? "has-photos" : ""}`}>
       <header className="photo-studio-hero">
         <div>
           <p className="photo-studio-eyebrow">RAFCHU · STORY SALE</p>
@@ -880,30 +995,86 @@ export function PhotoStoryStudio() {
       )}
       {!!photos.length && (
         <>
+          <div className="photo-studio-batch-bar">
+            <div>
+              <label>
+                <input
+                  type="checkbox"
+                  aria-label="Select all photos"
+                  checked={selectedPhotos.length === photos.length}
+                  ref={(node) => {
+                    if (node)
+                      node.indeterminate =
+                        selectedPhotos.length > 0 &&
+                        selectedPhotos.length < photos.length;
+                  }}
+                  onChange={(event) =>
+                    setOmittedPhotoIds(
+                      event.target.checked
+                        ? new Set()
+                        : new Set(photos.map((photo) => photo.id)),
+                    )
+                  }
+                />
+                Select all
+              </label>
+              <span>
+                {selectedPhotos.length} selected · {selectedReadyPhotos.length}{" "}
+                ready to save
+              </span>
+            </div>
+            <Button
+              disabled={!selectedReadyPhotos.length || exporting}
+              onClick={() => openSave(selectedReadyPhotos)}
+            >
+              <Download size={16} /> Save selected ({selectedReadyPhotos.length}
+              )
+            </Button>
+          </div>
+          {selectedPhotos.length > selectedReadyPhotos.length && (
+            <p className="photo-studio-batch-hint">
+              {selectedPhotos.length - selectedReadyPhotos.length} selected
+              photo(s) still need scanning, prices or placement. Only the{" "}
+              {selectedReadyPhotos.length} ready photos will be included.
+            </p>
+          )}
           <nav className="photo-studio-filmstrip" aria-label="Your sale photos">
             {photos.map((photo, index) => (
-              <button
-                key={photo.id}
-                aria-label={`Edit photo ${index + 1}: ${photo.name}`}
-                aria-pressed={active?.id === photo.id}
-                onClick={() => {
-                  setActiveId(photo.id);
-                  setSelectedId(null);
-                  setSearch("");
-                }}
-              >
-                <img src={photo.url} alt="" />
-                <span>{index + 1}</span>
-                <small>
-                  {photo.status === "scanning"
-                    ? "Scanning…"
-                    : photo.status === "queued"
-                      ? "Queued"
-                      : isReady(photo)
-                        ? "Ready"
-                        : "Review"}
-                </small>
-              </button>
+              <div className="photo-studio-thumb" key={photo.id}>
+                <button
+                  aria-label={`Edit photo ${index + 1}: ${photo.name}`}
+                  aria-pressed={active?.id === photo.id}
+                  onClick={() => selectPhoto(photo.id)}
+                >
+                  <img src={photo.url} alt="" />
+                  <span>{index + 1}</span>
+                  <small>
+                    {photo.status === "scanning"
+                      ? `Scanning ${photo.scanAttempt || 1}/${MAX_STORY_SCAN_ATTEMPTS}`
+                      : photo.status === "queued"
+                        ? "Queued"
+                        : isReady(photo)
+                          ? "Ready"
+                          : "Review"}
+                  </small>
+                </button>
+                <label className="photo-studio-thumb-select">
+                  <input
+                    type="checkbox"
+                    aria-label={`Select photo ${index + 1}: ${photo.name}`}
+                    checked={!omittedPhotoIds.has(photo.id)}
+                    onChange={(event) =>
+                      setOmittedPhotoIds((previous) => {
+                        const next = new Set(previous);
+                        if (event.target.checked) next.delete(photo.id);
+                        else next.add(photo.id);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="sr-only">Select photo {index + 1}</span>
+                </label>
+              </div>
             ))}
           </nav>
           {active && (
@@ -941,7 +1112,7 @@ export function PhotoStoryStudio() {
                     data-testid="photo-preview"
                     style={{
                       aspectRatio: `${layout.width} / ${layout.height}`,
-                      maxWidth: settings.format === "story" ? 380 : 680,
+                      maxWidth: `min(${settings.format === "story" ? 380 : 680}px, calc(55svh * ${layout.width / layout.height}))`,
                       background: settings.backgroundColor || "#0f172a",
                     }}
                   >
@@ -1036,13 +1207,19 @@ export function PhotoStoryStudio() {
                         <strong>
                           {active.status === "queued"
                             ? "Waiting to scan…"
-                            : "Finding cards & prices…"}
+                            : active.scanAttempt > 1
+                              ? `Trying again · attempt ${active.scanAttempt} of ${MAX_STORY_SCAN_ATTEMPTS}`
+                              : "Finding cards & prices…"}
                         </strong>
-                        <span>Your photo stays exactly as uploaded.</span>
+                        <span>
+                          We retry temporary failures automatically, up to{" "}
+                          {MAX_STORY_SCAN_ATTEMPTS} attempts.
+                        </span>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => {
+                            jobs.current.get(active.id)?.abort();
                             jobs.current.delete(active.id);
                             updatePhoto(active.id, { status: "review" });
                           }}
@@ -1062,6 +1239,24 @@ export function PhotoStoryStudio() {
                   <Move size={14} /> Drag a price onto its card. Use arrow keys
                   for fine adjustments.
                 </p>
+                <StoryPhotoQuickReview
+                  photo={active}
+                  selectedLabel={selected}
+                  currency={settings.currency}
+                  selectedCondition={selectedCondition}
+                  isGraded={selectedCard?.isGraded}
+                  onSelectLabel={setSelectedId}
+                  onUpdateLabel={updateLabel}
+                  onConfirmLabel={confirmLabel}
+                  onConfirmPhoto={confirmPhoto}
+                  onPreviousPhoto={() =>
+                    activeIndex > 0 && selectPhoto(photos[activeIndex - 1].id)
+                  }
+                  onNextPhoto={nextPhoto}
+                  photoIndex={activeIndex}
+                  photoCount={photos.length}
+                  disabled={active.status !== "review"}
+                />
                 <div className="photo-studio-format">
                   <label>
                     Export size
@@ -1493,6 +1688,8 @@ export function PhotoStoryStudio() {
             </div>
             <div>
               <Button
+                variant="outline"
+                className="photo-studio-desktop-export"
                 disabled={!isReady(active) || exporting}
                 onClick={() => exportPhotos([active])}
               >
@@ -1503,27 +1700,33 @@ export function PhotoStoryStudio() {
                 )}{" "}
                 Download photo
               </Button>
-              {typeof navigator.share === "function" && (
+              <Button
+                disabled={!selectedReadyPhotos.length || exporting}
+                onClick={() => openSave(selectedReadyPhotos)}
+              >
+                Save selected ({selectedReadyPhotos.length})
+              </Button>
+              {selectedReadyPhotos.length > 1 && (
                 <Button
                   variant="outline"
-                  disabled={!isReady(active) || exporting}
-                  onClick={() => exportPhotos([active], true)}
+                  className="photo-studio-desktop-export"
+                  disabled={exporting}
+                  onClick={() => exportPhotos(selectedReadyPhotos)}
                 >
-                  Share
-                </Button>
-              )}
-              {photos.length > 1 && (
-                <Button
-                  variant="outline"
-                  disabled={!readyCount || exporting}
-                  onClick={() => exportPhotos(photos.filter(isReady))}
-                >
-                  Download ZIP ({readyCount})
+                  Download ZIP ({selectedReadyPhotos.length})
                 </Button>
               )}
             </div>
           </footer>
         </>
+      )}
+      {saveBatch && (
+        <StoryPhotoSaveDialog
+          photos={saveBatch.photos}
+          settings={saveBatch.settings}
+          onClose={() => setSaveBatch(null)}
+          onDownload={download}
+        />
       )}
     </div>
   );

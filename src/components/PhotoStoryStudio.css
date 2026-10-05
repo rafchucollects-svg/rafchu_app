@@ -674,3 +674,100 @@
   line-height: 1.5;
   color: var(--studio-muted);
 }
+
+.photo-studio.has-photos .photo-studio-hero {
+  padding: 20px 26px;
+}
+.photo-studio.has-photos .photo-studio-hero h1 {
+  font-size: 25px;
+}
+.photo-studio.has-photos .photo-studio-hero div > p:last-child,
+.photo-studio.has-photos .photo-studio-steps {
+  display: none;
+}
+.photo-studio.has-photos .photo-studio-eyebrow {
+  margin-bottom: 8px;
+}
+.photo-studio-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+.photo-studio-batch-bar > div {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.photo-studio-batch-bar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-weight: 700;
+}
+.photo-studio-batch-bar span,
+.photo-studio-batch-hint {
+  color: var(--studio-muted);
+  font-size: 11px;
+}
+.photo-studio-batch-hint {
+  margin-top: 5px;
+}
+.photo-studio-batch-bar button {
+  min-height: 44px;
+}
+.photo-studio-thumb {
+  position: relative;
+  flex-shrink: 0;
+}
+.photo-studio-thumb-select {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.photo-studio-thumb-select input {
+  box-shadow: 0 0 0 3px white;
+  border-radius: 2px;
+}
+.photo-studio-filmstrip .photo-studio-thumb-select span {
+  position: absolute;
+  padding: 0;
+}
+@media (max-width: 760px) {
+  .photo-studio-batch-bar {
+    align-items: stretch;
+  }
+  .photo-studio-batch-bar > div {
+    gap: 0;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .photo-studio-batch-bar > button {
+    align-self: center;
+  }
+  .photo-studio-export {
+    position: sticky;
+    bottom: 0;
+    z-index: 25;
+    background: #ffffffed;
+    border: 1px solid var(--studio-line);
+    border-radius: 14px;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+    box-shadow: 0 -5px 25px #1728200d;
+    gap: 8px;
+  }
+  .photo-studio-export > div:last-child > button {
+    min-height: 44px;
+  }
+  .photo-studio-export .photo-studio-desktop-export {
+    display: none;
+  }
+}
