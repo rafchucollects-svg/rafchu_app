@@ -50,7 +50,7 @@ it.each(['1.1.0', '1.1.1'])('explains the BGS and CGC companion update for %s', 
   await act(async () => root.render(<CardLadderSyncPanel />));
   const warning = host.querySelector('[aria-label="CardLadder grading support update"]');
   expect(warning.textContent).toContain('sync BGS and CGC');
-  expect(warning.textContent).toContain('1.2.2');
+  expect(warning.textContent).toContain('1.2.3');
   expect(warning.textContent).toContain('run Sync Inventory again');
   expect(mocks.request).not.toHaveBeenCalledWith('start');
 });
@@ -65,7 +65,7 @@ it('shows the capture fix update for companion 1.2.0 and removes it after updati
   mocks.request.mockResolvedValue({ installed: true, version: '1.2.0' });
   await act(async () => root.render(<CardLadderSyncPanel />));
   const warning = host.querySelector('[aria-label="CardLadder capture fix update"]');
-  expect(warning.textContent).toContain('1.2.2');
+  expect(warning.textContent).toContain('1.2.3');
   expect(warning.textContent).toContain('single sale');
   expect(warning.textContent).toContain('3/17');
   expect(warning.querySelector('a').getAttribute('href')).toBe('/cardladder-companion.zip');
@@ -519,7 +519,7 @@ it.each(['old-reader', 'incomplete', 'cancelled', 'stale', 'invalid-total', 'mis
   expect(removalCheckbox()).toBeNull();
   const notice = host.querySelector('[aria-label="CardLadder removal check needs fresh capture"]');
   expect(notice.textContent).toContain('No cards will be removed from this capture.');
-  expect(notice.textContent).toContain('companion 1.2.2');
+  expect(notice.textContent).toContain('companion 1.2.3');
   expect(notice.textContent).toContain('run Sync Inventory again');
   expect(mocks.save).not.toHaveBeenCalled();
 });
@@ -588,14 +588,14 @@ it('explains that automatic updates remove confirmed linked cards and preserve u
   expect(mocks.save).not.toHaveBeenCalled();
 });
 
-it.each(['1.2.1', '1.2.2'])('shows the inventory membership update only for companion 1.2.1 (installed %s)', async version => {
+it.each(['1.2.1', '1.2.2', '1.2.3', '1.10.0', '2.0.0'])('shows the account verification fix for older inventory companions (installed %s)', async version => {
   mocks.request.mockResolvedValue({ installed: true, version });
   await act(async () => root.render(<CardLadderSyncPanel />));
   const notice = host.querySelector('[aria-label="CardLadder inventory removal update"]');
-  if (version === '1.2.1') {
-    expect(notice.textContent).toContain('Update to companion 1.2.2');
+  if (['1.2.1', '1.2.2'].includes(version)) {
+    expect(notice.textContent).toContain('Update to companion 1.2.3');
     expect(notice.textContent).toContain('run a fresh Sync Inventory');
-    expect(notice.textContent).toContain('Existing captures cannot identify missing cards.');
+    expect(notice.textContent).toContain('account verification when CardLadder displays its headings in uppercase');
   } else expect(notice).toBeNull();
   expect(mocks.save).not.toHaveBeenCalled();
 });
@@ -646,4 +646,35 @@ it('limits Select all to 400 removals and allows the reviewed batch to be reduce
   expect(checkboxes[400].disabled).toBe(false);
   expect(applyFooter().querySelector('button').textContent).toBe('Remove 399 cards from Inventory');
   expect(mocks.save).not.toHaveBeenCalled();
+});
+
+
+it('shows the specific account verification failure from an unverified capture', async () => {
+  const report = legacyReport();
+  report.inventorySnapshotWarning = 'The CardLadder source account could not be verified. This capture can update prices and add cards, but cannot reconcile removals.';
+  await loadReport(report);
+  const warning = host.querySelector('[aria-label="CardLadder removal check needs fresh capture"]');
+  expect(warning.textContent).toContain(report.inventorySnapshotWarning);
+  expect(warning.textContent).toContain('1.2.3');
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it.each([true, false])('offers an exact-matched card a link-only save when sales complete is %s', async complete => {
+  const report = legacyReport();
+  const holding = { ...report.holdings[0], complete, sales: [], currency: 'USD' };
+  const verified = verifiedInventory([holding]);
+  mocks.save.mockResolvedValue({ updatedCount: 0, stickerUpdatedCount: 0, addedCount: 0, linkedCount: 1 });
+  await loadReport(verified);
+  const checkbox = host.querySelector('[aria-label="Include Lugia V one"]');
+  expect(checkbox.disabled).toBe(false);
+  expect(checkbox.checked).toBe(true);
+  expect(applyFooter().querySelector('button').textContent).toBe('Save 1 link');
+  clickNamedButton('Deselect all');
+  expect(checkbox.checked).toBe(false);
+  expect(applyFooter().querySelector('button').disabled).toBe(true);
+  act(() => checkbox.click());
+  await act(async () => applyFooter().querySelector('button').click());
+  expect(mocks.save).toHaveBeenCalledWith({}, 'test', verified, {}, {}, ['one'], false, [],
+    { updateStickerPrices: true, removals: [] });
+  expect(applyFooter().querySelector('[role="status"]').textContent).toContain('Saved 1 CardLadder link.');
 });

@@ -284,13 +284,26 @@ export function buildSalesPreview(items, report, now = Date.now(), bindings = {}
       inventoryFingerprint(item) === binding.itemIdentity && identity === binding.holdingIdentity) : [];
     if (!binding) candidates = previouslyLinked.filter(item => sameGrade(item) &&
       item.cardladderData?.holdingIdentityKey === identity && item.cardladderData?.inventoryIdentityKey === inventoryFingerprint(item));
-    // Exact print/grade identity only. A manual link resolves naming differences.
-    if (!binding && !previouslyLinked.length && !candidates.length) candidates = items.filter(item => sameGrade(item) && cardLadderIdentity(item) === identity);
+    // Exact print/grade identity only. A replacement holding ID must not revive
+    // a link invalidated by an inventory edit; explicit review can relink it.
+    if (!binding && !previouslyLinked.length && !candidates.length) candidates = items.filter(item => sameGrade(item) &&
+      (!item.cardladderData?.holdingId || item.cardladderData.inventoryIdentityKey === inventoryFingerprint(item)) &&
+      cardLadderIdentity(item) === identity);
     const item = candidates.length === 1 ? candidates[0] : null;
     const status = !item ? (candidates.length ? 'ambiguous' : 'unmatched') : used.has(item.entryId) ? 'ambiguous' : summary.status === 'no-sales' && !item.image && safeCardLadderImage(holding.imageUrl) ? 'image-only' : summary.status;
     if (item) used.add(item.entryId);
     return { holding, item, ...summary, currency: holding.currency || 'USD', status, fallbackValue: cardLadderFallbackValue(holding, summary), locked: Boolean(item && (item.overridePrice != null || item.manualPrice != null)), previousPrice: item?.gradedPrice ?? null, previousCurrency: item?.gradedPriceCurrency || 'USD' };
-  }).map((row, _index, rows) => row.item && rows.filter(other => other.item?.entryId === row.item.entryId).length > 1 ? { ...row, status: 'ambiguous' } : row);
+  }).map((row, _index, rows) => {
+    const status = row.item && rows.filter(other => other.item?.entryId === row.item.entryId).length > 1 ? 'ambiguous' : row.status;
+    const link = row.item?.cardladderData;
+    // A verified membership match does not depend on recent sales. Save this
+    // link even when pricing is unavailable, so a later absence can be checked.
+    // Matching above still rejects edited identities and other-account links.
+    const needsMembershipLink = Boolean(accountKey && row.item && status !== 'ambiguous' &&
+      (link?.holdingId !== row.holding.holdingId || link?.holdingIdentityKey !== cardLadderIdentity(row.holding, true) ||
+        link?.inventoryIdentityKey !== inventoryFingerprint(row.item) || link?.inventoryAccountKey !== accountKey));
+    return { ...row, status, needsMembershipLink };
+  });
 }
 
 export function canAddCardLadderHolding(items, holding) {
@@ -385,7 +398,8 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
   for (const row of rows) if (row.item) claims.set(row.item.entryId, (claims.get(row.item.entryId) || 0) + 1);
   const updates = new Map(rows.filter(row => (row.status === 'ready' || (['no-sales', 'image-only'].includes(row.status) && valueSelection.has(row.holding.holdingId))) && (selected ? selected.has(row.holding.holdingId) : !row.statistics?.highIsAnomaly) && claims.get(row.item.entryId) === 1).map(row => [row.item.entryId, row]));
   const imageUpdates = new Map(rows.filter(row => ['ready', 'image-only', 'no-sales'].includes(row.status) && (!selected || selected.has(row.holding.holdingId)) && !row.item.image && safeCardLadderImage(row.holding.imageUrl) && claims.get(row.item.entryId) === 1).map(row => [row.item.entryId, safeCardLadderImage(row.holding.imageUrl)]));
-  const links = new Map(rows.filter(row => row.item && row.status !== 'ambiguous' && bindings[row.holding.holdingId] &&
+  const links = new Map(rows.filter(row => row.item && row.status !== 'ambiguous' &&
+    (bindings[row.holding.holdingId] || (row.needsMembershipLink && !addedIds.has(row.item.entryId))) &&
     (!selected || selected.has(row.holding.holdingId)) && claims.get(row.item.entryId) === 1).map(row => [row.item.entryId, row]));
   return {
     removedCount: removedItems.length, removedItems, linkedCount: links.size,
@@ -430,11 +444,17 @@ export function applySalesReport(items, report, now = Date.now(), bindings = {},
 export function preserveCardLadderSalesPrice(incoming, existing) {
   const preservePrice = ['highest-sale-14d', 'cardladder-value'].includes(existing?.cardladderPricing?.method);
   if ((!preservePrice && !existing?.cardladderData?.holdingId) || cardLadderIdentity(incoming) !== cardLadderIdentity(existing)) return incoming;
+  // CSV normalization can change display fields (for example, remove the year
+  // from the displayed set) without changing the card identity. Rebase a valid
+  // link onto that imported representation, but never repair a link that was
+  // already invalidated by an inventory edit.
+  const inventoryIdentityKey = existing.cardladderData?.inventoryIdentityKey === inventoryFingerprint(existing)
+    ? inventoryFingerprint(incoming) : existing.cardladderData?.inventoryIdentityKey || null;
   return { ...incoming, ...(preservePrice ? { gradedPrice: existing.gradedPrice, gradedPriceCurrency: existing.gradedPriceCurrency,
     cardladderPricing: existing.cardladderPricing } : {}),
     cardladderData: { ...incoming.cardladderData, ...(existing.cardladderData?.holdingId ? {
       holdingId: existing.cardladderData.holdingId, holdingIdentityKey: existing.cardladderData.holdingIdentityKey || null,
-      inventoryIdentityKey: existing.cardladderData.inventoryIdentityKey || null,
+      inventoryIdentityKey,
       inventoryAccountKey: existing.cardladderData.inventoryAccountKey || null,
       linkedAt: existing.cardladderData.linkedAt ?? null,
       membershipRestoredAt: existing.cardladderData.membershipRestoredAt ?? null } : {}) } };

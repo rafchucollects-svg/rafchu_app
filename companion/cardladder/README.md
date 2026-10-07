@@ -331,3 +331,17 @@ entry bundle matched the production build (`index-BkwQbmRw.js`).
 
 
 Security update: release builds only expose the bridge to the two Rafchu HTTPS origins. Localhost is no longer trusted automatically: an unrelated local development server must not be able to read your capture reports. If maintaining a local development build, add only its exact origin to the background allowlist and its host to a separate development manifest. Never distribute that development manifest. Reload the extension after installing this update.
+
+## Inventory verification fix in 1.2.3
+
+CardLadder renders Account headings in uppercase. The reader now recognizes the
+rendered User ID label regardless of capitalization and whitespace, so a complete
+Inventory capture can verify its source account and reconcile missing linked cards.
+An account-verification failure is shown in the capture status and Rafchu preview.
+Update the extension, reload it in Chrome, and run a fresh capture; older unverified
+captures cannot be used for removals.
+
+Verified exact card matches can save their Inventory link without changing a price,
+including cards with no recent sales. Existing valid links survive CSV reimports
+that normalize display fields. Unlinked manual cards remain outside removal sync;
+removed cards remain recoverable in Recently deleted.

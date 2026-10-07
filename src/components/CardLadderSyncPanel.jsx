@@ -42,7 +42,7 @@ export function CardLadderSyncPanel() {
   const usesValue = row => row.fallbackValue != null && Boolean(valueChoices[row.holding.holdingId]);
   const ready = preview.rows.filter(row => (row.status === 'ready' || (['no-sales', 'image-only'].includes(row.status) && usesValue(row))) && !isExcluded(row));
   const imageOnly = preview.rows.filter(row => row.status === 'image-only' && !usesValue(row) && !isExcluded(row));
-  const linksOnly = preview.rows.filter(row => bindings[row.holding.holdingId] && row.item && row.status !== 'ambiguous' &&
+  const linksOnly = preview.rows.filter(row => (bindings[row.holding.holdingId] || row.needsMembershipLink) && row.item && row.status !== 'ambiguous' &&
     !isExcluded(row) && !ready.includes(row) && !imageOnly.includes(row));
   // Keep the reviewed fingerprint. A changed item must be selected again.
   const removalCandidates = preview.removals.filter(row => !Object.values(bindings).some(binding => binding.entryId === row.entryId));
@@ -64,7 +64,7 @@ export function CardLadderSyncPanel() {
   const needsCurrencyUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 1));
   const needsGradingUpdate = status?.installed && version && (Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 2));
   const needsCaptureUpdate = status?.installed && /^1\.2\.0$/.test(status.version || '');
-  const needsMembershipUpdate = status?.installed && /^1\.2\.1$/.test(status.version || '');
+  const needsMembershipUpdate = status?.installed && /^1\.2\.[12]$/.test(status.version || '');
   const legacyGradingFailure = report?.holdings?.some(holding => holding?.complete !== true && /supports numeric PSA grades|exact PSA profile/i.test(holding?.error || ''));
   const legacyCurrencyFailure = report?.schemaVersion === 1 && Array.isArray(report.holdings) && report.holdings.some(holding =>
     holding?.complete !== true && typeof holding?.error === 'string' && holding.error.includes('A sale has an unreadable date, currency, price, or link.'));
@@ -101,19 +101,19 @@ export function CardLadderSyncPanel() {
     {status?.installed && status.version && <p className="mt-1 text-xs text-slate-600">Connected CardLadder companion: {status.version}</p>}
     {needsCurrencyUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder companion update">
       <p className="font-medium">Update the CardLadder companion to capture your display currency.</p>
-      <p className="mt-1">Your installed version only supports USD. <a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.2</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again.</p>
+      <p className="mt-1">Your installed version only supports USD. <a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.3</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again.</p>
     </aside>}
     {needsGradingUpdate && !needsCurrencyUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder grading support update">
       <p className="font-medium">Update the companion to sync BGS and CGC cards.</p>
-      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.2</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again. The previous capture will not gain the skipped cards until you run a new capture.</p>
+      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download CardLadder companion 1.2.3</a>, unzip it into your existing extension folder, and reload it in Chrome’s Extensions page. Refresh Rafchu and CardLadder, then run Sync Inventory again. The previous capture will not gain the skipped cards until you run a new capture.</p>
     </aside>}
     {needsCaptureUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder capture fix update">
-      <p className="font-medium">Companion 1.2.2 fixes captures with a single sale and card numbers such as 3/17.</p>
+      <p className="font-medium">Companion 1.2.3 fixes captures with a single sale and card numbers such as 3/17.</p>
       <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download the update</a>, replace its files and reload it in Chrome, then run a fresh sync. You can already add cards from incomplete captures without a price below.</p>
     </aside>}
     {needsMembershipUpdate && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder inventory removal update">
-      <p className="font-medium">Update to companion 1.2.2 to check for cards removed from CardLadder Inventory.</p>
-      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download the update</a>, replace its files, and reload it in Chrome. Refresh Rafchu and CardLadder, then run a fresh Sync Inventory. Existing captures cannot identify missing cards.</p>
+      <p className="font-medium">Update to companion 1.2.3 to restore inventory removal checks.</p>
+      <p className="mt-1"><a className="underline" href="/cardladder-companion.zip" download>Download the update</a>, replace its files, and reload it in Chrome. Refresh Rafchu and CardLadder, then run a fresh Sync Inventory. This fixes account verification when CardLadder displays its headings in uppercase. Run a fresh capture after updating so missing cards can be identified.</p>
     </aside>}
     <div className="mt-3 flex flex-wrap gap-2">
       <Button size="sm" disabled={busy || !status?.installed || status?.status?.state === 'running'} onClick={() => action(async () => { await companionRequest('start'); await refresh(); })}>Sync Inventory</Button>
@@ -127,7 +127,7 @@ export function CardLadderSyncPanel() {
         <li>In Chrome’s Extensions page, enable Developer mode, choose Load unpacked, and select the unzipped folder.</li>
         <li>Sign in to CardLadder and select Inventory. Keep your preferred display currency; the companion reads it from Account automatically. Clear Inventory search, then reload this Rafchu tab.</li>
       </ol>
-      <p className="mt-2">Enable daily capture in the extension popup. Chrome must be running and CardLadder signed in; leave the reader tab visible while it works. Companion 1.2.2 supports PSA, BGS, and CGC numeric grades, including their distinct Pristine, Perfect, and Black Label variants. Cards without a supported grade or exact linked profile are skipped for pricing but retained in the inventory membership check.</p>
+      <p className="mt-2">Enable daily capture in the extension popup. Chrome must be running and CardLadder signed in; leave the reader tab visible while it works. Companion 1.2.3 supports PSA, BGS, and CGC numeric grades, including their distinct Pristine, Perfect, and Black Label variants. Cards without a supported grade or exact linked profile are skipped for pricing but retained in the inventory membership check.</p>
       <label className="mt-3 block">Or upload a companion JSON report:
         <input className="mt-1 block w-full" type="file" accept=".json,application/json" onChange={event => {
           const file = event.target.files?.[0];
@@ -144,12 +144,13 @@ export function CardLadderSyncPanel() {
     {(error || preview.error) && <p role="alert" className="mt-3 text-sm text-red-700">{error || preview.error}</p>}
     {report && !preview.verifiedInventory && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder removal check needs fresh capture">
       <p className="font-medium">No cards will be removed from this capture.</p>
-      <p className="mt-1">Removal checks require a fresh, complete, unfiltered CardLadder Inventory capture with companion 1.2.2. Update the companion, reload it in Chrome, and run Sync Inventory again. Older, cancelled, or incomplete inventory captures cannot identify missing cards.</p>
+      {typeof report.inventorySnapshotWarning === 'string' && report.inventorySnapshotWarning && <p className="mt-1">{report.inventorySnapshotWarning}</p>}
+      <p className="mt-1">Removal checks require a fresh, complete, unfiltered CardLadder Inventory capture with companion 1.2.3. Update the companion, reload it in Chrome, and run Sync Inventory again. Older, cancelled, or incomplete inventory captures cannot identify missing cards.</p>
     </aside>}
     {message && <p role="status" className="mt-3 text-sm font-medium text-emerald-800">{message}</p>}
     {legacyGradingFailure && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="Older CardLadder grades need recapture">
       <p className="font-medium">This capture skipped BGS or CGC cards using the older PSA-only reader.</p>
-      <p className="mt-1">Update the CardLadder companion to 1.2.2 and run a fresh Sync Inventory to include those cards. Opening the previous report cannot recover their missing sales.</p>
+      <p className="mt-1">Update the CardLadder companion to 1.2.3 and run a fresh Sync Inventory to include those cards. Opening the previous report cannot recover their missing sales.</p>
     </aside>}
     {legacyCurrencyFailure && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="Older CardLadder capture needs refresh">
       <p className="font-medium">This failed capture came from an older reader that only supported USD.</p>
@@ -177,7 +178,7 @@ export function CardLadderSyncPanel() {
         {preview.rows.map(row => {
           const id = row.holding.holdingId;
           const money = (value, sourceCurrency = row.currency) => formatSyncMoney(value, sourceCurrency, displayPreferences);
-          const selectable = Boolean(row.high || usesValue(row) || row.status === 'image-only' || canAddCardLadderHolding(collectionItems, row.holding) || additions[id] || (bindings[id] && row.item && row.status !== 'ambiguous'));
+          const selectable = Boolean(row.high || usesValue(row) || row.status === 'image-only' || canAddCardLadderHolding(collectionItems, row.holding) || additions[id] || ((bindings[id] || row.needsMembershipLink) && row.item && row.status !== 'ambiguous'));
           const checked = selectable && !isExcluded(row);
           const cardImage = safeCardLadderImage(row.holding.imageUrl);
           const proposedPrice = usesValue(row) ? row.fallbackValue : row.high?.price;
@@ -256,7 +257,7 @@ export function CardLadderSyncPanel() {
                 .map(item => <option key={item.entryId} value={item.entryId}>{item.name} #{item.number} · {typeof item.set === 'string' ? item.set : item.set?.name} · {item.rarity || ''} · {item.entryId.slice(-6)}</option>)}
             </select>
           </label>}
-          {bindings[id] && row.item && row.status !== 'ambiguous' && <p className="mt-2 text-xs text-slate-600">Saving this link keeps the card connected to CardLadder even without a market price. It can then be removed from Rafchu when a future complete capture confirms it is missing from CardLadder Inventory.</p>}
+          {(bindings[id] || row.needsMembershipLink) && row.item && row.status !== 'ambiguous' && <p className="mt-2 text-xs text-slate-600">Saving this link keeps the card connected to CardLadder even without a market price. It can then be removed from Rafchu when a future complete capture confirms it is missing from CardLadder Inventory.</p>}
           {additions[row.holding.holdingId] && <div className="mt-2 rounded bg-emerald-50 p-2">
             {!row.holding.complete && <p className="mb-2 text-xs font-medium text-emerald-950">You can add this card now. Its market and sticker prices will stay blank because the sales capture is incomplete. Run a fresh capture later to get pricing, or enter your own sticker price in Inventory.</p>}
             <p className="mb-2 text-xs">Confirm how many you own. The capture does not provide quantity or purchase cost. Available CardLadder reference images are included; certificate number stays blank.</p>

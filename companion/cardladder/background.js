@@ -106,7 +106,7 @@ async function capture() {
     // Each sales command already excludes dates outside these fixed bounds.
     const failures = report.holdings.filter(holding => !holding.complete).length;
     await chrome.storage.local.set({ report });
-    await saveStatus({ state: 'complete', message: `Captured ${holdings.length - failures} of ${holdings.length} holdings in ${report.currency}. ${failures} need attention. Open Rafchu’s multicurrency preview to review.`, finishedAt: new Date().toISOString() });
+    await saveStatus({ state: 'complete', message: `Captured ${holdings.length - failures} of ${holdings.length} holdings in ${report.currency}. ${failures} need attention. Open Rafchu’s multicurrency preview to review.${report.inventorySnapshotWarning ? ` ${report.inventorySnapshotWarning}` : ''}`, finishedAt: new Date().toISOString() });
   } catch (error) {
     await saveStatus({ state: 'error', message: error.message });
   } finally {
