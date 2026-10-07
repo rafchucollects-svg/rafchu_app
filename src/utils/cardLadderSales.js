@@ -284,8 +284,11 @@ export function buildSalesPreview(items, report, now = Date.now(), bindings = {}
       inventoryFingerprint(item) === binding.itemIdentity && identity === binding.holdingIdentity) : [];
     if (!binding) candidates = previouslyLinked.filter(item => sameGrade(item) &&
       item.cardladderData?.holdingIdentityKey === identity && item.cardladderData?.inventoryIdentityKey === inventoryFingerprint(item));
-    // Exact print/grade identity only. A manual link resolves naming differences.
-    if (!binding && !previouslyLinked.length && !candidates.length) candidates = items.filter(item => sameGrade(item) && cardLadderIdentity(item) === identity);
+    // Exact print/grade identity only. A replacement holding ID must not revive
+    // a link invalidated by an inventory edit; explicit review can relink it.
+    if (!binding && !previouslyLinked.length && !candidates.length) candidates = items.filter(item => sameGrade(item) &&
+      (!item.cardladderData?.holdingId || item.cardladderData.inventoryIdentityKey === inventoryFingerprint(item)) &&
+      cardLadderIdentity(item) === identity);
     const item = candidates.length === 1 ? candidates[0] : null;
     const status = !item ? (candidates.length ? 'ambiguous' : 'unmatched') : used.has(item.entryId) ? 'ambiguous' : summary.status === 'no-sales' && !item.image && safeCardLadderImage(holding.imageUrl) ? 'image-only' : summary.status;
     if (item) used.add(item.entryId);

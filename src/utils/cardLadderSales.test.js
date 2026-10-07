@@ -388,6 +388,7 @@ describe('verified Inventory membership', () => {
       sales: complete ? [sale(1525, '2026-08-29')] : [], ...(!complete ? { error: 'Sales unavailable' } : {}) };
     const input = proof(report([], { holdings: [replacement] }));
     expect(buildCardLadderRemovals([card], input, now)).toEqual([]);
+    expect(buildSalesPreview([card], input, now)[0]).toMatchObject({ item: card, needsMembershipLink: true });
     const result = applySalesReport([card], input, now);
     expect(result.removedCount).toBe(0);
     expect(result.items).toHaveLength(1);
@@ -395,6 +396,27 @@ describe('verified Inventory membership', () => {
       expect(result.items[0]).toMatchObject({ gradedPrice: 1525, cardladderData: { holdingId: 'replacement-holding', inventoryAccountKey: accountKey } });
     } else expect(result.items[0]).toMatchObject({ gradedPrice: card.gradedPrice,
       cardladderData: { holdingId: 'replacement-holding', inventoryAccountKey: accountKey } });
+  });
+
+  it.each(['name', 'set', 'rarity'])('does not revive a link after editing %s when the source holding ID changes', field => {
+    const card = linked();
+    const edited = { ...card, [field]: 'Edited inventory description' };
+    // Retained CSV/source fields still describe the original card, but the
+    // editable inventory fields invalidate its previous membership link.
+    expect(cardLadderIdentity(edited)).toBe(cardLadderIdentity(card));
+    for (const complete of [true, false]) {
+      const replacement = { ...holding, holdingId: 'replacement-holding', complete,
+        sales: complete ? [sale(1525, '2026-08-29')] : [] };
+      const input = proof(report([], { holdings: [replacement] }));
+      expect(buildSalesPreview([edited], input, now)[0]).toMatchObject({ status: 'unmatched', needsMembershipLink: false });
+      const result = applySalesReport([edited], input, now);
+      expect(result).toMatchObject({ linkedCount: 0, updatedCount: 0, items: [edited] });
+      expect(buildCardLadderRemovals(result.items, absent(), now)).toEqual([]);
+      const reviewed = applySalesReport([edited], input, now,
+        { [replacement.holdingId]: createSalesBinding(edited, replacement) }, {}, [replacement.holdingId]);
+      expect(reviewed.items[0].cardladderData.holdingId).toBe(replacement.holdingId);
+      expect(buildCardLadderRemovals(reviewed.items, absent(), now)).toHaveLength(1);
+    }
   });
 
   it('preserves a manually linked naming variant through source holding-ID replacement', () => {

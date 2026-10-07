@@ -144,7 +144,7 @@ export function CardLadderSyncPanel() {
     {(error || preview.error) && <p role="alert" className="mt-3 text-sm text-red-700">{error || preview.error}</p>}
     {report && !preview.verifiedInventory && <aside className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950" aria-label="CardLadder removal check needs fresh capture">
       <p className="font-medium">No cards will be removed from this capture.</p>
-      {report.inventorySnapshotWarning && <p className="mt-1">{report.inventorySnapshotWarning}</p>}
+      {typeof report.inventorySnapshotWarning === 'string' && report.inventorySnapshotWarning && <p className="mt-1">{report.inventorySnapshotWarning}</p>}
       <p className="mt-1">Removal checks require a fresh, complete, unfiltered CardLadder Inventory capture with companion 1.2.3. Update the companion, reload it in Chrome, and run Sync Inventory again. Older, cancelled, or incomplete inventory captures cannot identify missing cards.</p>
     </aside>}
     {message && <p role="status" className="mt-3 text-sm font-medium text-emerald-800">{message}</p>}
