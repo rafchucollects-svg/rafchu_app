@@ -99,6 +99,29 @@ it('hashes the observed User ID section locally and never returns its raw identi
   expect(JSON.stringify(response)).not.toContain(syntheticId);
 });
 
+it.each(['USER ID', '  USER\n  ID  '])('verifies the account when its User ID label is rendered as %j', async renderedLabel => {
+  const syntheticId = 'SYNTHETICUserId12345678901234';
+  const html = `<div class="account"><h4 class="secondary-font">User ID</h4><div class="align"><span>${syntheticId}</span><button><i>content_copy</i></button></div></div>`;
+  const read = await reader(html, '/account');
+  // jsdom does not apply CSS text-transform to innerText. Reproduce the
+  // uppercase rendered text observed on CardLadder's Account page.
+  Object.defineProperty(document.querySelector('h4'), 'innerText', { value: renderedLabel });
+  vi.stubGlobal('crypto', webcrypto);
+  expect(readAccountUserId(document)).toBe(syntheticId);
+  const response = await read('accountKey');
+  expect(response).toEqual({ ok: true, data: createHash('sha256').update(`cardladder-user-id:${syntheticId}`).digest('hex') });
+  expect(JSON.stringify(response)).not.toContain(syntheticId);
+});
+
+it.each([
+  '<h4>Display Name</h4><div><span>SYNTHETICUserId12345678901234</span></div>',
+  '<h4>USER ID</h4><div><span>Loading…</span></div><h4>Customer ID</h4><div><span>SYNTHETICUserId12345678901234</span></div>',
+  '<h4>User ID</h4><div><span>SYNTHETICUserId12345678901234</span></div><h4>USER ID</h4><div><span>SYNTHETICDifferentId12345678</span></div>',
+])('does not infer account scope from a different or ambiguous account field', section => {
+  document.body.innerHTML = `<div class="account">${section}</div>`;
+  expect(readAccountUserId(document)).toBeNull();
+});
+
 it('returns no account key when the rendered User ID is unavailable', async () => {
   const read = await reader('<div class="account"><h4>User ID</h4><div class="align"><span>Loading…</span></div></div>', '/account');
   expect(await read('accountKey')).toEqual({ ok: true, data: null });

@@ -393,7 +393,8 @@ describe('verified Inventory membership', () => {
     expect(result.items).toHaveLength(1);
     if (complete) {
       expect(result.items[0]).toMatchObject({ gradedPrice: 1525, cardladderData: { holdingId: 'replacement-holding', inventoryAccountKey: accountKey } });
-    } else expect(result.items).toEqual([card]);
+    } else expect(result.items[0]).toMatchObject({ gradedPrice: card.gradedPrice,
+      cardladderData: { holdingId: 'replacement-holding', inventoryAccountKey: accountKey } });
   });
 
   it('preserves a manually linked naming variant through source holding-ID replacement', () => {
@@ -441,6 +442,55 @@ describe('verified Inventory membership', () => {
     expect(applySalesReport([item], input, now, bindings, {}, []).items).toEqual([item]);
     const mismatched = { ...item, cardladderData: { ...item.cardladderData, inventoryAccountKey: 'b'.repeat(64) } };
     expect(() => applySalesReport([mismatched], input, now, { [holding.holdingId]: createSalesBinding(mismatched, input.holdings[0]) }, {}, [holding.holdingId])).toThrow(/different CardLadder account/);
+  });
+
+  it.each([true, false])('links exact CSV matches independently of sales completion (%s), for manual and automatic saves', complete => {
+    const input = proof(report([], { holdings: [{ ...holding, complete, sales: [] }] }));
+    const row = buildSalesPreview([item], input, now)[0];
+    expect(row).toMatchObject({ item, status: complete ? 'no-sales' : 'incomplete', needsMembershipLink: true });
+    for (const selected of [null, [holding.holdingId]]) {
+      const result = applySalesReport([item], input, now, {}, {}, selected);
+      expect(result).toMatchObject({ linkedCount: 1, updatedCount: 0, stickerUpdatedCount: 0, imageUpdatedCount: 0 });
+      expect(result.items[0]).toMatchObject({ gradedPrice: item.gradedPrice, overridePrice: item.overridePrice,
+        quantity: item.quantity, buyPrice: item.buyPrice,
+        cardladderData: { holdingId: holding.holdingId, inventoryAccountKey: accountKey, linkedAt: now } });
+      expect(buildSalesPreview(result.items, input, now)[0].needsMembershipLink).toBe(false);
+      const removals = buildCardLadderRemovals(result.items, absent(), now);
+      expect(removals).toHaveLength(1);
+      expect(applySalesReport(result.items, absent(), now, {}, {}, [], [], { removals })).toMatchObject({ removedCount: 1, items: [] });
+    }
+    expect(applySalesReport([item], input, now, {}, {}, [])).toMatchObject({ linkedCount: 0, items: [item] });
+  });
+
+  it('requires verified, unambiguous membership before implicitly saving a link', () => {
+    expect(buildSalesPreview([item], report([]), now)[0].needsMembershipLink).toBe(false);
+    expect(applySalesReport([item], report([]), now)).toMatchObject({ linkedCount: 0, items: [item] });
+    const duplicated = proof(report([], { holdings: [holding, { ...holding, holdingId: 'another-holding' }] }));
+    expect(buildSalesPreview([item], duplicated, now).every(row => row.status === 'ambiguous' && !row.needsMembershipLink)).toBe(true);
+    expect(applySalesReport([item], duplicated, now)).toMatchObject({ linkedCount: 0, items: [item] });
+    const changed = { ...linked(), name: 'Edited inventory identity' };
+    expect(buildSalesPreview([changed], proof(report([])), now)[0]).toMatchObject({ status: 'unmatched', needsMembershipLink: false });
+    expect(applySalesReport([changed], proof(report([])), now)).toMatchObject({ linkedCount: 0, items: [changed] });
+  });
+
+  it('keeps a valid membership link through CSV display normalization', () => {
+    const existing = linked();
+    const incoming = { ...item, entryId: existing.entryId, cardladderData: { ...item.cardladderData, importedAt: now - 500 } };
+    expect(cardLadderIdentity(incoming)).toBe(cardLadderIdentity(existing));
+    const reimported = preserveCardLadderSalesPrice(incoming, existing);
+    expect(reimported.cardladderData.inventoryIdentityKey).not.toBe(existing.cardladderData.inventoryIdentityKey);
+    expect(buildSalesPreview([reimported], proof(report([])), now)[0]).toMatchObject({ status: 'no-sales', item: reimported, needsMembershipLink: false });
+    expect(buildCardLadderRemovals([reimported], absent(), now)).toHaveLength(1);
+    expect(reimported).toMatchObject({ name: incoming.name, set: incoming.set, gradedPrice: incoming.gradedPrice,
+      cardladderData: { holdingId: holding.holdingId, inventoryAccountKey: accountKey, importedAt: incoming.cardladderData.importedAt } });
+  });
+
+  it('does not revalidate an already edited membership link during CSV preservation', () => {
+    const existing = { ...linked(), name: 'Edited inventory identity' };
+    const reimported = preserveCardLadderSalesPrice({ ...item, entryId: existing.entryId }, existing);
+    expect(reimported.cardladderData.inventoryIdentityKey).toBe(existing.cardladderData.inventoryIdentityKey);
+    expect(buildSalesPreview([reimported], proof(report([])), now)[0]).toMatchObject({ status: 'unmatched', needsMembershipLink: false });
+    expect(buildCardLadderRemovals([reimported], absent(), now)).toEqual([]);
   });
 
   it('scopes new price-based links immediately and preserves scope during CSV price preservation', () => {

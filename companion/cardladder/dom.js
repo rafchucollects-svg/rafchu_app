@@ -16,7 +16,13 @@ export function readAccountCurrency(root) {
 // CardLadder renders this explicit User ID on Account. It is distinct from
 // display names, email addresses and authentication/session credentials.
 export function readAccountUserId(root) {
-  const heading = [...root.querySelectorAll('.account h4')].find(element => textOf(element) === 'User ID');
+  // innerText reflects CardLadder's uppercase text-transform styling, even
+  // though the underlying label is "User ID". Match the explicit label without
+  // depending on its presentation, and reject ambiguous account sections.
+  const headings = [...root.querySelectorAll('.account h4')].filter(element =>
+    textOf(element).replace(/\s+/g, ' ').toLowerCase() === 'user id');
+  if (headings.length !== 1) return null;
+  const heading = headings[0];
   const value = textOf(heading?.nextElementSibling?.querySelector(':scope > span'));
   return /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : null;
 }

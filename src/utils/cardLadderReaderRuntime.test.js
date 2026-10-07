@@ -167,4 +167,5 @@ it.each([[null, null], ['a'.repeat(64), null], [null, 'a'.repeat(64)]])('keeps p
   expect(stored.report.holdings[0].complete).toBe(true);
   expect(stored.report.inventorySnapshot).toBeUndefined();
   expect(stored.report.inventorySnapshotWarning).toMatch(/cannot reconcile removals/);
+  expect(stored.status.message).toContain(stored.report.inventorySnapshotWarning);
 });
