@@ -103,6 +103,19 @@ export function createWorkspace({ id = 'weekend-test', name = 'Weekend test work
   return { schemaVersion: 1, id, name, mode: 'test', revision: 0, ...Object.fromEntries(MAPS.map(key => [key, {}])) };
 }
 
+const LOT_METADATA = ['excludedFromSale', 'identityDetails', 'sourceEntryId', 'ownershipBasis'];
+const lotMetadata = lot => Object.fromEntries(LOT_METADATA.filter(key => has(lot, key)).map(key => [key, lot[key]]));
+
+function validateLotMetadata(lot) {
+  if (has(lot, 'excludedFromSale')) requireValue(typeof lot.excludedFromSale === 'boolean', 'Stock exclusion must be true or false.');
+  if (has(lot, 'identityDetails')) text(lot.identityDetails, 'Additional card identity', false, 500);
+  if (has(lot, 'sourceEntryId')) {
+    text(lot.sourceEntryId, 'Source inventory entry ID', true, 500);
+    requireValue(![...lot.sourceEntryId].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127), 'Source inventory entry ID contains control characters.');
+  }
+  if (has(lot, 'ownershipBasis')) requireValue(lot.ownershipBasis === 'live-app-classification', 'Unsupported ownership classification source.');
+}
+
 function validateLot(lot, expectedId) {
   object(lot, 'Lot');
   identifier(lot.id, 'Lot ID');
@@ -110,10 +123,11 @@ function validateLot(lot, expectedId) {
   text(lot.name, 'Card name', true, 500);
   for (const field of ['set', 'number', 'language', 'condition', 'grade']) text(lot[field], `Card ${field}`, false, 500);
   integer(lot.quantity, 'Lot quantity');
-  integer(lot.askMinor, 'Asking price');
+  if (lot.askMinor !== null) integer(lot.askMinor, 'Asking price');
   requireValue(lot.basisMinor === null || Number.isSafeInteger(lot.basisMinor) && lot.basisMinor >= 0, 'Unit acquisition basis must be known cents or null.');
   requireValue(lot.ownership === 'owned', 'Only explicitly owned stock is supported.');
   requireValue(lot.currency === 'EUR', 'Lot currency must be EUR.');
+  validateLotMetadata(lot);
 }
 
 function newLot(raw, id, lineage) {
@@ -125,7 +139,7 @@ function newLot(raw, id, lineage) {
     condition: raw.condition ?? '', grade: raw.grade ?? '',
     quantity: raw.quantity, askMinor: raw.askMinor,
     basisMinor: raw.basisMinor ?? null, ownership: raw.ownership,
-    currency: 'EUR', lineage,
+    currency: 'EUR', lineage, ...lotMetadata(raw),
   };
   validateLot(lot);
   integer(lot.quantity, 'Incoming quantity', 1);
@@ -161,9 +175,10 @@ function validateDraftPayload(payload) {
       if (has(line, field)) text(line[field], `Draft card ${field}`, false, 500);
     }
     integer(line.quantity, 'Draft incoming quantity');
-    integer(line.askMinor, 'Draft asking price');
+    if (line.askMinor !== null) integer(line.askMinor, 'Draft asking price');
     requireValue(line.basisMinor == null || Number.isSafeInteger(line.basisMinor) && line.basisMinor >= 0, 'Draft unit basis must be known cents or null.');
     requireValue(line.ownership === 'owned', 'Draft incoming stock must be explicitly owned.');
+    validateLotMetadata(line);
   }
   integer(payload.agreedMinor, 'Draft agreement amount');
   integer(payload.paymentMinor ?? 0, 'Draft initial payment');
@@ -228,7 +243,7 @@ export function validateWorkspace(state) {
     return source;
   };
   const expectedQuantity = new Map();
-  const identity = lot => ({ id: lot.id, name: lot.name, set: lot.set, number: lot.number, language: lot.language, condition: lot.condition, grade: lot.grade, basisMinor: lot.basisMinor, ownership: lot.ownership, currency: lot.currency, lineage: lot.lineage });
+  const identity = lot => ({ id: lot.id, name: lot.name, set: lot.set, number: lot.number, language: lot.language, condition: lot.condition, grade: lot.grade, basisMinor: lot.basisMinor, ownership: lot.ownership, currency: lot.currency, lineage: lot.lineage, ...lotMetadata(lot) });
   for (const [id, lot] of Object.entries(state.lots)) {
     validateLot(lot, id); object(lot.lineage, 'Lot lineage');
     const source = sourceFor(lot.lineage.operationId, ['opening', 'deal', 'return']);
@@ -253,7 +268,7 @@ export function validateWorkspace(state) {
     expectedQuantity.set(id, normalized.quantity);
     const askChanges = [...accepted.values()].filter(item => item.kind === 'ask' && item.payload.lotId === id).sort((a, b) => a.receipt.revision - b.receipt.revision);
     requireValue(askChanges.every(item => item.receipt.revision > source.receipt.revision), 'Price change precedes its stock.');
-    requireValue(lot.askMinor === (askChanges.at(-1)?.payload.askMinor ?? normalized.askMinor), 'Asking price does not match accepted history.');
+    requireValue(lot.askMinor === (askChanges.length ? askChanges.at(-1).payload.askMinor : normalized.askMinor), 'Asking price does not match accepted history.');
   }
   for (const [id, deal] of Object.entries(state.deals)) {
     identifier(id, 'Deal ID');
@@ -273,6 +288,7 @@ export function validateWorkspace(state) {
       requireValue(has(state.lots, line.id) && canonical(identity(line)) === canonical(identity(state.lots[line.id])), 'Deal stock identity or lineage is missing or changed.');
     }
     deal.outgoing.forEach((line, index) => {
+      requireValue(line.excludedFromSale !== true, 'A deal cannot consume stock excluded from sale.');
       requireValue(line.id === original.outgoing[index].lotId && line.quantity === original.outgoing[index].quantity, 'Outgoing quantity differs from accepted input.');
       requireValue(accepted.get(line.lineage.operationId).receipt.revision < source.receipt.revision, 'A deal consumes stock before its acquisition.');
       expectedQuantity.set(line.id, sum([expectedQuantity.get(line.id), -line.quantity], 'Stock quantity'));
@@ -353,7 +369,10 @@ export function validateWorkspace(state) {
       if (source.kind === 'return') requireValue(deal.returns.some(item => item.operationId === source.id) && (!(p.creditMinor > 0) || deal.credits.some(item => item.operationId === source.id)), 'Accepted return or credit is missing.');
     }
     if (source.kind === 'opening') requireValue(Array.isArray(p.lots) && p.lots.every(item => state.lots[item.id]?.lineage.operationId === source.id), 'Accepted opening stock is missing.');
-    if (source.kind === 'ask') requireValue(has(state.lots, p.lotId) && source.receipt.lotIds?.includes(p.lotId), 'Accepted price change has no stock.');
+    if (source.kind === 'ask') {
+      if (p.askMinor !== null) integer(p.askMinor, 'Accepted asking price');
+      requireValue(has(state.lots, p.lotId) && source.receipt.lotIds?.includes(p.lotId), 'Accepted price change has no stock.');
+    }
     if (source.kind === 'note') requireValue(state.notes[source.receipt.noteId]?.operationId === source.id, 'Accepted note is missing.');
   }
   for (const [id, asset] of Object.entries(state.assets)) {
@@ -421,7 +440,8 @@ export function applyOperation(state, operation) {
     }
   } else if (op.kind === 'ask') {
     identifier(p.lotId, 'Lot ID'); requireValue(has(next.lots, p.lotId), 'This lot was not found.');
-    integer(p.askMinor, 'Asking price'); next.lots[p.lotId].askMinor = p.askMinor; receipt.lotIds = [p.lotId];
+    if (p.askMinor !== null) integer(p.askMinor, 'Asking price');
+    next.lots[p.lotId].askMinor = p.askMinor; receipt.lotIds = [p.lotId];
   } else if (op.kind === 'deal') {
     identifier(p.dealId, 'Deal ID'); requireValue(!has(next.deals, p.dealId), 'This deal ID already exists.');
     requireValue(['sale', 'buy', 'trade'].includes(p.kind), 'Choose sale, buy or trade.');
@@ -446,6 +466,7 @@ export function applyOperation(state, operation) {
       requireValue(!selected.has(line.lotId), 'An outgoing lot is repeated. Combine its selected quantity.'); selected.add(line.lotId);
       const lot = next.lots[line.lotId];
       requireValue(lot && lot.ownership === 'owned', 'The selected owned lot was not found.');
+      requireValue(lot.excludedFromSale !== true, `${lot.name} is excluded from sale and cannot leave stock in this test deal.`);
       requireValue(lot.quantity >= line.quantity, `Not enough available stock for ${lot.name}. Your input is preserved.`);
       deal.outgoing.push({ ...copy(lot), quantity: line.quantity });
       lot.quantity -= line.quantity;

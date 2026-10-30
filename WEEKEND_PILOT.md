@@ -22,7 +22,7 @@ An unconfirmed operation blocks new stock/money operations until it is resolved.
 - Saved on this browser and this URL, using a separate IndexedDB database. There is no automatic phone/laptop sync, server backup or cloud account in this build. Export and restore can move a test workspace between devices; the copies then evolve independently.
 - Use test data only. A separate URL does not itself protect real transactions; real activation still needs a verified backend, physical-stock handoff and compatible recovery arrangement.
 - Supported: explicitly owned stock, EUR agreements, sale/buy/trade quantities, cash/card/bank/other money facts, unknown or explicitly known unit basis, credits, sale returns, notes and attachments. It does not execute payments.
-- Staged: consignment settlement, foreign-currency settlement, historical live-data import, selected partial-draft completion, accounting/provider integration and agent access.
+- Staged: consignment settlement, foreign-currency settlement, historical deal/payment import, selected partial-draft completion, accounting/provider integration and agent access.
 - Story links to the retained live workflow. A new 25-photo batch repository, selected cross-device sync and the physical iPhone output flow are not delivered or claimed here. Existing live-origin Story drafts remain there.
 - Archives are versioned and checksum-checked, with asset and relationship validation. They are portable test-workspace copies, not a full backup of the existing Rafchu account. Do not clear browser storage before keeping an archive. Attachment limits are 10 MB per file and 50 MB per archive.
 
@@ -39,3 +39,15 @@ The only intended deployment is a distinct preview channel using `firebase.pilot
 ## Verified for this release
 
 On 30 October: 32 focused domain/storage tests passed, focused lint passed, and 23 connected checks used actual browser IndexedDB. These included lost confirmation, native transaction abort, exact retry, competing sales, later payments, credits/refunds, purchase/trade lineage, draft conflicts, archive restore with original attachment bytes, and refusal of corrupted archives. Visible UI checks covered reload recovery, later payment through the independent page, a saved buy draft resumed after reload, and correction of a stale last-card sale in a second tab. Desktop layouts were inspected at 390 px and 320 px; physical iPhone behavior remains unverified.
+
+## Practice with a private copy of live stock
+
+A complete inventory-copy archive can be restored using **Records → Restore archive**, or **Paste archive**. Import validates the whole archive and creates a separate workspace, preserving earlier workspaces. On another phone/browser, restore the same private file there. Copies do not synchronize.
+
+The copy banner identifies when the inventory was captured and how many entries, excluded lots and unset asks were imported. Excluded stock stays visible and cannot be sold or traded. Unknown asks display “Ask not set”; an incomplete ask selection requires a manually entered agreement rather than defaulting to zero. Recorded unit costs retain their source qualification; missing or conflicting costs remain unknown.
+
+Inventory imports create opening stock, not purchases, sales or payments. Source holding IDs, card variations and available slab serials are preserved. The attached original source and mapping retain fields not displayed in the pilot. Source images remain references in that original attachment; this is not a backup of remote image bytes. Exact stored EUR asks are kept; the old whole-euro display rounding is not applied.
+
+Private inventory files must stay outside the source checkout and hosted build. This release has no cloud inventory reader or automatic refresh. The original inventory and all real transactions remain in the current app. The independent recovery page also supports imported unpriced and excluded lots.
+
+Release rc2 validation: 36 focused domain/storage tests pass; generic paste import was checked with invalid input, a valid isolated archive, excluded stock, a required explicit agreement for an unset ask, and recovery reload. Existing archives remain supported.

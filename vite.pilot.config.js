@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, renameSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 const commit = execFileSync('git', ['rev-parse','HEAD'],{encoding:'utf8'}).trim();
-const release = {version:'weekend-20261030-rc1',commit,mode:'persistent-test-only',backend:'none',storage:'browser-indexeddb',legacyUrl:'https://rafchu-tcg-app.web.app',builtAt:new Date().toISOString()};
+const release = {version:'weekend-20261030-rc2',commit,mode:'persistent-test-only',backend:'none',storage:'browser-indexeddb',legacyUrl:'https://rafchu-tcg-app.web.app',builtAt:new Date().toISOString()};
 export default defineConfig({
   plugins:[react(),{
     name:'pilot-dev-routing',apply:'serve',configureServer(server){server.middlewares.use((req,res,next)=>{

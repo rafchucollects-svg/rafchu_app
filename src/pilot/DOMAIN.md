@@ -1,6 +1,6 @@
 # Test pilot domain contract
 
-`domain.js` is a pure EUR-only engine for invented, persistent test workspaces. It has no Firebase, network, authentication, storage or system-clock side effects. Its validation and replay behavior do not make browser-local storage a real-transaction service. The storage adapter must durably retain a pending operation before submission and serialize competing commits against the latest saved workspace.
+`domain.js` is a pure EUR-only engine for persistent test workspaces. Workspaces can contain invented examples or a separately authorized private copy of current inventory with source provenance. It has no Firebase, network, authentication, storage or system-clock side effects. Its validation and replay behavior do not make browser-local storage a real-transaction service. The storage adapter must durably retain a pending operation before submission and serialize competing commits against the latest saved workspace.
 
 ## Exports
 
@@ -12,11 +12,24 @@
 - `formatMoney(cents)` renders a signed safe integer amount as `€12.34` or `−€0.01`.
 - `getDealBalance(deal)` returns `{agreedMinor,creditMinor,receivedMinor,paidMinor,outstandingMinor,direction}`.
 
-IDs are nonempty bounded strings using letters, digits, `.`, `_`, `:`, `-`, with reserved prototype names refused. `createdAt` is a valid UTC ISO timestamp; business/payment dates are genuine `YYYY-MM-DD` dates. Amounts and quantities must be safe integers; positive quantities identify physical units. Currency is always EUR. Only explicitly `owned` stock is admitted.
+IDs are nonempty bounded strings using letters, digits, `.`, `_`, `:`, `-`, with reserved prototype names refused. `createdAt` is a valid UTC ISO timestamp; business/payment dates are genuine `YYYY-MM-DD` dates. Known amounts and quantities must be safe integers; positive quantities identify physical units. Currency is always EUR. Only stock classified `owned` is admitted. A private inventory copy may retain the existing live app's classification with `ownershipBasis:'live-app-classification'`; this records its source and does not assert fresh ownership verification.
 
 ## State records
 
 Lots keep `id,name,set,number,language,condition,grade,quantity,askMinor,basisMinor,ownership,currency,lineage`. `quantity` is current available stock, including zero. `basisMinor` is **known acquisition basis per unit in EUR cents**, or `null` when unknown/unallocated. It is never inferred from ask, market estimate, purchase total or trade cash. Stock records are retained after depletion.
+
+`askMinor` may be `null` for an unknown asking price in opening stock, incoming stock and saved drafts. Zero remains an explicitly known zero ask. Neither an agreement amount nor acquisition basis fills an unknown ask. A deal still requires its own explicit agreed amount. The `ask` command accepts known nonnegative safe integer cents or an explicit `null` to deliberately clear an ask. An omitted amount is rejected, never turned into zero. Render an unknown ask explicitly instead of passing it to `formatMoney()` or presenting it as a zero-valued quote. Exact replay preserves the original clear-price intent and its receipt.
+
+Optional lot metadata is preserved without adding defaults to older records:
+
+| Field | Meaning and admission |
+|---|---|
+| `excludedFromSale` | Optional boolean. `true` blocks outgoing stock in sales and trades, including during archive consistency validation. The copied row remains visible/preserved. |
+| `identityDetails` | Optional text, at most 500 characters, for variant, edition, finish or other identity details. |
+| `sourceEntryId` | Optional nonempty text, at most 500 characters, without control characters. It preserves the original entry reference and is not constrained to the normalized lot-ID format. |
+| `ownershipBasis` | If present, exactly `live-app-classification`. This identifies an inherited classification, not independent title verification. |
+
+These fields remain in incoming lots, historical outgoing snapshots and physically returned lots. Their accepted source values are part of immutable identity validation. A return retains the sold snapshot's ask and metadata even if the remaining source lot's ask later changes. Private source document bytes, mapping rules and capture timestamps belong in the separately validated archive/provenance; no owner inventory belongs in public fixtures or a hosted bundle.
 
 Deals keep `id,kind,currency,agreedMinor,direction,occurredOn,counterparty,note,outgoing,incoming,payments,credits,returns,operationId,createdAt`. The stock arrays contain stable snapshots; outgoing quantities are the selected quantities, incoming snapshots describe the received lots. The original agreement stays unchanged. Current asking prices and later facts do not edit it.
 
@@ -32,15 +45,15 @@ An imported workspace may receive a new outer `state.id` and `state.provenance`;
 
 | Kind | Payload and behavior |
 |---|---|
-| `opening` | `{lots:[{id,name,set?,number?,language?,condition?,grade?,quantity,askMinor,basisMinor?,ownership:'owned'}]}`. Creates explicitly declared opening stock; creates no purchase agreement or spending. |
-| `ask` | `{lotId,askMinor}`. Changes only the current ask. |
+| `opening` | `{lots:[{id,name,set?,number?,language?,condition?,grade?,quantity,askMinor,basisMinor?,ownership:'owned',...optional lot metadata}]}`. Creates declared opening test stock, with `askMinor:null` permitted; creates no historical purchase agreement or spending. |
+| `ask` | `{lotId,askMinor}`. Changes only the current ask to known safe integer cents or explicitly clears it with `null`. |
 | `deal` | `{dealId,kind:'sale'|'buy'|'trade',outgoing:[{lotId,quantity}],incoming:[lot input],agreedMinor,direction,paymentMinor?,method?,occurredOn,counterparty?,note?,draftId?,draftRevision?}`. Atomically accepts stock legs, agreement, optional actual initial money and receipt. Sale receives money; buy pays; trade specifies cash direction. Incoming IDs can be supplied or derive from operation ID and line index. Zero cash is supported; no payment is invented for zero/omitted initial money. |
 | `payment` | `{dealId,amountMinor,direction,method,occurredOn,note?}`. Appends actual positive money. Full excess money is preserved, not clipped. Methods: cash/card/bank/other. |
 | `credit` | `{dealId,amountMinor,reason}`. Appends a positive financial credit. |
 | `return` | `{dealId,lines:[{lotId,quantity}],creditMinor?,reason}`. Sale-only physical return bounded by original sold quantity minus earlier returns. Creates new returned stock. Optional credit is recorded separately; actual refund requires a payment operation. |
 | `note` | `{id?,dealId?,text,assetIds?:[]}`. Adds an attributable owner report with no financial/stock effect. Can stand alone with no attachment. Referenced assets must already exist; the store verifies their bytes. |
 
-Each outgoing lot may appear once per deal. Each incoming lot ID is new. Unknown or insufficient stock, unsupported direction/currency, invalid date, duplicate identity or a late validation failure preserves the complete original state.
+Each outgoing lot may appear once per deal and must not be excluded from sale. Each incoming lot ID is new. Unknown or insufficient stock, unsupported direction/currency, invalid date, duplicate identity or a late validation failure preserves the complete original state.
 
 For a receive agreement, outstanding = agreement − credits − received + paid. For a pay agreement, outstanding = agreement − credits − paid + received. Negative outstanding is an explicit excess/owed-back balance; it is not silently discarded. The engine does not decide accounting/tax treatment, issue an invoice or calculate definitive profit.
 

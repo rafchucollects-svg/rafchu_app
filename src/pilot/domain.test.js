@@ -177,6 +177,78 @@ describe('agreement, actual money and physical stock remain distinct', () => {
   });
 });
 
+describe('private live-inventory practice copies', () => {
+  it('keeps an unknown ask as null across opening, incoming stock and drafts without deriving price or basis', () => {
+    let state = apply(createWorkspace(), 'open-unpriced', 'opening', { lots: [lot('unpriced', 2, { askMinor: null, basisMinor: null })] });
+    state = apply(state, 'buy-unpriced', 'deal', {
+      dealId: 'purchase-unpriced', kind: 'buy', outgoing: [], incoming: [lot('incoming-unpriced', 1, { askMinor: null })],
+      agreedMinor: 1234, direction: 'pay', paymentMinor: 0, occurredOn: day,
+    });
+    state.drafts.unpriced = { id: 'unpriced', revision: 1, status: 'open', payload: {
+      dealId: 'draft-unpriced', kind: 'buy', outgoing: [], incoming: [lot('draft-lot', 1, { askMinor: null })],
+      agreedMinor: 1234, direction: 'pay', paymentMinor: 0, occurredOn: day,
+    } };
+    expect(validateWorkspace(state)).toBe(true);
+    expect(state.lots.unpriced.askMinor).toBeNull();
+    expect(state.lots['incoming-unpriced']).toMatchObject({ askMinor: null, basisMinor: null });
+    expect(state.deals['purchase-unpriced'].incoming[0].askMinor).toBeNull();
+    expect(state.deals['purchase-unpriced'].payments).toEqual([]);
+    expect(() => apply(state, 'missing-price', 'ask', { lotId: 'unpriced' })).toThrow();
+    state = apply(state, 'explicit-zero', 'ask', { lotId: 'unpriced', askMinor: 0 });
+    expect(state.lots.unpriced.askMinor).toBe(0);
+    expect(state.lots.unpriced.basisMinor).toBeNull();
+    const clear = op('explicit-clear', 'ask', { lotId: 'unpriced', askMinor: null });
+    const cleared = applyOperation(state, clear);
+    expect(cleared.state.lots.unpriced.askMinor).toBeNull();
+    expect(applyOperation(cleared.state, clear).receipt).toEqual(cleared.receipt);
+    expect(validateWorkspace(JSON.parse(JSON.stringify(cleared.state)))).toBe(true);
+    const corrupted = JSON.parse(JSON.stringify(state));
+    corrupted.lots.unpriced.askMinor = null;
+    expect(() => validateWorkspace(corrupted)).toThrow(/asking price/i);
+    const invalidInput = JSON.parse(JSON.stringify(cleared.state));
+    invalidInput.operations['explicit-clear'].input = invalidInput.operations['explicit-clear'].input.replace('"askMinor":null,', '');
+    expect(() => validateWorkspace(invalidInput)).toThrow(/asking price/i);
+  });
+
+  it('blocks excluded copied stock from sale and trade without changing stock, drafts or receipts', () => {
+    const state = apply(createWorkspace(), 'open-excluded', 'opening', { lots: [lot('a', 2, {
+      excludedFromSale: true, askMinor: null, ownershipBasis: 'live-app-classification', sourceEntryId: 'original-entry',
+    })] });
+    const before = JSON.stringify(state);
+    expect(() => apply(state, 'sell-excluded', 'deal', sale())).toThrow(/excluded from sale/);
+    expect(() => apply(state, 'trade-excluded', 'deal', sale({ kind: 'trade', incoming: [lot('received')] }))).toThrow(/excluded from sale/);
+    expect(JSON.stringify(state)).toBe(before);
+    expect(state.operations['sell-excluded']).toBeUndefined();
+  });
+
+  it('retains variant, source identity and classification in sale and returned-stock history', () => {
+    const metadata = { excludedFromSale: false, identityDetails: 'Reverse holo · First edition · stamped', sourceEntryId: 'legacy/id #23', ownershipBasis: 'live-app-classification' };
+    let state = apply(createWorkspace(), 'open-import', 'opening', { lots: [lot('a', 2, { askMinor: null, ...metadata })] });
+    state = apply(state, 'sale-import', 'deal', sale({ agreedMinor: 2500, paymentMinor: 0 }));
+    state = apply(state, 'later-sticker', 'ask', { lotId: 'a', askMinor: 7777 });
+    state = apply(state, 'return-import', 'return', { dealId: 'sale', lines: [{ lotId: 'a', quantity: 1 }], reason: 'Practice return of copied stock' });
+    expect(state.deals.sale.outgoing[0]).toMatchObject({ ...metadata, askMinor: null, basisMinor: null });
+    expect(state.lots['return-import-return-0']).toMatchObject({ ...metadata, askMinor: null, basisMinor: null, quantity: 1 });
+    expect(state.lots.a.askMinor).toBe(7777);
+    expect(validateWorkspace(JSON.parse(JSON.stringify(state)))).toBe(true);
+    const changed = JSON.parse(JSON.stringify(state));
+    changed.lots['return-import-return-0'].identityDetails = 'Different finish';
+    expect(() => validateWorkspace(changed)).toThrow(/identity/i);
+  });
+
+  it('refuses malformed imported metadata instead of coercing flags, identity or classification', () => {
+    const badMetadata = [
+      { excludedFromSale: 'false' }, { identityDetails: 'x'.repeat(501) }, { identityDetails: null },
+      { sourceEntryId: 'line\nbreak' }, { sourceEntryId: '' }, { ownershipBasis: 'verified-by-agent' },
+    ];
+    for (const metadata of badMetadata) expect(() => apply(createWorkspace(), 'invalid-import', 'opening', { lots: [lot('a', 1, metadata)] })).toThrow();
+    const legacy = opening();
+    expect(legacy.lots.a).not.toHaveProperty('excludedFromSale');
+    expect(legacy.lots.a).not.toHaveProperty('sourceEntryId');
+    expect(validateWorkspace(legacy)).toBe(true);
+  });
+});
+
 describe('archive validation and supported schema', () => {
   it('validates a serialized workspace and exact receipt replay under a new imported workspace ID', () => {
     const request = op('sale-op', 'deal', sale());
