@@ -16,7 +16,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:rules": "npm exec --yes --package firebase-tools@15.29.0 -- firebase emulators:exec --only firestore --project demo-rafchu-review \"node --test tests/firestore.rules.test.mjs\"",
-    "build:cardmarket": "node scripts/build-cardmarket-companion.mjs"
+    "build:cardmarket": "node scripts/build-cardmarket-companion.mjs",
+    "dev:pilot": "vite --config vite.pilot.config.js --open /pilot.html",
+    "build:pilot": "vite build --config vite.pilot.config.js",
+    "test:pilot": "vitest run --config vite.pilot.config.js",
+    "preview:pilot": "vite preview --config vite.pilot.config.js"
   },
   "dependencies": {
     "@dataconnect/generated": "file:src/dataconnect-generated",
